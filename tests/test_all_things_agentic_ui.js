@@ -676,7 +676,7 @@ test("owner v2 blocks blank access, imports whole or bounded scripts locally, an
   assert.equal(elements.get("submit").disabled, true);
   await elements.get("submit").listeners.get("click")();
   assert.equal(fetchCalls.length, 0);
-  assert.match(elements.get("error").textContent, /OWNER-TEST-INSTRUCTIONS/);
+  assert.match(elements.get("error").textContent, /separately supplied/);
   assert.match(elements.get("error").textContent, /before building/);
 
   await elements.get("installApp").listeners.get("click")();

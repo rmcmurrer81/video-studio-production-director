@@ -249,7 +249,7 @@ class AllThingsAgenticUiTests(unittest.TestCase):
             "await prompt.prompt()",
             "navigator.serviceWorker.register('/sw.js')",
             "Edge open ⋯ → Apps → Install Video Studio",
-            "OWNER-TEST-INSTRUCTIONS",
+            "supplied separately",
             "if (!$('access').value.trim())",
             "The private owner / judge access code is missing or incorrect.",
             "PDF, TXT, Markdown, Fountain, or Final Draft XML",

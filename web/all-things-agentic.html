@@ -94,7 +94,7 @@
           <div class="message-row"><div class="message-avatar" aria-hidden="true">VS</div><div class="message-body"><b>Storyboard Artist &amp; Production Planner</b><p>What would you like to make? Tell me the story, mood, people, length, or only the first idea. I will turn it into a production brief.</p></div></div>
         </div>
         <div class="composer-shell">
-          <div class="access-row"><label for="access" class="access-label">Owner / judge access code</label><input id="access" type="password" autocomplete="off" maxlength="256" aria-describedby="accessHelp" placeholder="Paste the private code here"><p id="accessHelp" class="access-help pending">Required before Build is enabled. Copy the private code from OWNER-TEST-INSTRUCTIONS. It stays only in this window and is never exported.</p></div>
+          <div class="access-row"><label for="access" class="access-label">Owner / judge access code</label><input id="access" type="password" autocomplete="off" maxlength="256" aria-describedby="accessHelp" placeholder="Paste the private code here"><p id="accessHelp" class="access-help pending">Required before Build is enabled. The private code is supplied separately with the owner or judge test release. It stays only in this window and is never exported.</p></div>
           <div id="sourceInputs" class="attachment-bar">
             <div class="attachment-wrap"><button id="attachmentButton" class="attachment-button" type="button" aria-haspopup="menu" aria-expanded="false">＋ Attach</button><div id="attachmentMenu" class="attachment-menu hidden" role="menu"><button id="attachStory" type="button" role="menuitem"><strong>Story or screenplay</strong><span>PDF, TXT, Markdown, Fountain, or Final Draft XML; text is extracted locally.</span></button><button id="attachFootage" type="button" role="menuitem"><strong>Raw video library</strong><span>Select up to 12 videos; only safe browser-readable metadata enters the plan.</span></button></div></div>
             <div class="attachment-status"><p id="sourceSummary" class="source-summary"><strong>No attachments.</strong> Attach a story/script or a local video library. Raw video bytes never leave the browser.</p><p id="scriptStatus" class="source-status" aria-live="polite">No story attached.</p><p id="footageStatus" class="source-status" aria-live="polite">No raw video selected.</p></div>
@@ -174,7 +174,7 @@
     $('submit').disabled = submissionPending || jobActive || !hasCode || !hasCreativeInput;
     $('accessHelp').textContent = hasCode
       ? 'Code entered for this window only. It is sent only to same-origin job routes and never included in exports.'
-      : 'Required before Build is enabled. Copy the private code from OWNER-TEST-INSTRUCTIONS. It stays only in this window and is never exported.';
+      : 'Required before Build is enabled. The private code is supplied separately with the owner or judge test release. It stays only in this window and is never exported.';
     $('accessHelp').classList.toggle('pending', !hasCode);
     $('accessHelp').classList.toggle('ready', hasCode);
   }
@@ -1397,7 +1397,7 @@
     setTimeout(() => { printWindow.focus(); printWindow.print(); }, 0);
   }
   function responseError(payload, status) {
-    if (status === 401) return 'The private owner / judge access code is missing or incorrect. Copy the current code from OWNER-TEST-INSTRUCTIONS, paste it in the Owner / judge access code box, and try again.';
+    if (status === 401) return 'The private owner / judge access code is missing or incorrect. Paste the separately supplied current code in the Owner / judge access code box and try again.';
     const detail = payload && payload.error;
     if (typeof detail === 'string') return detail;
     if (detail && typeof detail === 'object') return `${detail.code || 'Job failed'} (${detail.type || `HTTP ${status}`})`;
@@ -1421,7 +1421,7 @@
   }
   async function submitBrief() {
     if (!$('access').value.trim()) {
-      showError('Enter the private owner / judge code from OWNER-TEST-INSTRUCTIONS before building. The code stays in this window and is never added to a plan or export.');
+      showError('Enter the separately supplied private owner / judge code before building. The code stays in this window and is never added to a plan or export.');
       updateSubmitState();
       return;
     }
