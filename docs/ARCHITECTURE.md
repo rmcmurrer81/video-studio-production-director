@@ -1,6 +1,6 @@
 # Architecture
 
-Video Studio Production Director separates the public job-control surface from private model execution. The API and worker run the same pinned container image with different service-role configuration. A deterministic local compiler transforms the validated creative brief into an audited, downloadable plan-only package; it does not render or modify media.
+Video Studio Production Director separates the public job-control surface from private model execution. The API and worker run the same pinned container image with different service-role configuration. A deterministic local compiler transforms the validated creative brief into an audited, downloadable plan-only package. An optional Gemini image stage adds bounded planning illustrations as a separately validated sidecar; it does not render or modify source media.
 
 ```mermaid
 flowchart LR
@@ -10,19 +10,21 @@ flowchart LR
     API -->|Enqueue job ID| Queue[Google Cloud Tasks]
     Queue -->|OIDC token<br/>Cloud Run audience| Worker[Private Cloud Run worker<br/>role = worker]
     Worker -->|Lease-fenced claim<br/>transactional result| DB
-    Worker -->|Structured request<br/>official google-genai SDK| Vertex[Vertex AI<br/>configured Gemini 3.5+ model]
+    Worker -->|Structured brief request<br/>official google-genai SDK| Vertex[Vertex AI<br/>Gemini 3.5+ brief model]
+    Worker -->|Bounded 16:9 panel requests| ImageModel[Vertex AI<br/>Gemini 3.1 Image]
     Vertex -->|Schema-constrained response<br/>provider metadata| Worker
     Worker -->|Validated creative brief| Compiler[Deterministic storyboard<br/>timeline compiler + auditor]
     Compiler -->|Plan-only JSON package<br/>manifest digest| Worker
     UI -->|Poll status| API
-    UI -->|Local JSON download| Package[Audited storyboard/edit plan]
+    UI -->|Local downloads| Package[JSON plan + visual HTML<br/>+ detailed HTML / printable PDF]
 ```
 
 ## Responsibilities
 
 | Component | Responsibility |
 | --- | --- |
-| Browser UI | Collect one natural-language request, display durable status, compose clarification context in tab memory, render the brief and planned timeline, and download the package locally. |
+| Browser UI | Collect one natural-language request, display durable status, compose clarification context in tab memory, render visual and detailed boards, download both scriptless sheets plus JSON, and open the visual sheet for Print / Save PDF. |
+| Visual sidecar | Keep one ordered record per planned shot, validate hashes/base64/JPEG dimensions and byte limits, show missing panels explicitly, and never weaken or rewrite the deterministic JSON plan. |
 | Public API | Validate the access code and exact request body, enforce shared Firestore admission limits, create/read/cancel/retry jobs, and enqueue work. |
 | Firestore | Persist admission state, the lease-fenced job state machine, cancellation intent, attempts, structured result, execution metadata, and measured durations. |
 | Cloud Tasks | Deliver the job ID plus application attempt to the private worker with an OIDC identity, worker-specific audience, and deterministic task name. |

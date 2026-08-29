@@ -8,6 +8,7 @@ Google Cloud adapters in :mod:`kira_studio.all_things_google`.
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -25,11 +26,16 @@ BRIEF_SCHEMA = "video-studio.production-brief/v1"
 STORYBOARD_PACKAGE_SCHEMA = "video-studio.storyboard-edit-package/v1"
 STORYBOARD_TIMELINE_SCHEMA = "video-studio.planned-edit-timeline/v1"
 STORYBOARD_AUDIT_SCHEMA = "video-studio.coverage-continuity-audit/v1"
+VISUAL_STORYBOARD_SCHEMA = "video-studio.visual-storyboard/v1"
 STORYBOARD_FRAME_RATE = 24
 # Leaves headroom beneath Firestore's document limit for the separately exposed
 # creative brief, bounded request text, durable state, and provider evidence.
 MAX_STORYBOARD_PACKAGE_BYTES = 520_000
+MAX_VISUAL_STORYBOARD_BYTES = 440_000
+MAX_VISUAL_PANEL_BYTES = 45_000
+MAX_VISUAL_PANEL_COUNT = 6
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
+DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image"
 MAX_MESSAGE_CHARS = 20_000
 MAX_ATTEMPTS = 3
 DEFAULT_ADMISSION_COOLDOWN_SECONDS = 3
@@ -55,6 +61,24 @@ class ConfigurationError(AllThingsError):
 
 class BriefValidationError(AllThingsError):
     """Gemini did not return the exact production-brief contract."""
+
+
+class VisualPanelGenerationError(AllThingsError):
+    """A visual provider failed without exposing its raw response."""
+
+    ALLOWED_CODES = frozenset(
+        {
+            "provider_blocked",
+            "generation_failed",
+            "invalid_provider_asset",
+            "quota_or_rate_limited",
+        }
+    )
+
+    def __init__(self, code: str) -> None:
+        selected = code if code in self.ALLOWED_CODES else "generation_failed"
+        super().__init__("visual storyboard panel generation failed")
+        self.code = selected
 
 
 class JobTransitionError(AllThingsError):
@@ -156,6 +180,7 @@ class AllThingsConfig:
     project: str
     location: str = "global"
     model: str = DEFAULT_GEMINI_MODEL
+    image_model: str = DEFAULT_IMAGE_MODEL
     firestore_database: str = "(default)"
     jobs_collection: str = "all_things_agentic_jobs"
     tasks_location: str = "us-central1"
@@ -173,6 +198,9 @@ class AllThingsConfig:
             project=environment.get("GOOGLE_CLOUD_PROJECT", "").strip(),
             location=environment.get("GOOGLE_CLOUD_LOCATION", "global").strip() or "global",
             model=environment.get("KIRA_ALL_THINGS_GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip(),
+            image_model=environment.get(
+                "KIRA_ALL_THINGS_IMAGE_MODEL", DEFAULT_IMAGE_MODEL
+            ).strip(),
             firestore_database=environment.get("KIRA_ALL_THINGS_FIRESTORE_DATABASE", "(default)").strip(),
             jobs_collection=environment.get("KIRA_ALL_THINGS_JOBS_COLLECTION", "all_things_agentic_jobs").strip(),
             tasks_location=environment.get("KIRA_ALL_THINGS_TASKS_LOCATION", "us-central1").strip(),
@@ -211,6 +239,16 @@ class AllThingsConfig:
         match = _MODEL_VERSION.fullmatch(model_leaf)
         if match is None or (int(match.group(1)), int(match.group(2))) < (3, 5):
             issues.append("KIRA_ALL_THINGS_GEMINI_MODEL must identify Gemini 3.5 or newer")
+        image_model_leaf = self.image_model.rsplit("/", 1)[-1]
+        image_match = _MODEL_VERSION.fullmatch(image_model_leaf)
+        if (
+            image_match is None
+            or (int(image_match.group(1)), int(image_match.group(2))) < (3, 1)
+            or not image_model_leaf.casefold().endswith("-image")
+        ):
+            issues.append(
+                "KIRA_ALL_THINGS_IMAGE_MODEL must identify Gemini 3.1 Image or newer"
+            )
         if not self.firestore_database:
             issues.append("KIRA_ALL_THINGS_FIRESTORE_DATABASE is required")
         if not _COLLECTION_ID.fullmatch(self.jobs_collection):
@@ -246,6 +284,7 @@ class AllThingsConfig:
             "project": self.project,
             "location": self.location,
             "model": self.model,
+            "image_model": self.image_model,
             "framework": "google-genai",
             "api": "Vertex AI v1",
             "firestore_database": self.firestore_database,
@@ -549,11 +588,12 @@ def _weighted_positive_allocation(total: int, weights: Sequence[int]) -> tuple[i
 
 def _scene_continuity(scene: SceneBrief) -> list[str]:
     requirements = [
-        f"Keep the location geography specified for scene {scene.number} stable across its cards."
+        f"Keep the geography of {scene.setting} stable across every scene-{scene.number} card."
     ]
     if scene.characters:
+        names = ", ".join(scene.characters)
         requirements.append(
-            f"Match every listed scene-{scene.number} character's wardrobe, props, eyelines, and screen direction."
+            f"Match {names}'s wardrobe, props, eyelines, and screen direction across coverage."
         )
     else:
         requirements.append("Match props, eyelines, and screen direction across coverage.")
@@ -562,43 +602,52 @@ def _scene_continuity(scene: SceneBrief) -> list[str]:
 
 
 def _source_footage_guidance(scene: SceneBrief) -> str:
+    subjects = ", ".join(scene.characters) if scene.characters else "the scene subjects"
     return (
-        f"Select only verified source coverage matching the setting and subjects listed for scene {scene.number}; "
+        f"Select only verified source coverage of {subjects} in {scene.setting}; "
         "flag missing coverage instead of inventing a clip."
     )
 
 
 def _bridge_shot_guidance(scene: SceneBrief) -> str:
     return (
-        f"For scene {scene.number}, prefer a neutral reaction, prop, or environmental cutaway; "
+        f"For the scene beat '{scene.purpose}', prefer a motivated reaction, prop, or "
+        f"environmental cutaway from {scene.setting}; "
         "if none exists, record a coverage gap rather than implying unverified footage."
     )
 
 
 def _shot_action(scene: SceneBrief, role: str) -> str:
+    subjects = ", ".join(scene.characters) if scene.characters else "the scene subjects"
     if role == "establishing":
         return (
-            f"Establish the location and spatial relationships specified for scene {scene.number} "
-            "before its primary action."
+            f"Establish {scene.setting} and the spatial relationship of {subjects} before this "
+            f"scene beat: {scene.purpose}"
         )
     if role == "primary_coverage":
-        return f"Execute scene {scene.number}'s stated purpose as the primary planned action."
+        return (
+            f"Stage {subjects} in {scene.setting} for the primary scene beat: {scene.purpose}"
+        )
     return (
-        "Hold a reaction, prop, or environmental detail that preserves the scene purpose "
-        "and gives the editor a clean transition option."
+        f"Hold a reaction, prop, or environmental detail in {scene.setting} that directly "
+        f"supports this beat: {scene.purpose}"
     )
 
 
 def _shot_audio(brief: ProductionBrief, scene: SceneBrief, role: str) -> str:
+    subjects = ", ".join(scene.characters) if scene.characters else "the scene subjects"
     if role == "primary_coverage" and scene.dialogue_required:
-        prefix = "Protect intelligible dialogue coverage."
+        prefix = (
+            f"Protect intelligible dialogue coverage for {subjects} during this beat: "
+            f"{scene.purpose}"
+        )
     elif role == "primary_coverage":
-        prefix = "Carry motivated action sound and ambience; no dialogue is required."
+        prefix = f"Carry motivated action sound for this beat: {scene.purpose} No dialogue is required."
     elif role == "establishing":
-        prefix = "Capture clean establishing ambience and room tone."
+        prefix = f"Capture clean establishing ambience and room tone for {scene.setting}."
     else:
-        prefix = "Use clean room tone or motivated transition audio under the bridge."
-    return f"{prefix} Follow production_brief.audio_direction without adding unrequested sound."
+        prefix = f"Use clean room tone or motivated transition audio under the beat: {scene.purpose}"
+    return f"{prefix} Brief audio direction: {brief.audio_direction}"
 
 
 def compile_storyboard_timeline(brief: ProductionBrief) -> dict[str, Any]:
@@ -824,8 +873,9 @@ def audit_storyboard_package(value: Mapping[str, Any]) -> dict[str, Any]:
                 and shot.get("scene_number") == scene.number
                 and shot.get("role") == "primary_coverage"
                 and isinstance(shot.get("storyboard_card"), Mapping)
-                and "Protect intelligible dialogue coverage."
-                in str(shot["storyboard_card"].get("dialogue_or_audio", ""))
+                and str(shot["storyboard_card"].get("dialogue_or_audio", "")).startswith(
+                    "Protect intelligible dialogue coverage"
+                )
                 for shot in actual_shots
             )
             for scene in brief.scenes
@@ -916,6 +966,370 @@ class BriefProviderResult:
 class BriefProvider(Protocol):
     def create_brief(self, message: str, *, job_id: str) -> BriefProviderResult:
         ...
+
+
+@dataclass(frozen=True)
+class VisualPanelProviderResult:
+    image_bytes: bytes
+    mime_type: str
+    width: int
+    height: int
+    execution: Mapping[str, Any]
+
+
+class VisualPanelProvider(Protocol):
+    def create_panel(
+        self,
+        prompt: str,
+        *,
+        shot_id: str,
+        job_id: str,
+        reference_image: bytes | None = None,
+    ) -> VisualPanelProviderResult:
+        ...
+
+
+_VISUAL_MISSING_REASONS = frozenset(
+    {
+        "held_for_clarification",
+        "renderer_not_configured",
+        "provider_blocked",
+        "generation_failed",
+        "invalid_provider_asset",
+        "panel_limit_reached",
+        "inline_budget_exhausted",
+        "quota_or_rate_limited",
+    }
+)
+
+
+def storyboard_panel_prompt(
+    brief: ProductionBrief,
+    shot: Mapping[str, Any],
+) -> str:
+    """Return the deterministic art-direction prompt for one planned shot."""
+
+    scene_number = shot.get("scene_number")
+    if (
+        isinstance(scene_number, bool)
+        or not isinstance(scene_number, int)
+        or not 1 <= scene_number <= len(brief.scenes)
+    ):
+        raise BriefValidationError("visual storyboard shot has an invalid scene number")
+    scene = brief.scenes[scene_number - 1]
+    card = shot.get("storyboard_card")
+    if not isinstance(card, Mapping):
+        raise BriefValidationError("visual storyboard shot is missing its card")
+    characters = ", ".join(scene.characters) if scene.characters else "no named characters"
+    continuity = " ".join(str(item) for item in card.get("continuity_requirements", []))
+    return (
+        "Create one black-and-white professional film storyboard drawing in clean pencil-and-ink "
+        "line art, 16:9 landscape. This is a previsualization panel, not a photorealistic frame. "
+        "Do not include captions, lettering, timecodes, logos, watermarks, borders, or split panels. "
+        f"Project: {brief.title}. Overall visual direction: {brief.visual_direction}. "
+        f"Scene {scene.number} setting: {scene.setting}. Characters: {characters}. "
+        f"Scene purpose: {scene.purpose}. Shot {shot.get('shot_id')}: {card.get('framing')}. "
+        f"Camera: {card.get('camera')}. Action: {card.get('action')}. "
+        f"Continuity to preserve: {continuity}"
+    )
+
+
+def _visual_alt_text(brief: ProductionBrief, shot: Mapping[str, Any]) -> str:
+    card = shot.get("storyboard_card")
+    if not isinstance(card, Mapping):
+        raise BriefValidationError("visual storyboard shot is missing its card")
+    return _clean_string(
+        f"Shot {shot.get('shot_id')}, {card.get('framing')}: {card.get('action')}",
+        label="visual storyboard alt text",
+        maximum=700,
+    )
+
+
+def _visual_prompt_digest(brief: ProductionBrief, shot: Mapping[str, Any]) -> str:
+    return hashlib.sha256(storyboard_panel_prompt(brief, shot).encode("utf-8")).hexdigest()
+
+
+def _selected_visual_indices(shot_count: int) -> frozenset[int]:
+    if shot_count <= MAX_VISUAL_PANEL_COUNT:
+        return frozenset(range(shot_count))
+    last = shot_count - 1
+    return frozenset(
+        round(index * last / (MAX_VISUAL_PANEL_COUNT - 1))
+        for index in range(MAX_VISUAL_PANEL_COUNT)
+    )
+
+
+def _missing_visual_panel(
+    brief: ProductionBrief,
+    shot: Mapping[str, Any],
+    reason: str,
+) -> dict[str, Any]:
+    if reason not in _VISUAL_MISSING_REASONS:
+        reason = "generation_failed"
+    return {
+        "shot_id": shot["shot_id"],
+        "status": "missing",
+        "alt_text": _visual_alt_text(brief, shot),
+        "prompt_sha256": _visual_prompt_digest(brief, shot),
+        "mime_type": None,
+        "width": None,
+        "height": None,
+        "byte_length": None,
+        "content_sha256": None,
+        "data_base64": None,
+        "missing_reason": reason,
+    }
+
+
+def _available_visual_panel(
+    brief: ProductionBrief,
+    shot: Mapping[str, Any],
+    result: VisualPanelProviderResult,
+) -> dict[str, Any]:
+    image = result.image_bytes
+    if (
+        not isinstance(image, bytes)
+        or not 100 <= len(image) <= MAX_VISUAL_PANEL_BYTES
+        or result.mime_type != "image/jpeg"
+        or result.width != 768
+        or result.height != 432
+        or not image.startswith(b"\xff\xd8")
+        or not image.endswith(b"\xff\xd9")
+    ):
+        raise VisualPanelGenerationError("invalid_provider_asset")
+    return {
+        "shot_id": shot["shot_id"],
+        "status": "available",
+        "alt_text": _visual_alt_text(brief, shot),
+        "prompt_sha256": _visual_prompt_digest(brief, shot),
+        "mime_type": "image/jpeg",
+        "width": 768,
+        "height": 432,
+        "byte_length": len(image),
+        "content_sha256": hashlib.sha256(image).hexdigest(),
+        "data_base64": base64.b64encode(image).decode("ascii"),
+        "missing_reason": None,
+    }
+
+
+def build_visual_storyboard(
+    brief: ProductionBrief,
+    timeline: Mapping[str, Any],
+    *,
+    provider: VisualPanelProvider | None,
+    config: AllThingsConfig,
+    job_id: str,
+) -> dict[str, Any]:
+    """Build an optional, bounded visual sidecar without weakening the plan package."""
+
+    shots = timeline.get("shots")
+    if not isinstance(shots, list) or any(not isinstance(shot, Mapping) for shot in shots):
+        raise BriefValidationError("visual storyboard requires the compiled shot timeline")
+    selected = _selected_visual_indices(len(shots))
+    panels: list[dict[str, Any]] = []
+    reference_image: bytes | None = None
+    evidence_origin = "not_attempted"
+    for index, raw_shot in enumerate(shots):
+        shot = dict(raw_shot)
+        if not brief.ready_for_production:
+            panels.append(_missing_visual_panel(brief, shot, "held_for_clarification"))
+            continue
+        if provider is None:
+            panels.append(_missing_visual_panel(brief, shot, "renderer_not_configured"))
+            continue
+        if index not in selected:
+            panels.append(_missing_visual_panel(brief, shot, "panel_limit_reached"))
+            continue
+        try:
+            result = provider.create_panel(
+                storyboard_panel_prompt(brief, shot),
+                shot_id=str(shot["shot_id"]),
+                job_id=job_id,
+                reference_image=reference_image,
+            )
+            panel = _available_visual_panel(brief, shot, result)
+            origin = result.execution.get("evidence_origin")
+            if origin in {"injected_test_client", "live_google_provider_response"}:
+                evidence_origin = str(origin)
+            reference_image = result.image_bytes
+        except VisualPanelGenerationError as exc:
+            panel = _missing_visual_panel(brief, shot, exc.code)
+        except Exception:
+            panel = _missing_visual_panel(brief, shot, "generation_failed")
+        panels.append(panel)
+    available = sum(panel["status"] == "available" for panel in panels)
+    required = len(panels)
+    if not brief.ready_for_production:
+        status = "not_attempted"
+    elif available == required:
+        status = "complete"
+    elif available:
+        status = "partial"
+    else:
+        status = "unavailable"
+    if available == 0 and brief.ready_for_production:
+        evidence_origin = (
+            "renderer_not_configured" if provider is None else "no_surviving_provider_asset"
+        )
+    body: dict[str, Any] = {
+        "schema": VISUAL_STORYBOARD_SCHEMA,
+        "status": status,
+        "verification_scope": "technical_asset_integrity_only",
+        "required_panel_count": required,
+        "available_panel_count": available,
+        "missing_panel_count": required - available,
+        "representation": "inline_base64",
+        "renderer": {
+            "provider": "Vertex AI",
+            "framework": "google-genai",
+            "model": config.image_model,
+            "location": config.location,
+            "evidence_origin": evidence_origin,
+        },
+        "panels": panels,
+    }
+    body["manifest_sha256"] = sha256_json(body)
+    while len(canonical_json(body).encode("utf-8")) > MAX_VISUAL_STORYBOARD_BYTES:
+        replaced = False
+        for index in range(len(panels) - 1, -1, -1):
+            if panels[index]["status"] == "available":
+                panels[index] = _missing_visual_panel(
+                    brief, shots[index], "inline_budget_exhausted"
+                )
+                replaced = True
+                break
+        if not replaced:
+            raise BriefValidationError("visual storyboard exceeds its durable document budget")
+        available = sum(panel["status"] == "available" for panel in panels)
+        body.update(
+            {
+                "status": "partial" if available else "unavailable",
+                "available_panel_count": available,
+                "missing_panel_count": required - available,
+                "panels": panels,
+            }
+        )
+        body["manifest_sha256"] = sha256_json(
+            {key: value for key, value in body.items() if key != "manifest_sha256"}
+        )
+    validate_visual_storyboard(body, brief=brief, timeline=timeline)
+    return body
+
+
+def validate_visual_storyboard(
+    value: Any,
+    *,
+    brief: ProductionBrief,
+    timeline: Mapping[str, Any],
+) -> dict[str, Any]:
+    expected_fields = {
+        "schema",
+        "status",
+        "verification_scope",
+        "required_panel_count",
+        "available_panel_count",
+        "missing_panel_count",
+        "representation",
+        "renderer",
+        "panels",
+        "manifest_sha256",
+    }
+    if not isinstance(value, Mapping) or set(value) != expected_fields:
+        raise BriefValidationError("visual storyboard fields are incomplete or unsupported")
+    manifest = dict(value)
+    supplied_digest = manifest.pop("manifest_sha256")
+    if not isinstance(supplied_digest, str) or supplied_digest != sha256_json(manifest):
+        raise BriefValidationError("visual storyboard manifest digest is invalid")
+    shots = timeline.get("shots")
+    panels = value.get("panels")
+    if not isinstance(shots, list) or not isinstance(panels, list) or len(panels) != len(shots):
+        raise BriefValidationError("visual storyboard panel count does not match the timeline")
+    renderer = value.get("renderer")
+    if not isinstance(renderer, Mapping) or set(renderer) != {
+        "provider",
+        "framework",
+        "model",
+        "location",
+        "evidence_origin",
+    } or any(not isinstance(item, str) or not item for item in renderer.values()):
+        raise BriefValidationError("visual storyboard renderer evidence is invalid")
+    available = 0
+    for shot, panel in zip(shots, panels):
+        if not isinstance(shot, Mapping) or not isinstance(panel, Mapping) or set(panel) != {
+            "shot_id",
+            "status",
+            "alt_text",
+            "prompt_sha256",
+            "mime_type",
+            "width",
+            "height",
+            "byte_length",
+            "content_sha256",
+            "data_base64",
+            "missing_reason",
+        }:
+            raise BriefValidationError("visual storyboard panel fields are invalid")
+        if (
+            panel.get("shot_id") != shot.get("shot_id")
+            or panel.get("alt_text") != _visual_alt_text(brief, shot)
+            or panel.get("prompt_sha256") != _visual_prompt_digest(brief, shot)
+        ):
+            raise BriefValidationError("visual storyboard panel identity is invalid")
+        if panel.get("status") == "available":
+            try:
+                image = base64.b64decode(str(panel.get("data_base64")), validate=True)
+            except Exception as exc:
+                raise BriefValidationError("visual storyboard image encoding is invalid") from exc
+            if (
+                panel.get("mime_type") != "image/jpeg"
+                or panel.get("width") != 768
+                or panel.get("height") != 432
+                or panel.get("byte_length") != len(image)
+                or not 100 <= len(image) <= MAX_VISUAL_PANEL_BYTES
+                or panel.get("content_sha256") != hashlib.sha256(image).hexdigest()
+                or panel.get("missing_reason") is not None
+                or not image.startswith(b"\xff\xd8")
+                or not image.endswith(b"\xff\xd9")
+            ):
+                raise BriefValidationError("visual storyboard image asset is invalid")
+            available += 1
+        elif panel.get("status") == "missing":
+            if panel.get("missing_reason") not in _VISUAL_MISSING_REASONS or any(
+                panel.get(key) is not None
+                for key in {
+                    "mime_type",
+                    "width",
+                    "height",
+                    "byte_length",
+                    "content_sha256",
+                    "data_base64",
+                }
+            ):
+                raise BriefValidationError("visual storyboard missing-panel evidence is invalid")
+        else:
+            raise BriefValidationError("visual storyboard panel status is invalid")
+    required = len(shots)
+    expected_status = (
+        "not_attempted"
+        if not brief.ready_for_production
+        else "complete"
+        if available == required
+        else "partial"
+        if available
+        else "unavailable"
+    )
+    if (
+        value.get("schema") != VISUAL_STORYBOARD_SCHEMA
+        or value.get("verification_scope") != "technical_asset_integrity_only"
+        or value.get("representation") != "inline_base64"
+        or value.get("status") != expected_status
+        or value.get("required_panel_count") != required
+        or value.get("available_panel_count") != available
+        or value.get("missing_panel_count") != required - available
+        or len(canonical_json(value).encode("utf-8")) > MAX_VISUAL_STORYBOARD_BYTES
+    ):
+        raise BriefValidationError("visual storyboard summary is invalid")
+    return dict(value)
 
 
 class JobRepository(Protocol):
@@ -1047,6 +1461,7 @@ def public_job(record: Mapping[str, Any]) -> dict[str, Any]:
         "eta",
         "brief",
         "storyboard_package",
+        "visual_storyboard",
         "error",
         "dispatch",
         "execution",
@@ -1067,11 +1482,13 @@ class AllThingsJobService:
         repository: JobRepository,
         dispatcher: JobDispatcher | None = None,
         provider: BriefProvider | None = None,
+        visual_provider: VisualPanelProvider | None = None,
     ) -> None:
         self.config = config
         self.repository = repository
         self.dispatcher = dispatcher
         self.provider = provider
+        self.visual_provider = visual_provider
 
     @staticmethod
     def _message(value: Any) -> str:
@@ -1115,6 +1532,7 @@ class AllThingsJobService:
             "eta": eta_payload(self.repository.recent_success_durations(), progress=0),
             "brief": None,
             "storyboard_package": None,
+            "visual_storyboard": None,
             "error": None,
             "dispatch": None,
             "execution": None,
@@ -1176,6 +1594,7 @@ class AllThingsJobService:
                 "eta": eta_payload(durations, progress=0),
                 "brief": None,
                 "storyboard_package": None,
+                "visual_storyboard": None,
                 "error": None,
                 "dispatch": None,
                 "execution": None,
@@ -1356,6 +1775,35 @@ class AllThingsJobService:
                     )
                 )
             storyboard_package = build_storyboard_package(brief, timeline=timeline)
+            owned = self.repository.update_claimed(
+                job_id,
+                {
+                    "stage": "generating_visual_storyboard",
+                    "progress": 97,
+                    "updated_at": iso_now(),
+                    "eta": eta_payload(durations, progress=97),
+                },
+                attempt=attempt,
+                lease_token=lease_token,
+            )
+            if owned.get("lease_token") != lease_token:
+                return public_job(owned)
+            if owned.get("cancel_requested"):
+                return public_job(
+                    self._finish_cancelled(
+                        job_id,
+                        attempt=attempt,
+                        lease_token=lease_token,
+                        started_at=claimed.get("started_at"),
+                    )
+                )
+            visual_storyboard = build_visual_storyboard(
+                brief,
+                timeline,
+                provider=self.visual_provider,
+                config=self.config,
+                job_id=job_id,
+            )
         except Exception as exc:
             finished_at = utc_now()
             started_at = _parse_time(claimed.get("started_at"))
@@ -1376,6 +1824,7 @@ class AllThingsJobService:
                     },
                     "brief": None,
                     "storyboard_package": None,
+                    "visual_storyboard": None,
                     "execution": None,
                 },
                 attempt=attempt,
@@ -1410,6 +1859,7 @@ class AllThingsJobService:
                 },
                 "brief": brief.to_dict(),
                 "storyboard_package": storyboard_package,
+                "visual_storyboard": visual_storyboard,
                 "execution": {
                     **dict(result.execution),
                     "pipeline": {
@@ -1417,10 +1867,13 @@ class AllThingsJobService:
                             "gemini_structured_creative_plan",
                             "deterministic_storyboard_timeline_compile",
                             "deterministic_coverage_continuity_audit",
+                            "optional_gemini_visual_storyboard",
                         ],
                         "storyboard_package_schema": STORYBOARD_PACKAGE_SCHEMA,
                         "manifest_sha256": storyboard_package["manifest_sha256"],
                         "media_status": "unrendered_plan",
+                        "visual_storyboard_schema": VISUAL_STORYBOARD_SCHEMA,
+                        "visual_storyboard_status": visual_storyboard["status"],
                     },
                 },
                 "error": None,
@@ -1471,6 +1924,7 @@ def _cancelled_patch(*, started_at: Any, finished_at: datetime) -> dict[str, Any
         },
         "brief": None,
         "storyboard_package": None,
+        "visual_storyboard": None,
         "execution": None,
         "error": None,
     }
@@ -1506,21 +1960,32 @@ __all__ = [
     "STORYBOARD_AUDIT_SCHEMA",
     "STORYBOARD_FRAME_RATE",
     "MAX_STORYBOARD_PACKAGE_BYTES",
+    "MAX_VISUAL_PANEL_BYTES",
+    "MAX_VISUAL_PANEL_COUNT",
+    "MAX_VISUAL_STORYBOARD_BYTES",
     "STORYBOARD_PACKAGE_SCHEMA",
     "STORYBOARD_TIMELINE_SCHEMA",
+    "VISUAL_STORYBOARD_SCHEMA",
     "BriefProviderResult",
     "BriefValidationError",
     "ConfigurationError",
     "DEFAULT_GEMINI_MODEL",
+    "DEFAULT_IMAGE_MODEL",
     "JobLeaseBusyError",
     "JobNotFoundError",
     "JobState",
     "JobTransitionError",
     "ProductionBrief",
     "PRODUCTION_BRIEF_RESPONSE_SCHEMA",
+    "VisualPanelGenerationError",
+    "VisualPanelProvider",
+    "VisualPanelProviderResult",
     "audit_storyboard_package",
+    "build_visual_storyboard",
     "build_storyboard_package",
     "compile_storyboard_timeline",
     "public_job",
+    "storyboard_panel_prompt",
+    "validate_visual_storyboard",
     "validate_storyboard_package",
 ]

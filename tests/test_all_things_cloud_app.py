@@ -5,6 +5,7 @@ from threading import Thread
 import hashlib
 import json
 import unittest
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -120,6 +121,31 @@ def request_json(
 
 
 class AllThingsCloudAppTests(unittest.TestCase):
+    def test_worker_runtime_injects_configured_brief_and_visual_google_providers(self) -> None:
+        repository = object()
+        brief_provider = object()
+        visual_provider = object()
+        environment = {
+            "KIRA_ALL_THINGS_SERVICE_ROLE": "worker",
+            "GOOGLE_CLOUD_PROJECT": "video-studio-12345",
+            "GOOGLE_CLOUD_LOCATION": "global",
+            "KIRA_ALL_THINGS_GEMINI_MODEL": "gemini-3.5-flash",
+            "KIRA_ALL_THINGS_IMAGE_MODEL": "gemini-3.1-flash-image",
+        }
+        with (
+            patch("all_things_cloud_app.FirestoreJobRepository", return_value=repository),
+            patch("all_things_cloud_app.GoogleGenAIBriefProvider", return_value=brief_provider),
+            patch(
+                "all_things_cloud_app.GoogleGenAIVisualPanelProvider",
+                return_value=visual_provider,
+            ),
+        ):
+            runtime = Runtime(environment)
+        self.assertIs(runtime.service.provider, brief_provider)
+        self.assertIs(runtime.service.visual_provider, visual_provider)
+        self.assertEqual(runtime.config.image_model, "gemini-3.1-flash-image")
+        self.assertTrue(runtime.health()["visual_storyboard_configured"])
+
     def test_api_runtime_fails_closed_when_access_digest_is_missing_or_invalid(self) -> None:
         with self.assertRaises(ConfigurationError):
             Runtime({"KIRA_ALL_THINGS_SERVICE_ROLE": "api"})
@@ -177,7 +203,7 @@ class AllThingsCloudAppTests(unittest.TestCase):
             self.assertIn('type="password"', html)
             self.assertIn("/v1/jobs", html)
 
-            status, headers, health = request_json(running, "/healthz")
+            status, headers, health = request_json(running, "/health")
             self.assertEqual(status, HTTPStatus.OK)
             self.assertEqual(headers["Cache-Control"], "no-store")
             self.assertEqual(health["role"], "api")

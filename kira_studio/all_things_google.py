@@ -10,10 +10,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import io
 import json
 import math
+import random
+import re
 import threading
+import time
 from typing import Any, Mapping, Sequence
+import warnings
 
 from .all_things_agentic import (
     AdmissionLimitError,
@@ -27,6 +32,8 @@ from .all_things_agentic import (
     ProductionBrief,
     PRODUCTION_BRIEF_RESPONSE_SCHEMA,
     TERMINAL_STATES,
+    VisualPanelGenerationError,
+    VisualPanelProviderResult,
 )
 
 
@@ -67,6 +74,19 @@ def _vertex_response_schema(value: Any) -> Any:
 VERTEX_PRODUCTION_BRIEF_RESPONSE_SCHEMA: dict[str, Any] = _vertex_response_schema(
     PRODUCTION_BRIEF_RESPONSE_SCHEMA
 )
+
+
+_VISUAL_PANEL_WIDTH = 768
+_VISUAL_PANEL_HEIGHT = 432
+_MAX_VISUAL_PANEL_BYTES = 45_000
+_MAX_PROVIDER_IMAGE_BYTES = 12 * 1024 * 1024
+_MAX_PROVIDER_IMAGE_PIXELS = 24_000_000
+_MAX_VISUAL_ATTEMPTS = 3
+_VISUAL_RETRY_BASE_SECONDS = 0.5
+_VISUAL_RETRY_MAX_SECONDS = 2.0
+_SAFE_EVIDENCE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/=-]{0,159}")
+_SAFE_SHOT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+_SAFE_JOB_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 
 
 class GoogleDependencyError(ConfigurationError):
@@ -160,6 +180,297 @@ class GoogleGenAIBriefProvider:
             "job_id": job_id,
         }
         return BriefProviderResult(brief=brief, execution=execution)
+
+
+def _provider_status(exc: Exception) -> tuple[int | None, str]:
+    """Extract a bounded status signal without retaining provider error text."""
+
+    values: list[Any] = []
+    for attribute in ("status_code", "code"):
+        value = getattr(exc, attribute, None)
+        if callable(value):
+            try:
+                value = value()
+            except Exception:
+                value = None
+        values.append(value)
+    response = getattr(exc, "response", None)
+    values.append(getattr(response, "status_code", None))
+
+    for value in values:
+        if isinstance(value, bool) or value is None:
+            continue
+        if isinstance(value, int):
+            return value, ""
+        nested = getattr(value, "value", None)
+        if isinstance(nested, int) and not isinstance(nested, bool):
+            return nested, str(getattr(value, "name", ""))[:64].upper()
+        name = getattr(value, "name", None)
+        if isinstance(name, str):
+            return None, name[:64].upper()
+    return None, type(exc).__name__[:64].upper()
+
+
+def _retryable_visual_error(exc: Exception) -> tuple[bool, bool]:
+    """Return ``(retryable, rate_limited)`` for HTTP 429/retryable 5xx only."""
+
+    status, name = _provider_status(exc)
+    if status == 429:
+        return True, True
+    if status is not None and 500 <= status <= 599:
+        return True, False
+
+    rate_names = {"RESOURCE_EXHAUSTED", "TOOMANYREQUESTS", "TOO_MANY_REQUESTS"}
+    retryable_names = {
+        "BADGATEWAY",
+        "BAD_GATEWAY",
+        "DEADLINEEXCEEDED",
+        "DEADLINE_EXCEEDED",
+        "GATEWAYTIMEOUT",
+        "GATEWAY_TIMEOUT",
+        "INTERNAL",
+        "INTERNALSERVERERROR",
+        "INTERNAL_SERVER_ERROR",
+        "SERVICEUNAVAILABLE",
+        "SERVICE_UNAVAILABLE",
+        "UNAVAILABLE",
+    }
+    if name in rate_names:
+        return True, True
+    if name in retryable_names:
+        return True, False
+    return False, False
+
+
+def _safe_response_id(response: Any) -> str | None:
+    value = getattr(response, "response_id", None)
+    if not isinstance(value, str) or _SAFE_EVIDENCE_ID.fullmatch(value) is None:
+        return None
+    return value
+
+
+def _extract_provider_image(response: Any) -> bytes:
+    candidates = getattr(response, "candidates", None)
+    if not isinstance(candidates, Sequence) or isinstance(candidates, (str, bytes)):
+        raise VisualPanelGenerationError("provider_blocked")
+    for candidate in candidates:
+        content = getattr(candidate, "content", None)
+        parts = getattr(content, "parts", None)
+        if not isinstance(parts, Sequence) or isinstance(parts, (str, bytes)):
+            continue
+        for part in parts:
+            if getattr(part, "thought", False):
+                continue
+            inline_data = getattr(part, "inline_data", None)
+            data = getattr(inline_data, "data", None)
+            mime_type = getattr(inline_data, "mime_type", None)
+            if not isinstance(mime_type, str) or not mime_type.casefold().startswith("image/"):
+                continue
+            if isinstance(data, memoryview):
+                data = data.tobytes()
+            if isinstance(data, bytearray):
+                data = bytes(data)
+            if not isinstance(data, bytes) or not data:
+                continue
+            if len(data) > _MAX_PROVIDER_IMAGE_BYTES:
+                raise VisualPanelGenerationError("invalid_provider_asset")
+            return data
+    raise VisualPanelGenerationError("provider_blocked")
+
+
+def _normalise_visual_panel(data: bytes) -> bytes:
+    """Return one deterministic, metadata-free, bounded 16:9 JPEG panel."""
+
+    try:
+        from PIL import Image, ImageOps  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise GoogleDependencyError(
+            "Pillow is not installed in the All Things worker image"
+        ) from exc
+
+    if not data or len(data) > _MAX_PROVIDER_IMAGE_BYTES:
+        raise VisualPanelGenerationError("invalid_provider_asset")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(data)) as source:
+                frame_count = getattr(source, "n_frames", 1)
+                if (
+                    isinstance(frame_count, bool)
+                    or not isinstance(frame_count, int)
+                    or frame_count != 1
+                    or bool(getattr(source, "is_animated", False))
+                ):
+                    raise VisualPanelGenerationError("invalid_provider_asset")
+                width, height = source.size
+                if (
+                    isinstance(width, bool)
+                    or isinstance(height, bool)
+                    or not isinstance(width, int)
+                    or not isinstance(height, int)
+                    or width < 1
+                    or height < 1
+                    or width * height > _MAX_PROVIDER_IMAGE_PIXELS
+                ):
+                    raise VisualPanelGenerationError("invalid_provider_asset")
+                source.load()
+                oriented = ImageOps.exif_transpose(source)
+                rgb = oriented.convert("RGB")
+                panel = ImageOps.fit(
+                    rgb,
+                    (_VISUAL_PANEL_WIDTH, _VISUAL_PANEL_HEIGHT),
+                    method=Image.Resampling.LANCZOS,
+                    centering=(0.5, 0.5),
+                )
+    except VisualPanelGenerationError:
+        raise
+    except Exception:
+        raise VisualPanelGenerationError("invalid_provider_asset") from None
+
+    for quality in range(88, 15, -4):
+        output = io.BytesIO()
+        panel.save(
+            output,
+            format="JPEG",
+            quality=quality,
+            optimize=True,
+            progressive=False,
+            subsampling="4:2:0",
+        )
+        encoded = output.getvalue()
+        if len(encoded) <= _MAX_VISUAL_PANEL_BYTES:
+            return encoded
+    raise VisualPanelGenerationError("invalid_provider_asset")
+
+
+class GoogleGenAIVisualPanelProvider:
+    """Generate one bounded storyboard panel with Gemini image on Vertex AI."""
+
+    def __init__(self, config: AllThingsConfig, *, client: Any | None = None) -> None:
+        config.assert_valid(require_dispatch=False)
+        self.config = config
+        self._client_injected = client is not None
+        self._client = client
+
+    def _client_or_create(self) -> Any:
+        if self._client is not None:
+            return self._client
+        try:
+            from google import genai  # type: ignore[import-not-found]
+            from google.genai import types  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise GoogleDependencyError(
+                "google-genai is not installed in the All Things worker image"
+            ) from exc
+        self._client = genai.Client(
+            vertexai=True,
+            project=self.config.project,
+            location=self.config.location,
+            http_options=types.HttpOptions(api_version="v1"),
+        )
+        return self._client
+
+    def create_panel(
+        self,
+        prompt: str,
+        *,
+        shot_id: str,
+        job_id: str,
+        reference_image: bytes | None = None,
+    ) -> VisualPanelProviderResult:
+        if (
+            not isinstance(prompt, str)
+            or not prompt.strip()
+            or len(prompt) > 8_000
+            or not isinstance(shot_id, str)
+            or _SAFE_SHOT_ID.fullmatch(shot_id) is None
+            or not isinstance(job_id, str)
+            or _SAFE_JOB_ID.fullmatch(job_id) is None
+        ):
+            raise VisualPanelGenerationError("generation_failed")
+
+        try:
+            from google.genai import types  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise GoogleDependencyError(
+                "google-genai is not installed in the All Things worker image"
+            ) from exc
+
+        contents: Any = prompt.strip()
+        if (
+            isinstance(reference_image, bytes)
+            and 0 < len(reference_image) <= _MAX_PROVIDER_IMAGE_BYTES
+        ):
+            try:
+                reference_part = types.Part.from_bytes(
+                    data=reference_image,
+                    mime_type="image/jpeg",
+                )
+                contents = [reference_part, prompt.strip()]
+            except Exception:
+                # Continuity reference is optional. A bad local reference never
+                # turns into provider text or prevents a fresh safe generation.
+                contents = prompt.strip()
+
+        request_config = types.GenerateContentConfig(
+            response_modalities=["TEXT", "IMAGE"],
+            image_config=types.ImageConfig(
+                aspect_ratio="16:9",
+                image_size="1K",
+            ),
+        )
+        client = self._client_or_create()
+        response: Any | None = None
+        final_rate_limited = False
+        for attempt in range(_MAX_VISUAL_ATTEMPTS):
+            try:
+                response = client.models.generate_content(
+                    model=self.config.image_model,
+                    contents=contents,
+                    config=request_config,
+                )
+                break
+            except Exception as exc:
+                retryable, rate_limited = _retryable_visual_error(exc)
+                final_rate_limited = rate_limited
+                if not retryable or attempt + 1 >= _MAX_VISUAL_ATTEMPTS:
+                    raise VisualPanelGenerationError(
+                        "quota_or_rate_limited" if rate_limited else "generation_failed"
+                    ) from None
+                base = min(
+                    _VISUAL_RETRY_MAX_SECONDS,
+                    _VISUAL_RETRY_BASE_SECONDS * (2**attempt),
+                )
+                time.sleep(base + random.uniform(0.0, base * 0.25))
+        if response is None:
+            raise VisualPanelGenerationError(
+                "quota_or_rate_limited" if final_rate_limited else "generation_failed"
+            )
+
+        encoded = _normalise_visual_panel(_extract_provider_image(response))
+        execution = {
+            "provider": "Vertex AI",
+            "framework": "google-genai",
+            "api_version": "v1",
+            "model": self.config.image_model,
+            "project": self.config.project,
+            "location": self.config.location,
+            "evidence_origin": (
+                "injected_test_client"
+                if self._client_injected
+                else "live_google_provider_response"
+            ),
+            "response_id": _safe_response_id(response),
+            "shot_id": shot_id,
+            "job_id": job_id,
+        }
+        return VisualPanelProviderResult(
+            image_bytes=encoded,
+            mime_type="image/jpeg",
+            width=_VISUAL_PANEL_WIDTH,
+            height=_VISUAL_PANEL_HEIGHT,
+            execution=execution,
+        )
 
 
 class FirestoreJobRepository:
@@ -609,4 +920,5 @@ __all__ = [
     "FirestoreJobRepository",
     "GoogleDependencyError",
     "GoogleGenAIBriefProvider",
+    "GoogleGenAIVisualPanelProvider",
 ]

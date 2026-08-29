@@ -120,7 +120,7 @@ test("short clarification answers compose complete one-field context across repe
     "conversationFeed", "conversationContext", "timelineTrack", "timelineRuler",
     "timelineStatus", "timelineEmpty", "timelineTimecode", "timelinePlayhead",
     "timelineSelection", "timelineFirst", "timelinePrevious", "timelineNext", "timelineLast",
-    "downloadPackage", "downloadStoryboardSheet",
+    "downloadPackage", "downloadVisualStoryboard", "printVisualStoryboard", "downloadDetailedSheet",
   ];
   const elements = new Map(ids.map(id => [id, new FakeElement(id)]));
   elements.get("access").value = "private-judge-code";
@@ -208,14 +208,14 @@ test("short clarification answers compose complete one-field context across repe
 });
 
 
-test("storyboard HTML download is self-contained escaped plan-only output with no access data", async () => {
+test("visual and detailed HTML downloads stay separate, escaped, scriptless, and printable", async () => {
   const ids = [
     "access", "message", "submit", "cancel", "retry", "error", "state", "stage",
     "progress", "progressBar", "bar", "eta", "job", "brief", "monitor",
     "conversationFeed", "conversationContext", "timelineTrack", "timelineRuler",
     "timelineStatus", "timelineEmpty", "timelineTimecode", "timelinePlayhead",
     "timelineSelection", "timelineFirst", "timelinePrevious", "timelineNext", "timelineLast",
-    "downloadPackage", "downloadStoryboardSheet",
+    "downloadPackage", "downloadVisualStoryboard", "printVisualStoryboard", "downloadDetailedSheet",
   ];
   const elements = new Map(ids.map(id => [id, new FakeElement(id)]));
   elements.get("access").value = "private-judge-code";
@@ -255,7 +255,7 @@ test("storyboard HTML download is self-contained escaped plan-only output with n
       secret: "nested-secret-that-must-not-export",
     },
     timeline: {
-      shot_count: 1,
+      shot_count: 2,
       timecode_basis: "planned_non_drop_24fps",
       frame_rate: 24,
       start_timecode: "00:00:00:00",
@@ -266,8 +266,8 @@ test("storyboard HTML download is self-contained escaped plan-only output with n
         scene_number: 1,
         role: "primary_coverage",
         planned_in_timecode: "00:00:00:00",
-        planned_out_timecode: "00:00:12:00",
-        planned_duration_seconds: 12,
+        planned_out_timecode: "00:00:06:00",
+        planned_duration_seconds: 6,
         storyboard_card: {
           framing: "Medium <two-shot>",
           camera: "Locked & level",
@@ -276,6 +276,23 @@ test("storyboard HTML download is self-contained escaped plan-only output with n
           continuity_requirements: ["Match <wardrobe> & props."],
           source_footage_guidance: "Use verified <source> only.",
           bridge_shot_guidance: "Flag <missing> coverage.",
+        },
+      }, {
+        shot_id: "SC01-SH02",
+        sequence: 2,
+        scene_number: 1,
+        role: "reaction_coverage",
+        planned_in_timecode: "00:00:06:00",
+        planned_out_timecode: "00:00:12:00",
+        planned_duration_seconds: 6,
+        storyboard_card: {
+          framing: "Close reaction",
+          camera: "Locked & level",
+          action: "Alex listens before answering.",
+          dialogue_or_audio: "Hold room tone.",
+          continuity_requirements: ["Match eyeline."],
+          source_footage_guidance: "Use verified reaction coverage.",
+          bridge_shot_guidance: "Flag a missing reaction.",
         },
       }],
     },
@@ -288,10 +305,53 @@ test("storyboard HTML download is self-contained escaped plan-only output with n
       hold_reasons: [],
     },
   };
+  const visualStoryboard = {
+    schema: "video-studio.visual-storyboard/v1",
+    status: "partial",
+    verification_scope: "technical_asset_integrity_only",
+    required_panel_count: 2,
+    available_panel_count: 1,
+    missing_panel_count: 1,
+    representation: "inline_base64",
+    renderer: {
+      provider: "google_vertex_ai",
+      framework: "google_genai",
+      model: "gemini-image-test",
+      location: "global",
+      evidence_origin: "provider_response",
+    },
+    panels: [{
+      shot_id: "SC01-SH01",
+      status: "available",
+      alt_text: "Alex <Lead> repairs the engine; no <script> is trusted.",
+      prompt_sha256: "1".repeat(64),
+      mime_type: "image/jpeg",
+      width: 768,
+      height: 432,
+      byte_length: 4,
+      content_sha256: "2".repeat(64),
+      data_base64: "/9j/2Q==",
+      missing_reason: null,
+    }, {
+      shot_id: "SC01-SH02",
+      status: "missing",
+      alt_text: "Reaction planning panel pending.",
+      prompt_sha256: "3".repeat(64),
+      mime_type: null,
+      width: null,
+      height: null,
+      byte_length: null,
+      content_sha256: null,
+      data_base64: null,
+      missing_reason: "provider_blocked",
+    }],
+    secret: "visual-secret-that-must-not-export",
+  };
   const queued = job("sheet-job");
   const completed = {
     ...job("sheet-job", {questions: [], ready: true}),
     storyboard_package: storyboardPackage,
+    visual_storyboard: visualStoryboard,
   };
   async function fetchObject(url) {
     const payload = url === "/v1/jobs" ? queued : completed;
@@ -306,6 +366,18 @@ test("storyboard HTML download is self-contained escaped plan-only output with n
     createObjectURL(blob) { return `blob:storyboard-${blobs.indexOf(blob) + 1}`; },
     revokeObjectURL(url) { revoked.push(url); },
   };
+  let printedSheet = "";
+  let printCount = 0;
+  const printWindow = {
+    opener: "source-window",
+    document: {
+      open() {},
+      write(value) { printedSheet = value; },
+      close() {},
+    },
+    focus() {},
+    print() { printCount += 1; },
+  };
 
   const html = fs.readFileSync(path.join(__dirname, "..", "web", "all-things-agentic.html"), "utf8");
   const script = html.match(/<script>\s*([\s\S]*?)\s*<\/script>/)[1];
@@ -317,36 +389,58 @@ test("storyboard HTML download is self-contained escaped plan-only output with n
     document: documentObject,
     fetch: fetchObject,
     setTimeout(callback) { Promise.resolve().then(callback); return 1; },
+    window: {open() { return printWindow; }},
   }, {filename: "all-things-agentic.html"});
 
   elements.get("message").value = "Build the safe storyboard sheet.";
   await elements.get("submit").listeners.get("click")();
   await settle();
-  elements.get("downloadStoryboardSheet").click();
+  elements.get("downloadDetailedSheet").click();
+  elements.get("downloadVisualStoryboard").click();
+  elements.get("printVisualStoryboard").click();
   await settle();
 
-  assert.equal(blobs.length, 1);
+  assert.equal(blobs.length, 2);
   assert.equal(blobs[0].type, "text/html;charset=utf-8");
-  const sheet = blobs[0].parts.join("");
-  assert.match(sheet, /^<!doctype html>/);
-  assert.match(sheet, /Content-Security-Policy/);
-  assert.match(sheet, /default-src 'none'/);
-  assert.match(sheet, /PLAN ONLY · NO RENDERED MEDIA/);
-  assert.match(sheet, /A &lt;Director&gt; &amp; &quot;Friend&quot;/);
-  assert.match(sheet, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
-  assert.match(sheet, /Medium &lt;two-shot&gt;/);
-  assert.match(sheet, /Protect dialogue &lt;clearly&gt;/);
-  assert.match(sheet, /Match &lt;wardrobe&gt; &amp; props\./);
-  assert.match(sheet, /Use verified &lt;source&gt; only\./);
-  assert.match(sheet, /Flag &lt;missing&gt; coverage\./);
-  assert.match(sheet, /No &lt;img src=x onerror=alert\(3\)&gt; gaps\./);
-  assert.doesNotMatch(sheet, /<script\b/i);
-  assert.doesNotMatch(sheet, /<img\b/i);
-  assert.doesNotMatch(sheet, /private-judge-code|package-secret|top-level-secret|nested-secret/);
-  assert.doesNotMatch(sheet, /https?:\/\//i);
-  assert.equal(appended.length, 1);
-  assert.equal(appended[0].download, "a-director-friend-storyboard-sheet.html");
+  assert.equal(blobs[1].type, "text/html;charset=utf-8");
+  const detailed = blobs[0].parts.join("");
+  const visual = blobs[1].parts.join("");
+  assert.match(detailed, /^<!doctype html>/);
+  assert.match(detailed, /Content-Security-Policy/);
+  assert.match(detailed, /default-src 'none'/);
+  assert.match(detailed, /PLAN ONLY · NO RENDERED MEDIA/);
+  assert.match(detailed, /Target Final Deliverables — not generated by this plan-only build\./);
+  assert.match(detailed, /A &lt;Director&gt; &amp; &quot;Friend&quot;/);
+  assert.match(detailed, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.match(detailed, /Medium &lt;two-shot&gt;/);
+  assert.match(detailed, /Protect dialogue &lt;clearly&gt;/);
+  assert.match(detailed, /Match &lt;wardrobe&gt; &amp; props\./);
+  assert.match(detailed, /Use verified &lt;source&gt; only\./);
+  assert.match(detailed, /Flag &lt;missing&gt; coverage\./);
+  assert.match(detailed, /No &lt;img src=x onerror=alert\(3\)&gt; gaps\./);
+  assert.doesNotMatch(detailed, /<script\b|<img\b/i);
+  assert.match(visual, /^<!doctype html>/);
+  assert.match(visual, /img-src data:/);
+  assert.match(visual, /PLAN ONLY · GENERATED PLANNING ILLUSTRATIONS/);
+  assert.match(visual, /Human visual review required/);
+  assert.match(visual, /<img src="data:image\/jpeg;base64,\/9j\/2Q=="/);
+  assert.match(visual, /Alex &lt;Lead&gt; repairs the engine; no &lt;script&gt; is trusted\./);
+  assert.match(visual, /Repair &lt;engine&gt; together\./);
+  assert.match(visual, /Visual pending/);
+  assert.match(visual, /provider blocked/);
+  assert.match(visual, /Page 1 of 1/);
+  assert.doesNotMatch(visual, /<script\b/i);
+  assert.doesNotMatch(detailed + visual, /private-judge-code|package-secret|top-level-secret|nested-secret|visual-secret/);
+  assert.doesNotMatch(detailed + visual, /https?:\/\//i);
+  assert.equal(appended.length, 2);
+  assert.equal(appended[0].download, "a-director-friend-detailed-production-sheet.html");
+  assert.equal(appended[1].download, "a-director-friend-visual-storyboard.html");
   assert.equal(appended[0].clickCount, 1);
+  assert.equal(appended[1].clickCount, 1);
   assert.equal(appended[0].removed, true);
-  assert.deepEqual(revoked, ["blob:storyboard-1"]);
+  assert.equal(appended[1].removed, true);
+  assert.deepEqual(revoked, ["blob:storyboard-1", "blob:storyboard-2"]);
+  assert.equal(printWindow.opener, null);
+  assert.equal(printCount, 1);
+  assert.equal(printedSheet, visual);
 });

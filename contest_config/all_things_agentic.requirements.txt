@@ -3,3 +3,4 @@
 google-genai==2.20.0
 google-cloud-firestore==2.29.0
 google-cloud-tasks==2.24.0
+Pillow==12.3.0

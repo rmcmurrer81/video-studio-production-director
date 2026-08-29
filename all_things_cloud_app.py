@@ -31,6 +31,7 @@ from kira_studio.all_things_google import (
     CloudTasksDispatcher,
     FirestoreJobRepository,
     GoogleGenAIBriefProvider,
+    GoogleGenAIVisualPanelProvider,
 )
 
 
@@ -65,6 +66,9 @@ class Runtime:
             repository=repository,
             dispatcher=CloudTasksDispatcher(config) if role == "api" else None,
             provider=GoogleGenAIBriefProvider(config) if role == "worker" else None,
+            visual_provider=(
+                GoogleGenAIVisualPanelProvider(config) if role == "worker" else None
+            ),
         )
 
     def health(self) -> dict[str, Any]:
@@ -75,6 +79,7 @@ class Runtime:
             "target": self.config.safe_dict(),
             "demo_access_required": self.role == "api",
             "live_provider_call_proven": False,
+            "visual_storyboard_configured": self.role == "worker",
             "note": "Health verifies configuration only; completed jobs carry live provider evidence.",
         }
 
@@ -190,7 +195,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         try:
-            if self.path == "/healthz":
+            if self.path == "/health":
                 self._json(HTTPStatus.OK, self.runtime.health())
                 return
             if self.path == "/" and self.runtime.role == "api":

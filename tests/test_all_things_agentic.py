@@ -22,11 +22,15 @@ from kira_studio.all_things_agentic import (
     ProductionBrief,
     STORYBOARD_FRAME_RATE,
     STORYBOARD_PACKAGE_SCHEMA,
+    VisualPanelGenerationError,
+    VisualPanelProviderResult,
     audit_storyboard_package,
     build_storyboard_package,
+    build_visual_storyboard,
     compile_storyboard_timeline,
     eta_payload,
     validate_storyboard_package,
+    validate_visual_storyboard,
 )
 from kira_studio.all_things_google import (
     CloudTasksDispatcher,
@@ -322,6 +326,32 @@ class StaticProvider:
         )
 
 
+class StaticVisualProvider:
+    def __init__(self, *, error_code: str | None = None) -> None:
+        self.error_code = error_code
+        self.calls: list[tuple[str, str, str, bool]] = []
+        self.image = b"\xff\xd8" + (b"visual-storyboard" * 20) + b"\xff\xd9"
+
+    def create_panel(
+        self,
+        prompt: str,
+        *,
+        shot_id: str,
+        job_id: str,
+        reference_image: bytes | None = None,
+    ) -> VisualPanelProviderResult:
+        self.calls.append((prompt, shot_id, job_id, reference_image is not None))
+        if self.error_code:
+            raise VisualPanelGenerationError(self.error_code)
+        return VisualPanelProviderResult(
+            image_bytes=self.image,
+            mime_type="image/jpeg",
+            width=768,
+            height=432,
+            execution={"evidence_origin": "injected_test_client"},
+        )
+
+
 class FakeModels:
     def __init__(self) -> None:
         self.get_calls: list[str] = []
@@ -366,7 +396,96 @@ class AllThingsAgenticTests(unittest.TestCase):
         with self.assertRaises(ConfigurationError):
             valid_config(model="future-model").assert_valid()
         with self.assertRaises(ConfigurationError):
+            valid_config(image_model="imagen-4").assert_valid()
+        with self.assertRaises(ConfigurationError):
             valid_config(project="", worker_url="http://localhost:8080").assert_valid()
+
+    def test_visual_storyboard_is_bounded_ordered_and_cryptographically_validated(self) -> None:
+        brief = ProductionBrief.from_mapping(brief_mapping())
+        timeline = compile_storyboard_timeline(brief)
+        provider = StaticVisualProvider()
+        first = build_visual_storyboard(
+            brief,
+            timeline,
+            provider=provider,
+            config=valid_config(),
+            job_id="job-visual",
+        )
+        second = build_visual_storyboard(
+            brief,
+            timeline,
+            provider=StaticVisualProvider(),
+            config=valid_config(),
+            job_id="job-visual",
+        )
+        self.assertEqual(first, second)
+        self.assertEqual(first["status"], "complete")
+        self.assertEqual(first["available_panel_count"], 3)
+        self.assertTrue(provider.calls[1][3])
+        self.assertEqual(
+            validate_visual_storyboard(first, brief=brief, timeline=timeline),
+            first,
+        )
+
+        tampered = deepcopy(first)
+        tampered["panels"][0]["data_base64"] = tampered["panels"][1]["data_base64"][:-4] + "AAAA"
+        from kira_studio.all_things_agentic import sha256_json
+
+        body = {key: value for key, value in tampered.items() if key != "manifest_sha256"}
+        tampered["manifest_sha256"] = sha256_json(body)
+        with self.assertRaises(BriefValidationError):
+            validate_visual_storyboard(tampered, brief=brief, timeline=timeline)
+
+    def test_visual_storyboard_failures_are_truthful_nonfatal_and_large_plans_are_previewed(self) -> None:
+        brief = ProductionBrief.from_mapping(brief_mapping())
+        timeline = compile_storyboard_timeline(brief)
+        unavailable = build_visual_storyboard(
+            brief,
+            timeline,
+            provider=StaticVisualProvider(error_code="quota_or_rate_limited"),
+            config=valid_config(),
+            job_id="job-quota",
+        )
+        self.assertEqual(unavailable["status"], "unavailable")
+        self.assertTrue(
+            all(
+                panel["missing_reason"] == "quota_or_rate_limited"
+                for panel in unavailable["panels"]
+            )
+        )
+
+        held_brief = ProductionBrief.from_mapping(brief_mapping(ready=False))
+        held_provider = StaticVisualProvider()
+        held = build_visual_storyboard(
+            held_brief,
+            compile_storyboard_timeline(held_brief),
+            provider=held_provider,
+            config=valid_config(),
+            job_id="job-held",
+        )
+        self.assertEqual(held["status"], "not_attempted")
+        self.assertEqual(held_provider.calls, [])
+
+        expanded = brief_mapping()
+        expanded["scenes"] = [
+            {
+                **deepcopy(expanded["scenes"][0]),
+                "number": number,
+                "purpose": f"Decision beat {number} advances the friends' departure plan.",
+            }
+            for number in range(1, 4)
+        ]
+        expanded_brief = ProductionBrief.from_mapping(expanded)
+        preview = build_visual_storyboard(
+            expanded_brief,
+            compile_storyboard_timeline(expanded_brief),
+            provider=StaticVisualProvider(),
+            config=valid_config(),
+            job_id="job-preview",
+        )
+        self.assertEqual(preview["status"], "partial")
+        self.assertEqual(preview["available_panel_count"], 6)
+        self.assertEqual(preview["missing_panel_count"], 3)
 
     def test_production_brief_is_exact_and_holds_on_unanswered_questions(self) -> None:
         ready = ProductionBrief.from_mapping(brief_mapping())

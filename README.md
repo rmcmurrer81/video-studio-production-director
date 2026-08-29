@@ -1,14 +1,14 @@
 # Video Studio Production Director
 
-Video Studio Production Director is a focused All Things Agentic submission that turns a natural-language creative request into a validated creative brief and a deterministic, audited storyboard/edit-decision package. The Google Cloud design uses a public Cloud Run API, Firestore-backed job state, an OIDC-authenticated Cloud Tasks handoff, a private Cloud Run worker, and Vertex AI through the official Google Gen AI SDK.
+Video Studio Production Director is a focused All Things Agentic submission that turns a natural-language creative request into a validated creative brief, a deterministic audited storyboard/edit-decision package, and a bounded visual-storyboard review sheet. The Google Cloud design uses a public Cloud Run API, Firestore-backed job state, an OIDC-authenticated Cloud Tasks handoff, a private Cloud Run worker, and Vertex AI through the official Google Gen AI SDK.
 
-The downloadable JSON package contains ordered storyboard cards, contiguous planned 24-fps timecodes, framing, camera, action, dialogue/audio, continuity, and source/bridge guidance. It is explicitly marked `media_status = unrendered_plan` and `plan_only = true`: it does not claim that footage was found, media was edited, or a movie was rendered.
+The downloadable JSON package contains ordered storyboard cards, contiguous planned 24-fps timecodes, framing, camera, scene-specific action, dialogue/audio, continuity, and source/bridge guidance. When Gemini image generation is available, a separate cryptographically checked sidecar supplies studio-style planning illustrations; unavailable panels remain visibly marked instead of being fabricated. Separate scriptless HTML exports provide a visual board and a detailed production sheet, and the visual board can be printed or saved as PDF. The package remains explicitly marked `media_status = unrendered_plan` and `plan_only = true`: storyboard stills are planning art, not source footage, an applied edit, or a rendered movie.
 
 ## Evidence status
 
 As of August 28, 2026, the repository has local contract tests and injected test-double coverage only. It does **not** contain proof of a live Vertex AI call, Firestore transaction, Cloud Tasks execution, Cloud Run revision, or public demo deployment.
 
-`GET /healthz` proves configuration parsing only. A provider call is live evidence only when a completed durable job records `execution.evidence_origin = live_google_provider_response` together with the matching provider metadata. Do not describe local test results as cloud execution proof.
+`GET /health` proves configuration parsing only. A provider call is live evidence only when a completed durable job records `execution.evidence_origin = live_google_provider_response` together with the matching provider metadata. Do not describe local test results as cloud execution proof. The route intentionally avoids Cloud Run paths ending in `z`, which Google reserves in some deployments.
 
 ## Run the focused checks
 
@@ -20,11 +20,11 @@ py -B -m py_compile kira_studio/all_things_agentic.py kira_studio/all_things_goo
 node --test tests/test_all_things_agentic_ui.js
 ```
 
-The suites cover deterministic package compilation/auditing, the brief schema and fenced job state machine, admission control, Google adapter request contracts with injected clients, Cloud Tasks OIDC binding, HTTP routes and access-code behavior, clarification follow-ups, package download behavior, and the self-contained browser UI. They do not contact Google Cloud. The JavaScript check requires a current Node.js runtime.
+The suites cover deterministic package compilation/auditing, visual-sidecar integrity and failure fallbacks, Gemini image normalization, the brief schema and fenced job state machine, admission control, Google adapter request contracts with injected clients, Cloud Tasks OIDC binding, HTTP routes and access-code behavior, clarification follow-ups, all three downloads, print behavior, and the self-contained browser UI. They do not contact Google Cloud. The JavaScript check requires a current Node.js runtime.
 
 ## Container build
 
-The same image is deployed twice with `KIRA_ALL_THINGS_SERVICE_ROLE=api` or `worker`. The Dockerfile pins Python 3.12.11 slim-bookworm by digest, and the three direct Google SDK dependencies are pinned exactly.
+The same image is deployed twice with `KIRA_ALL_THINGS_SERVICE_ROLE=api` or `worker`. The Dockerfile pins Python 3.12.11 slim-bookworm by digest; the Google SDKs and Pillow image normalizer are pinned exactly.
 
 Local Docker build:
 

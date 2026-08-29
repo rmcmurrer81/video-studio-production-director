@@ -25,12 +25,12 @@ This checklist separates local readiness from evidence that can exist only after
   node --test tests/test_all_things_agentic_ui.js
   ```
 
-- [ ] Confirm the three direct Google SDK versions and Python base image digest match the reviewed pins.
+- [ ] Confirm the three direct Google SDK versions, Pillow version, and Python base image digest match the reviewed pins.
 - [ ] Build the container from a clean checkout (local Docker or `cloudbuild.yaml`) and record resolved transitive package versions plus the immutable image digest.
 
 ## Live Google Cloud proof
 
-Do not check these boxes based on mocks, configuration text, `/healthz`, or deployment commands alone.
+Do not check these boxes based on mocks, configuration text, `/health`, or deployment commands alone.
 
 - [ ] Owner confirms an active billing account is attached to the intended project and creates a budget alert.
 - [ ] Required APIs, Firestore Native mode, Artifact Registry, Cloud Tasks queue, and three least-privilege service accounts exist.
@@ -52,8 +52,8 @@ Do not check these boxes based on mocks, configuration text, `/healthz`, or depl
 - [ ] Start with the product problem and the one-sentence architecture, then show the live URL.
 - [ ] Enter the owner-provided access code without exposing it in the recording, logs, source, or submission text.
 - [ ] Submit a specific creative request and show job ID, stage, progress, application attempt, and the honestly unavailable first-run ETA.
-- [ ] Show the final title, summary, ordered storyboard cards, planned in/out timecodes, framing/camera/action/audio direction, deterministic audit, manifest digest, and live execution metadata.
-- [ ] Download the package JSON and call it an unrendered storyboard/edit-decision plan—not a video, applied edit, or located source footage.
+- [ ] Show the final title, summary, generated planning illustrations or explicit pending frames, ordered detailed cards, planned in/out timecodes, framing/camera/action/audio direction, deterministic audit, both manifest digests, and live execution metadata.
+- [ ] Download the package JSON, visual storyboard HTML, and detailed production sheet; demonstrate Print / Save PDF. Call them planning artifacts—not a video, applied edit, or located source footage.
 - [ ] Show one clarification round, then cancel/retry behavior if time permits.
 - [ ] Keep claims narrow: the system produces a structured production brief, not a rendered movie.
 - [ ] Remove or blur unrelated account, billing, email, project, tab, and notification details from screenshots and video.
