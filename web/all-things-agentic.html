@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#0a0b10">
   <meta name="application-name" content="Video Studio Storyboard Artist &amp; Production Planner">
-  <meta name="description" content="Natural-chat scene planning, script breakdowns, visual storyboards, timed animatics, shot lists, source-aware EDLs, and continuity audits.">
+  <meta name="description" content="Natural-chat story planning, visual and detailed storyboards, character and synopsis dossiers, narrated pitch previews, location plans, shot lists, source-aware EDLs, and continuity audits.">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icons/video-studio-icon-192.svg" type="image/svg+xml">
   <title>Video Studio Storyboard Artist &amp; Production Planner</title>
@@ -33,7 +33,7 @@
     .kicker,.eyebrow{margin:0;color:var(--amber);font-size:10px;font-weight:760;letter-spacing:.18em;text-transform:uppercase}
     h1{max-width:850px;margin:10px 0 12px;font-size:clamp(36px,5.2vw,72px);font-weight:620;letter-spacing:-.055em;line-height:.98}
     .hero-lede{max-width:680px;margin:0;color:#a9b0bc;font-size:15px;line-height:1.65}.hero-note{max-width:310px;margin:0 0 4px;padding-left:18px;border-left:1px solid rgba(240,170,104,.45);color:#848c9a;font-size:11px;line-height:1.6}
-    .capability-nav{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:7px;margin:0 0 17px}.capability-nav a{min-height:54px;display:flex;align-items:center;padding:10px;border:1px solid var(--line);border-radius:11px;background:rgba(17,20,27,.76);color:#c7ccd4;font-size:10px;line-height:1.3;text-decoration:none}.capability-nav a:hover{border-color:#596476;background:#1a1f29}.scope-note{margin:0 0 17px;padding:11px 13px;border:1px solid rgba(240,170,104,.24);border-radius:11px;background:rgba(240,170,104,.055);color:#9ea6b3;font-size:10px;line-height:1.55}.scope-note strong{color:var(--amber-bright)}
+    .capability-nav{display:grid;grid-template-columns:repeat(9,minmax(0,1fr));gap:7px;margin:0 0 17px}.capability-nav a{min-height:54px;display:flex;align-items:center;padding:10px;border:1px solid var(--line);border-radius:11px;background:rgba(17,20,27,.76);color:#c7ccd4;font-size:10px;line-height:1.3;text-decoration:none}.capability-nav a:hover{border-color:#596476;background:#1a1f29}.scope-note{margin:0 0 17px;padding:11px 13px;border:1px solid rgba(240,170,104,.24);border-radius:11px;background:rgba(240,170,104,.055);color:#9ea6b3;font-size:10px;line-height:1.55}.scope-note strong{color:var(--amber-bright)}
     .workspace{display:grid;grid-template-columns:minmax(0,1.42fr) minmax(330px,.58fr);gap:16px;align-items:stretch}
     .panel{overflow:hidden;border:1px solid var(--line);border-radius:18px;background:var(--panel);box-shadow:var(--shadow);backdrop-filter:blur(18px)}
     .panel-head{min-height:58px;display:flex;align-items:center;justify-content:space-between;gap:20px;padding:0 18px;border-bottom:1px solid var(--line-soft);background:rgba(255,255,255,.018)}
@@ -59,15 +59,16 @@
     .brief{margin-top:16px;padding:24px}.brief-top{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;padding-bottom:18px;border-bottom:1px solid var(--line-soft)}.brief h2{margin:7px 0 5px;font-size:clamp(22px,3vw,34px);letter-spacing:-.035em}.brief h3{margin:21px 0 8px;color:var(--amber);font-size:9px;letter-spacing:.16em;text-transform:uppercase}.brief p,.brief li{color:#c0c5ce;font-size:12px;line-height:1.6}.brief-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:stretch;gap:8px;min-width:min(100%,390px)}.brief-actions .brief-status{grid-column:1/-1;justify-self:end}.brief-actions button{white-space:normal}.brief-status{display:inline-flex;flex:none;padding:6px 9px;border:1px solid rgba(119,222,211,.26);border-radius:999px;color:var(--aqua);font-size:9px;text-transform:uppercase;letter-spacing:.08em}.brief-status.needs-direction{border-color:rgba(240,170,104,.35);color:var(--amber-bright)}.audit-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px}.audit-check{padding:10px;border:1px solid var(--line-soft);border-radius:9px;background:#0d1016}.audit-check b{display:block;color:var(--aqua);font-size:9px;letter-spacing:.08em;text-transform:uppercase}.audit-check.fail b{color:var(--danger)}.audit-check span{display:block;margin-top:5px;color:#858e9c;font-size:10px;line-height:1.45}
     .brief-direction{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.brief-direction p{margin:0;padding:13px;border:1px solid var(--line-soft);border-radius:10px;background:rgba(255,255,255,.018)}.scenes{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:9px}.scene{border:1px solid #2b323e;border-radius:10px;padding:12px;background:#0d1016}.scene strong{display:block;margin-bottom:5px;color:var(--amber-bright);font-size:10px;text-transform:uppercase;letter-spacing:.09em}
     .visual-storyboard-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin-top:21px}.visual-storyboard-head h3{margin:0}.visual-storyboard-head p{max-width:620px;margin:0;color:#7f8794;font-size:10px;text-align:right}.visual-storyboard-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:10px}.visual-panel{overflow:hidden;border:1px solid #2d3541;border-radius:11px;background:#0b0e13}.visual-panel figure{margin:0}.visual-panel img,.visual-placeholder{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;background:#121722}.visual-panel img{filter:saturate(.82) contrast(1.03)}.visual-placeholder{display:grid;place-items:center;padding:16px;background:repeating-linear-gradient(135deg,#141923 0 12px,#111620 12px 24px);color:#8e97a5;font-size:10px;font-weight:780;letter-spacing:.12em;text-align:center;text-transform:uppercase}.visual-panel figcaption{padding:10px}.visual-panel figcaption strong,.visual-panel figcaption span{display:block}.visual-panel figcaption strong{color:#f0f1f4;font-size:10px}.visual-panel figcaption span{margin-top:3px;color:#7c8593;font-size:9px;line-height:1.45}.visual-integrity{margin-top:8px!important;color:#687180!important;font-size:9px!important}.visual-integrity strong{color:var(--amber-bright)}
-    .animatic{margin-top:16px;padding:16px}.animatic-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.animatic-head h2{margin:0;font-size:13px}.animatic-head p{max-width:720px;margin:5px 0 0;color:#7d8694;font-size:10px;line-height:1.5}.animatic-controls{display:flex;gap:7px}.animatic-stage{position:relative;min-height:300px;margin-top:12px;overflow:hidden;display:grid;place-items:center;border:1px solid #303744;border-radius:12px;background:#080a0f}.animatic-stage img{width:100%;height:min(58vw,520px);display:block;object-fit:contain;background:#080a0f}.animatic-placeholder{padding:30px;color:#7c8594;font-size:11px;text-align:center}.animatic-overlay{position:absolute;left:0;right:0;bottom:0;padding:18px;background:linear-gradient(transparent,rgba(4,5,8,.94));pointer-events:none}.animatic-overlay strong,.animatic-overlay span{display:block}.animatic-overlay strong{font-size:12px}.animatic-overlay span{margin-top:4px;color:#b2b9c4;font-size:10px}.animatic-progress{height:3px;margin-top:10px;border-radius:99px;background:#242b35}.animatic-progress span{display:block;height:100%;width:0;border-radius:inherit;background:linear-gradient(90deg,var(--amber),var(--aqua))}.animatic-status{display:flex;justify-content:space-between;gap:10px;margin-top:8px;color:#717b89;font:9px/1.4 Consolas,monospace}
+    .location-plan{margin-top:22px;padding-top:18px;border-top:1px solid var(--line)}.location-plan-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px}.location-plan-head h3{margin:0}.location-plan-head p{max-width:690px;margin:0;color:#8c95a3;font-size:9px;text-align:right}.location-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:10px}.location-metric{padding:10px;border:1px solid #2b3440;border-radius:9px;background:#0b0e13}.location-metric strong,.location-metric span{display:block}.location-metric strong{color:var(--amber-bright);font-size:18px}.location-metric span{margin-top:2px;color:#7d8795;font-size:8px;letter-spacing:.08em;text-transform:uppercase}.location-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-top:10px}.location-card{padding:12px;border:1px solid #2b3440;border-radius:10px;background:#0b0e13}.location-card h4{margin:0;color:#ecedf0;font-size:11px}.location-card p{margin:5px 0 0;color:#9ba4b2;font-size:9px;line-height:1.5}.production-hold{color:#e3a35f!important}.location-truth{margin-top:10px!important;padding:8px 10px;border:1px solid #6c4a28;background:#17120d;color:#e5a663!important;font-size:9px!important;font-weight:750;letter-spacing:.04em}
+    .animatic{margin-top:16px;padding:16px}.animatic-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.animatic-head h2{margin:0;font-size:13px}.animatic-head p{max-width:720px;margin:5px 0 0;color:#7d8694;font-size:10px;line-height:1.5}.pitch-disclosure{color:#aab2bf!important}.animatic-controls{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:7px;max-width:470px}.animatic-stage{position:relative;min-height:300px;margin-top:12px;overflow:hidden;display:grid;place-items:center;border:1px solid #303744;border-radius:12px;background:#080a0f}.animatic-stage img{width:100%;height:min(58vw,520px);display:block;object-fit:contain;background:#080a0f}.animatic-placeholder{padding:30px;color:#7c8594;font-size:11px;text-align:center}.animatic-overlay{position:absolute;left:0;right:0;bottom:0;padding:18px;background:linear-gradient(transparent,rgba(4,5,8,.94));pointer-events:none}.animatic-overlay strong,.animatic-overlay span{display:block}.animatic-overlay strong{font-size:12px}.animatic-overlay span{margin-top:4px;color:#b2b9c4;font-size:10px}.animatic-progress{height:3px;margin-top:10px;border-radius:99px;background:#242b35}.animatic-progress span{display:block;height:100%;width:0;border-radius:inherit;background:linear-gradient(90deg,var(--amber),var(--aqua))}.animatic-status{display:flex;justify-content:space-between;gap:10px;margin-top:8px;color:#717b89;font:9px/1.4 Consolas,monospace}
     .timeline-panel{margin-top:16px;padding:15px 16px 13px;background:#101218}.timeline-head{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:10px}.timeline-head h2{margin:0;font-size:12px;letter-spacing:.12em;text-transform:uppercase}.timeline-head p{margin:4px 0 0;color:#717987;font-size:10px}.timeline-transport{display:flex;align-items:center;gap:5px}.timeline-transport button{width:30px;height:28px;padding:0;border-radius:7px;font-size:9px}.timeline-transport output{min-width:82px;margin-left:5px;padding:6px 8px;border:1px solid #2b313d;border-radius:7px;background:#090b0f;color:var(--aqua);font:750 10px/1.4 Consolas,monospace;text-align:center}
     .timeline-viewport{position:relative;min-height:132px;overflow-x:auto;overflow-y:hidden;border:1px solid #292e38;border-radius:10px;background:linear-gradient(#151821 0 29px,#0a0c11 29px);scrollbar-color:#3c4350 #13161c}.timeline-ruler{position:absolute;top:0;left:12px;right:12px;z-index:1;height:29px;display:flex;justify-content:space-between;align-items:center;color:#5c6472;font:9px/1 Consolas,monospace;pointer-events:none}.timeline-ruler span:before{margin-right:5px;content:"·";color:#39404c}.timeline-track{position:relative;display:flex;width:max-content;min-width:100%;gap:5px;padding:37px 12px 11px}
     .timeline-clip{position:relative;width:148px;height:79px;flex:none;overflow:hidden;padding:0;border:2px solid #313846;border-radius:8px;background:radial-gradient(circle at 72% 28%,hsla(var(--scene-hue),76%,67%,.28),transparent 32%),linear-gradient(145deg,hsl(var(--scene-hue),29%,25%),#121720 68%);text-align:left}.timeline-clip:before{position:absolute;inset:0;content:"";background:linear-gradient(transparent 24%,rgba(5,7,11,.94))}.timeline-clip:hover{border-color:#697589;transform:translateY(-1px)}.timeline-clip.is-selected{border-color:var(--amber-bright);box-shadow:0 0 0 2px rgba(240,170,104,.15)}.clip-number{position:absolute;top:7px;left:8px;color:rgba(255,255,255,.65);font:750 9px/1 Consolas,monospace}.clip-copy{position:absolute;left:8px;right:8px;bottom:7px;z-index:1}.clip-copy b,.clip-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.clip-copy b{color:#f0f1f4;font-size:10px}.clip-copy small{margin-top:2px;color:#818a98;font:8px/1.3 Consolas,monospace}
     .timeline-playhead{position:absolute;top:0;bottom:7px;z-index:4;width:2px;background:#ff6f83;box-shadow:0 0 10px rgba(255,111,131,.28);pointer-events:none;transition:left .16s ease}.timeline-playhead:before{position:absolute;top:0;left:-4px;content:"";border-left:5px solid transparent;border-right:5px solid transparent;border-top:7px solid #ff6f83}.timeline-empty{width:100%;min-width:min(680px,80vw);display:grid;place-items:center;margin:0;color:#555e6c;font-size:10px}.timeline-selection{margin:9px 2px 0;color:#737c8a;font-size:10px}.footer{display:flex;justify-content:space-between;gap:20px;padding:18px 3px 0;color:#4e5663;font-size:9px;letter-spacing:.05em;text-transform:uppercase}.hidden{display:none!important}
     @media(max-width:1100px){.capability-nav{grid-template-columns:repeat(4,minmax(0,1fr))}}
     @media(max-width:980px){.hero{grid-template-columns:1fr}.hero-note{display:none}.workspace{grid-template-columns:1fr}.monitor-panel{min-height:0}.monitor-frame{min-height:220px}.access-row{grid-template-columns:1fr 1fr}.access-help{grid-column:1/-1}}
-    @media(max-width:900px){.visual-storyboard-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-    @media(max-width:660px){.app-shell{width:min(100% - 22px,1460px)}.topbar{min-height:68px}.brand-copy small,.system-state{display:none}.top-actions{margin-left:auto}main{padding-top:23px}.hero{padding-bottom:22px}h1{font-size:clamp(34px,12vw,52px)}.capability-nav{grid-template-columns:repeat(2,minmax(0,1fr))}.conversation-feed{min-height:180px;padding:18px 15px 8px}.message-row{max-width:96%}.access-row{grid-template-columns:1fr;gap:7px}.access-help{grid-column:auto}.attachment-bar{align-items:flex-start;flex-direction:column}.source-summary{grid-column:auto}.composer-footer,.brief-top,.timeline-head,.footer,.visual-storyboard-head,.animatic-head{align-items:flex-start;flex-direction:column}.composer-hint{display:none}.actions,.animatic-controls{width:100%}.actions button,.animatic-controls button{flex:1}.brief{padding:18px}.brief-actions{width:100%;min-width:0}.brief-actions .brief-status{justify-self:start}.brief-direction,.visual-storyboard-grid{grid-template-columns:1fr}.visual-storyboard-head p{text-align:left}.timeline-transport{width:100%;overflow-x:auto}.timeline-transport output{margin-left:auto}.animatic-stage{min-height:220px}}
+    @media(max-width:900px){.visual-storyboard-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.location-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media(max-width:660px){.app-shell{width:min(100% - 22px,1460px)}.topbar{min-height:68px}.brand-copy small,.system-state{display:none}.top-actions{margin-left:auto}main{padding-top:23px}.hero{padding-bottom:22px}h1{font-size:clamp(34px,12vw,52px)}.capability-nav{grid-template-columns:repeat(2,minmax(0,1fr))}.conversation-feed{min-height:180px;padding:18px 15px 8px}.message-row{max-width:96%}.access-row{grid-template-columns:1fr;gap:7px}.access-help{grid-column:auto}.attachment-bar{align-items:flex-start;flex-direction:column}.source-summary{grid-column:auto}.composer-footer,.brief-top,.timeline-head,.footer,.visual-storyboard-head,.animatic-head,.location-plan-head{align-items:flex-start;flex-direction:column}.composer-hint{display:none}.actions,.animatic-controls{width:100%}.actions button,.animatic-controls button{flex:1}.brief{padding:18px}.brief-actions{width:100%;min-width:0}.brief-actions .brief-status{justify-self:start}.brief-direction,.visual-storyboard-grid,.location-grid{grid-template-columns:1fr}.visual-storyboard-head p,.location-plan-head p{text-align:left}.timeline-transport{width:100%;overflow-x:auto}.timeline-transport output{margin-left:auto}.animatic-stage{min-height:220px}}
     @media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;transition:none!important}}
   </style>
 </head>
@@ -79,13 +80,13 @@
   </header>
   <main>
     <section class="hero" aria-labelledby="pageTitle">
-      <div><p class="kicker">Natural chat · storyboard artist · production planner</p><h1 id="pageTitle">Turn a story into a visual production plan.</h1><p class="hero-lede">Describe an idea, attach a story or screenplay, or select a local raw-video library. Scripts within the displayed full-text bound receive whole-source planning; oversized sources use disclosed beginning/middle/end excerpts. Video Studio creates a creative brief, script breakdown, visual storyboard, playable timed animatic, shot list, source-aware rough-cut instructions, and continuity audit.</p></div>
+      <div><p class="kicker">Natural chat · storyboard artist · production planner</p><h1 id="pageTitle">Turn a story into a visual production plan.</h1><p class="hero-lede">Describe an idea, attach a story or screenplay, or select a local raw-video library. Scripts within the displayed full-text bound receive whole-source planning; oversized sources use disclosed beginning/middle/end excerpts. The planner creates visual and detailed boards, a character-and-synopsis dossier, a location plan, a narrated pitch preview, shot and rough-cut instructions, and a continuity audit.</p></div>
       <p class="hero-note">This contest edition makes reviewable preproduction and editorial instructions. It does not render a finished video or inspect the visual contents of selected footage.</p>
     </section>
     <nav class="capability-nav" aria-label="Video Studio capabilities">
-      <a href="#conversationTitle">Natural chat + brief</a><a href="#brief">Script breakdown</a><a href="#brief">Visual storyboard</a><a href="#animatic">Timed animatic</a><a href="#timelineDock">Shot list + EDL</a><a href="#brief">Continuity audit</a><a href="#sourceInputs">Raw-footage inventory + exports</a>
+      <a href="#conversationTitle">Natural chat + brief</a><a href="#brief">Script breakdown</a><a href="#brief">Visual storyboard</a><a href="#brief">Characters + synopsis</a><a href="#animatic">Pitch preview</a><a href="#brief">Location plan</a><a href="#timelineDock">Shot list + EDL</a><a href="#brief">Continuity audit</a><a href="#sourceInputs">Raw-footage inventory + exports</a>
     </nav>
-    <p class="scope-note"><strong>Contest scope:</strong> planning illustrations and a timed animatic are previsualization—not final generated footage. Uploaded script text and local video metadata are used to direct the plan; raw video bytes stay in this browser and are never uploaded. Final rendering, lip sync, voice generation, and footage editing remain Local edition quality gates.</p>
+    <p class="scope-note"><strong>Contest scope:</strong> planning illustrations and a timed animatic are previsualization—not final generated footage. Uploaded script text and local video metadata are used to direct the plan; raw video bytes stay in this browser and are never uploaded. Final rendering, lip sync, voice generation, and footage editing remain Local edition quality gates. The optional pitch narration is a device-voice preview, not a generated production voice track.</p>
     <section class="workspace" aria-label="Production director workspace">
       <article class="panel conversation-panel" aria-labelledby="conversationTitle">
         <div class="panel-head"><div><h2 id="conversationTitle">Conversation</h2><p>No special prompt format required</p></div><span class="director-badge">Director ready</span></div>
@@ -108,13 +109,13 @@
       </article>
       <aside id="monitor" class="panel monitor-panel" aria-labelledby="monitorTitle">
         <div class="panel-head"><div><h2 id="monitorTitle">Production monitor</h2><p>One truthful state at a time</p></div><span class="eyebrow">Live job</span></div>
-        <div class="monitor-frame" aria-hidden="true"><div class="frame-copy"><span>＋</span><strong>Scene package</strong><small>The brief, script breakdown, visual storyboard, timed animatic, shot list, source-aware EDL, and deterministic audit appear after the job completes.</small></div></div>
+        <div class="monitor-frame" aria-hidden="true"><div class="frame-copy"><span>＋</span><strong>Production plan package</strong><small>The brief, visual and detailed boards, synopsis and character dossier, location plan, timed pitch preview, editorial exports, and deterministic audit appear after the job completes.</small></div></div>
         <div class="status-block" aria-live="polite"><div class="status-line"><div><div id="state" class="state">Ready</div><div id="stage" class="stage">No job submitted</div></div><div id="progress" class="progress-number">0%</div></div><div id="progressBar" class="bar" role="progressbar" aria-label="Production job progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="bar"></span></div><div id="eta" class="small">ETA appears after real completed-job timing exists.</div><div id="job" class="small job-id"></div></div>
       </aside>
     </section>
     <section id="brief" class="panel brief hidden" aria-live="polite"></section>
     <section id="animatic" class="panel animatic hidden" aria-labelledby="animaticTitle">
-      <div class="animatic-head"><div><h2 id="animaticTitle">Playable timed animatic · previsualization</h2><p>Plays planning illustrations or explicit placeholders for each compiled shot duration. No final footage, dialogue performance, lip sync, or finished audio is claimed.</p></div><div class="animatic-controls"><button id="animaticPlay" type="button" disabled>Play animatic</button><button id="animaticStop" type="button" disabled>Stop</button></div></div>
+      <div class="animatic-head"><div><h2 id="animaticTitle">Playable timed animatic + investor pitch preview</h2><p>Plays planning illustrations or explicit placeholders for each compiled shot. No final footage, dialogue performance, lip sync, or finished audio is claimed.</p><p class="pitch-disclosure">Narrated pitch preview uses this device's browser voice and is not embedded in a video file. Dialogue/audio text is identified as planning direction unless explicit lines are shown.</p></div><div class="animatic-controls"><button id="animaticPlay" type="button" disabled>Play timed animatic</button><button id="animaticStop" type="button" disabled>Stop timing</button><button id="pitchPlay" type="button" disabled>Narrate investor pitch</button><button id="pitchStop" type="button" disabled>Stop voice</button><button id="downloadPitchScript" type="button" disabled>Pitch narration script</button></div></div>
       <div id="animaticStage" class="animatic-stage"><div id="animaticPlaceholder" class="animatic-placeholder">Build a scene package to assemble the timed animatic.</div><img id="animaticImage" class="hidden" alt=""><div id="animaticOverlay" class="animatic-overlay hidden"><strong id="animaticShot">No shot</strong><span id="animaticAction">No planned action.</span></div></div>
       <div class="animatic-progress" aria-hidden="true"><span id="animaticBar"></span></div><div class="animatic-status"><span id="animaticTime">00:00 / 00:00</span><span id="animaticTruth">PREVISUALIZATION · PLANNING ART · NO RENDERED VIDEO</span></div>
     </section>
@@ -146,6 +147,8 @@
   let animaticTimer = null;
   let animaticIndex = 0;
   let animaticElapsedSeconds = 0;
+  let pitchGeneration = 0;
+  let pitchPlaying = false;
   const terminal = new Set(['succeeded', 'failed', 'cancelled']);
   const MAX_SCRIPT_BYTES = 16 * 1024 * 1024;
   const MAX_SCRIPT_CHARS = 147000;
@@ -574,6 +577,204 @@
     const panels = entries.map(({panel, shot}, index) => visualPanelFigure(panel, shot, index)).join('');
     return `<div class="visual-storyboard-head"><h3>Visual storyboard</h3><p>${esc(count)} · ${esc(status.replaceAll('_', ' '))} · Planning illustrations are not final frames and require human visual review.</p></div><div class="visual-storyboard-grid">${panels || '<div class="visual-placeholder"><span>Visual pending</span></div>'}</div><p class="visual-integrity"><strong>Verification scope:</strong> technical asset integrity only. Story, anatomy, identity, continuity, and composition still require owner review.</p>`;
   }
+  function cleanLocationText(value) {
+    return String(value ?? '').replace(/[\u0000-\u001F\u007F]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 1200);
+  }
+  function exactLocationKey(value) {
+    return cleanLocationText(value).normalize('NFKC').toLocaleLowerCase('en-US');
+  }
+  function orderedUniqueText(values) {
+    const seen = new Set();
+    const result = [];
+    for (const raw of Array.isArray(values) ? values : []) {
+      const value = cleanLocationText(raw);
+      const key = value.toLocaleLowerCase('en-US');
+      if (value && !seen.has(key)) { seen.add(key); result.push(value); }
+    }
+    return result;
+  }
+  function buildLocationBreakdown(packageValue = currentStoryboardPackage) {
+    const briefValue = isRecord(packageValue?.production_brief) ? packageValue.production_brief : null;
+    const timelineValue = isRecord(packageValue?.timeline) ? packageValue.timeline : null;
+    const scenesValue = Array.isArray(briefValue?.scenes) ? briefValue.scenes : [];
+    const shotsValue = Array.isArray(timelineValue?.shots) ? timelineValue.shots : [];
+    if (!briefValue || !timelineValue || !scenesValue.length) return null;
+    const groups = new Map();
+    const sceneByNumber = new Map();
+    const narrativeKeys = [];
+    for (const scene of scenesValue) {
+      if (!isRecord(scene) || !Number.isInteger(scene.number)) continue;
+      const setting = cleanLocationText(scene.setting);
+      const key = exactLocationKey(setting);
+      if (!setting || !key) continue;
+      sceneByNumber.set(scene.number, scene);
+      narrativeKeys.push(key);
+      if (!groups.has(key)) groups.set(key, {displaySetting:setting,sceneNumbers:[],scenePurposes:[],characters:[],dialogueSceneNumbers:[],shots:[]});
+      const group = groups.get(key);
+      group.sceneNumbers.push(scene.number);
+      group.scenePurposes.push({sceneNumber:scene.number,purpose:cleanLocationText(scene.purpose)});
+      group.characters.push(...(Array.isArray(scene.characters) ? scene.characters : []));
+      if (scene.dialogue_required === true) group.dialogueSceneNumbers.push(scene.number);
+    }
+    for (const shot of shotsValue) {
+      const scene = sceneByNumber.get(shot?.scene_number);
+      if (!scene) continue;
+      groups.get(exactLocationKey(scene.setting))?.shots.push(shot);
+    }
+    const narrativeChanges = narrativeKeys.slice(1).reduce((count, key, index) => count + (key === narrativeKeys[index] ? 0 : 1), 0);
+    const suggestedChanges = Math.max(0, groups.size - 1);
+    const locations = [...groups.values()].map((group, index) => {
+      const continuity = [];
+      const audioNotes = [];
+      for (const shot of group.shots) {
+        const card = isRecord(shot.storyboard_card) ? shot.storyboard_card : {};
+        continuity.push(...(Array.isArray(card.continuity_requirements) ? card.continuity_requirements : []));
+        if (card.dialogue_or_audio) audioNotes.push(card.dialogue_or_audio);
+      }
+      return {
+        locationId:`LOC-${String(index + 1).padStart(3, '0')}`,
+        displaySetting:group.displaySetting,
+        sceneNumbers:group.sceneNumbers,
+        scenePurposes:group.scenePurposes,
+        shotIds:group.shots.map(shot => cleanLocationText(shot.shot_id)).filter(Boolean),
+        plannedDurationFrames:group.shots.reduce((total, shot) => total + Math.max(0, Number(shot.planned_duration_frames) || 0), 0),
+        plannedDurationSeconds:Math.round(group.shots.reduce((total, shot) => total + Math.max(0, Number(shot.planned_duration_seconds) || 0), 0) * 1000) / 1000,
+        characters:orderedUniqueText(group.characters),
+        dialogueSceneNumbers:group.dialogueSceneNumbers,
+        briefAudioDirection:cleanLocationText(briefValue.audio_direction),
+        audioNotes:orderedUniqueText(audioNotes),
+        continuityRequirements:orderedUniqueText(continuity),
+        propsStatus:'not_itemized_in_current_brief_schema',
+        wardrobeStatus:'not_itemized_in_current_brief_schema',
+      };
+    });
+    return {
+      schema:'video-studio.production-location-breakdown/v1',
+      sourcePackageId:cleanLocationText(packageValue.package_id),
+      sourceManifestSha256:cleanLocationText(packageValue.manifest_sha256),
+      truthLabel:'PLANNING ESTIMATE ONLY — NOT A CALL SHEET, BUDGET, BOOKING, ROUTE, OR FINAL SHOOT SCHEDULE',
+      derivation:{algorithm:'exact-normalized-scene-setting-group/v1',modelCalls:0,packageMutated:false},
+      summary:{sceneCount:scenesValue.length,shotCount:shotsValue.length,uniqueLocationCount:locations.length,narrativeLocationChangeCount:narrativeChanges,suggestedLocationChangeCount:suggestedChanges,potentialLocationChangesAvoided:Math.max(0,narrativeChanges - suggestedChanges),plannedDurationSeconds:Number(timelineValue.duration_seconds ?? briefValue.duration_seconds ?? 0)},
+      assumptions:[
+        'Locations merge only when scene setting differs by Unicode normalization, case, or whitespace.',
+        'Potential moves avoided compares story-order changes with one grouped block per exact normalized setting.',
+        'No distance, permit, access window, cast availability, labor, equipment, booking, or cost data was analyzed.',
+        'Props and wardrobe are not itemized fields in this brief schema and remain production-review holds.',
+      ],
+      locations,
+    };
+  }
+  function locationPlanMarkup(breakdown) {
+    if (!breakdown) return '';
+    const summary = breakdown.summary;
+    const metrics = [
+      [summary.uniqueLocationCount,'exact locations / sets'],
+      [summary.narrativeLocationChangeCount,'story-order changes'],
+      [summary.suggestedLocationChangeCount,'grouped shoot changes'],
+      [summary.potentialLocationChangesAvoided,'potential changes avoided'],
+    ].map(([value,label]) => `<div class="location-metric"><strong>${esc(value)}</strong><span>${esc(label)}</span></div>`).join('');
+    const cards = breakdown.locations.map(location => {
+      const purposes = location.scenePurposes.map(item => `Scene ${item.sceneNumber}: ${item.purpose || 'purpose not supplied'}`).join(' · ');
+      return `<article class="location-card"><h4>${esc(location.locationId)} · ${esc(location.displaySetting)}</h4><p>Scenes ${esc(location.sceneNumbers.join(', '))} · ${esc(location.shotIds.length)} planned shots · ${esc(location.plannedDurationSeconds)}s screen time</p><p><strong>Characters:</strong> ${esc(location.characters.join(', ') || 'none itemized')} · <strong>Dialogue scenes:</strong> ${esc(location.dialogueSceneNumbers.join(', ') || 'none')}</p><p><strong>Scene purposes:</strong> ${esc(purposes)}</p><p><strong>Audio:</strong> ${esc(location.briefAudioDirection || 'not supplied')}${location.audioNotes.length ? ` · ${esc(location.audioNotes.join(' | '))}` : ''}</p><p><strong>Continuity:</strong> ${esc(location.continuityRequirements.join(' | ') || 'no card-level requirements supplied')}</p><p class="production-hold"><strong>Production holds:</strong> Props not itemized · wardrobe not itemized · permits, access, travel, cast availability, and cost require human planning.</p></article>`;
+    }).join('');
+    return `<section class="location-plan"><div class="location-plan-head"><h3>Location-grouped production plan</h3><p>Groups only exact normalized scene settings so an independent crew can review shots that may be captured together. Similar-looking names are not silently merged.</p></div><div class="location-metrics">${metrics}</div><div class="location-grid">${cards || '<p>No exact location blocks could be derived.</p>'}</div><p class="location-truth">${esc(breakdown.truthLabel)}</p></section>`;
+  }
+  const CHARACTER_DOSSIER_SCHEMA = 'video-studio.character-synopsis-dossier/v1';
+  const CHARACTER_DOSSIER_TRUTH_LABEL = 'DERIVED PLANNING DOCUMENT — CHARACTER ROLES, BIOGRAPHIES, RELATIONSHIPS, ARCS, AND SPEAKER ATTRIBUTION ARE NOT ITEMIZED IN THE CURRENT BRIEF SCHEMA';
+  function exactCharacterKey(value) {
+    return cleanLocationText(value).normalize('NFKC').toLocaleLowerCase('en-US');
+  }
+  function deriveCharacterSynopsisDossier(packageValue = currentStoryboardPackage) {
+    const briefValue = isRecord(packageValue?.production_brief) ? packageValue.production_brief : null;
+    if (!briefValue) return null;
+    const sourceScenes = Array.isArray(briefValue.scenes) ? briefValue.scenes : [];
+    const sceneOutline = [];
+    const characterMap = new Map();
+    const reviewHolds = [];
+    sourceScenes.forEach((scene, sourceIndex) => {
+      if (!isRecord(scene) || !Number.isInteger(scene.number) || scene.number < 1) {
+        reviewHolds.push(`Scene entry ${sourceIndex + 1} was omitted because it has no valid positive integer scene number.`);
+        return;
+      }
+      const sceneCharacters = [];
+      const sceneCharacterKeys = new Set();
+      for (const rawName of Array.isArray(scene.characters) ? scene.characters : []) {
+        const displayName = cleanLocationText(rawName).slice(0, 120);
+        const key = exactCharacterKey(displayName);
+        if (displayName && key && !sceneCharacterKeys.has(key)) {
+          sceneCharacterKeys.add(key);
+          sceneCharacters.push(displayName);
+        }
+      }
+      const sceneEntry = {
+        sceneNumber:scene.number,
+        setting:cleanLocationText(scene.setting).slice(0, 240),
+        purpose:cleanLocationText(scene.purpose).slice(0, 600),
+        dialogueRequired:scene.dialogue_required === true,
+        characters:sceneCharacters,
+      };
+      sceneOutline.push(sceneEntry);
+      for (const displayName of sceneCharacters) {
+        const key = exactCharacterKey(displayName);
+        if (!characterMap.has(key)) {
+          characterMap.set(key, {
+            characterId:`CHAR-${String(characterMap.size + 1).padStart(3, '0')}`,
+            displayName,
+            role:null,
+            roleStatus:'not_itemized_in_current_brief_schema',
+            appearances:[],
+          });
+        }
+        characterMap.get(key).appearances.push({
+          sceneNumber:sceneEntry.sceneNumber,
+          setting:sceneEntry.setting,
+          scenePurpose:sceneEntry.purpose,
+          sceneDialogueRequired:sceneEntry.dialogueRequired,
+          dialogueAttributionStatus:'scene_level_only_not_attributed_to_character',
+        });
+      }
+    });
+    const characters = [...characterMap.values()].map(character => {
+      const sceneNumbers = character.appearances.map(appearance => appearance.sceneNumber);
+      const dialogueContextSceneNumbers = character.appearances.filter(appearance => appearance.sceneDialogueRequired).map(appearance => appearance.sceneNumber);
+      return {
+        ...character,
+        appearanceSceneCount:new Set(sceneNumbers).size,
+        appearanceSceneNumbers:[...new Set(sceneNumbers)],
+        firstAppearanceScene:sceneNumbers.length ? Math.min(...sceneNumbers) : null,
+        lastAppearanceScene:sceneNumbers.length ? Math.max(...sceneNumbers) : null,
+        settings:orderedUniqueText(character.appearances.map(appearance => appearance.setting)),
+        dialogueContextSceneNumbers:[...new Set(dialogueContextSceneNumbers)],
+        dialogueAttributionStatus:'not_available_in_current_brief_schema',
+      };
+    });
+    const synopsis = cleanLocationText(briefValue.summary);
+    if (!synopsis) reviewHolds.push('The production brief did not supply a synopsis.');
+    if (!sceneOutline.length) reviewHolds.push('No valid scene outline could be derived from the production brief.');
+    if (!characters.length) reviewHolds.push('No named characters were itemized in the production brief scenes.');
+    reviewHolds.push('Character roles, biographies, relationships, arcs, pronouns, casting details, and speaker attribution are not fields in the current production-brief schema and were not inferred.');
+    return {
+      schema:CHARACTER_DOSSIER_SCHEMA,
+      sourcePackageId:cleanLocationText(packageValue.package_id).slice(0, 180),
+      sourceManifestSha256:cleanLocationText(packageValue.manifest_sha256).slice(0, 128),
+      truthLabel:CHARACTER_DOSSIER_TRUTH_LABEL,
+      derivation:{algorithm:'brief-summary-and-exact-normalized-character-appearance/v1',modelCalls:0,packageMutated:false},
+      production:{
+        title:cleanLocationText(briefValue.title).slice(0, 160) || 'Untitled production',
+        synopsis,
+        synopsisSource:'production_brief.summary',
+        format:cleanLocationText(briefValue.format).slice(0, 100),
+        genre:cleanLocationText(briefValue.genre).slice(0, 160),
+        targetAudience:cleanLocationText(briefValue.target_audience).slice(0, 300),
+        plannedDurationSeconds:Math.max(0, Number(briefValue.duration_seconds) || 0),
+        tone:orderedUniqueText(briefValue.tone),
+      },
+      summary:{validSceneCount:sceneOutline.length,namedCharacterCount:characters.length,roleCount:0,roleReason:'roles_not_itemized_in_current_brief_schema'},
+      characters,
+      sceneOutline,
+      reviewHolds,
+    };
+  }
   function renderBrief(brief, storyboardPackage, visualStoryboard, jobId) {
     const questions = (brief.clarifying_questions || []).map(q => `<li>${esc(q)}</li>`).join('');
     const scenes = (brief.scenes || []).map(scene => `<div class="scene"><strong>Scene ${esc(scene.number)} · ${esc(scene.setting)}</strong>${esc(scene.purpose)}${scene.dialogue_required ? ' · dialogue' : ''}</div>`).join('');
@@ -587,22 +788,32 @@
       currentEditorialContext = activeSubmission.editorialContext || {script:null, footage:[]};
     }
     const visualMarkup = visualStoryboardMarkup(currentVisualStoryboard, shots);
+    const locationBreakdown = buildLocationBreakdown(currentStoryboardPackage);
+    const locationMarkup = locationPlanMarkup(locationBreakdown);
+    const characterDossier = deriveCharacterSynopsisDossier(currentStoryboardPackage);
     const sourceCount = currentEditorialContext.footage?.length || 0;
     const sourceNote = currentEditorialContext.script || sourceCount
       ? `<h3>Local source context used for this plan</h3><p>${currentEditorialContext.script ? `Script ${esc(currentEditorialContext.script.filename)} · ${esc(currentEditorialContext.script.included_characters)} of ${esc(currentEditorialContext.script.extracted_characters)} extracted characters included · ${esc(currentEditorialContext.script.coverage === 'full_text' ? 'full text' : 'beginning/middle/end excerpts')}. ` : ''}${sourceCount ? `${esc(sourceCount)} raw-video file${sourceCount === 1 ? '' : 's'} inventoried from filename/type/size/duration metadata only.` : ''} No raw video bytes were uploaded or visually analyzed.</p>`
       : '';
-    $('brief').innerHTML = `<div class="brief-top"><div><div class="eyebrow">Scene package · creative + deterministic editorial plan</div><h2>${esc(brief.title)}</h2><p>${esc(brief.summary)}</p></div><div class="brief-actions"><span class="brief-status${statusClass}">${questions ? 'Direction required' : 'Scene package ready'}</span><button id="downloadVisualStoryboard" type="button"${storyboardPackage ? '' : ' disabled'}>Visual storyboard HTML</button><button id="printVisualStoryboard" type="button"${storyboardPackage ? '' : ' disabled'}>Print / Save PDF</button><button id="downloadDetailedSheet" type="button"${storyboardPackage ? '' : ' disabled'}>Detailed production sheet HTML</button><button id="downloadShotList" type="button"${storyboardPackage ? '' : ' disabled'}>Shot-list CSV</button><button id="downloadEdl" type="button"${storyboardPackage ? '' : ' disabled'}>Source-aware EDL CSV</button><button id="downloadPackage" type="button"${storyboardPackage ? '' : ' disabled'}>Package JSON</button></div></div>${visualMarkup}<h3>Creative direction</h3><div class="brief-direction"><p>${esc(brief.format)} · ${esc(brief.genre)} · ${esc(brief.duration_seconds)}s<br>${esc(brief.visual_direction)}</p><p>${esc(brief.audio_direction)}</p></div><h3>Script breakdown / scene plan</h3><div class="scenes">${scenes}</div>${sourceNote}${questions ? `<h3>Questions before production</h3><ul>${questions}</ul>` : ''}${auditChecks ? `<h3>Deterministic coverage + continuity audit</h3><div class="audit-summary">${auditChecks}</div>` : ''}`;
+    $('brief').innerHTML = `<div class="brief-top"><div><div class="eyebrow">Scene package · creative + deterministic editorial plan</div><h2>${esc(brief.title)}</h2><p>${esc(brief.summary)}</p></div><div class="brief-actions"><span class="brief-status${statusClass}">${questions ? 'Direction required' : 'Scene package ready'}</span><button id="downloadVisualStoryboard" type="button"${storyboardPackage ? '' : ' disabled'}>Visual storyboard HTML</button><button id="printVisualStoryboard" type="button"${storyboardPackage ? '' : ' disabled'}>Print / Save PDF</button><button id="downloadDetailedSheet" type="button"${storyboardPackage ? '' : ' disabled'}>Detailed production sheet HTML</button><button id="downloadLocationPlan" type="button"${locationBreakdown ? '' : ' disabled'}>Location plan HTML</button><button id="downloadLocationCsv" type="button"${locationBreakdown ? '' : ' disabled'}>Location schedule CSV</button><button id="downloadLocationJson" type="button"${locationBreakdown ? '' : ' disabled'}>Location plan JSON</button><button id="downloadCharacterHtml" type="button"${characterDossier ? '' : ' disabled'}>Character + synopsis HTML</button><button id="downloadCharacterText" type="button"${characterDossier ? '' : ' disabled'}>Character + synopsis TXT</button><button id="downloadCharacterJson" type="button"${characterDossier ? '' : ' disabled'}>Character + synopsis JSON</button><button id="downloadCharacterCsv" type="button"${characterDossier ? '' : ' disabled'}>Character appearances CSV</button><button id="downloadShotList" type="button"${storyboardPackage ? '' : ' disabled'}>Shot-list CSV</button><button id="downloadEdl" type="button"${storyboardPackage ? '' : ' disabled'}>Source-aware EDL CSV</button><button id="downloadPackage" type="button"${storyboardPackage ? '' : ' disabled'}>Package JSON</button></div></div>${visualMarkup}<h3>Creative direction</h3><div class="brief-direction"><p>${esc(brief.format)} · ${esc(brief.genre)} · ${esc(brief.duration_seconds)}s<br>${esc(brief.visual_direction)}</p><p>${esc(brief.audio_direction)}</p></div><h3>Script breakdown / scene plan</h3><div class="scenes">${scenes}</div>${sourceNote}${locationMarkup}${questions ? `<h3>Questions before production</h3><ul>${questions}</ul>` : ''}${auditChecks ? `<h3>Deterministic coverage + continuity audit</h3><div class="audit-summary">${auditChecks}</div>` : ''}`;
     $('brief').classList.remove('hidden');
     $('downloadPackage').addEventListener('click', downloadStoryboardPackage);
     $('downloadVisualStoryboard').addEventListener('click', downloadVisualStoryboard);
     $('printVisualStoryboard').addEventListener('click', printVisualStoryboard);
     $('downloadDetailedSheet').addEventListener('click', downloadDetailedProductionSheet);
+    $('downloadLocationPlan').addEventListener('click', downloadLocationPlanHtml);
+    $('downloadLocationCsv').addEventListener('click', downloadLocationScheduleCsv);
+    $('downloadLocationJson').addEventListener('click', downloadLocationPlanJson);
+    $('downloadCharacterHtml').addEventListener('click', downloadCharacterSynopsisHtml);
+    $('downloadCharacterText').addEventListener('click', downloadCharacterSynopsisText);
+    $('downloadCharacterJson').addEventListener('click', downloadCharacterSynopsisJson);
+    $('downloadCharacterCsv').addEventListener('click', downloadCharacterAppearancesCsv);
     $('downloadShotList').addEventListener('click', downloadShotListCsv);
     $('downloadEdl').addEventListener('click', downloadSourceAwareEdlCsv);
     renderStoryboardPackage(storyboardPackage);
     updateClarificationSession(brief, jobId);
     if (jobId && lastBriefMessageJobId !== jobId) {
-      addConversationMessage('assistant', questions ? `I need ${brief.clarifying_questions.length === 1 ? 'one detail' : 'a few details'} before the scene package is ready:\n${numberedQuestions(brief.clarifying_questions)}\n\nAnswer naturally below. This page will include the earlier request and questions in the next one-field job.` : `The scene package for “${brief.title}” is ready. You can play the timed animatic, review the visual storyboard and script breakdown, inspect the shot list and continuity audit, or download the JSON, HTML, shot-list CSV, and source-aware EDL instructions.`);
+      addConversationMessage('assistant', questions ? `I need ${brief.clarifying_questions.length === 1 ? 'one detail' : 'a few details'} before the scene package is ready:\n${numberedQuestions(brief.clarifying_questions)}\n\nAnswer naturally below. This page will include the earlier request and questions in the next one-field job.` : `The scene package for “${brief.title}” is ready. You can play the timed or narrated preview, review the detailed and visual cards, and download the character-and-synopsis dossier, location plan, JSON package, shot-list CSV, and source-aware EDL instructions.`);
       lastBriefMessageJobId = jobId;
     }
   }
@@ -643,6 +854,119 @@
     const panel = currentVisualStoryboard?.panels?.find(item => item.shot_id === shotId);
     return panel && validAvailableVisualPanel(panel) ? panel : null;
   }
+  function boundedPitchText(value, fallback = '') {
+    const cleaned = String(value ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, ' ').replace(/\s+/g, ' ').trim();
+    return (cleaned || fallback).slice(0, 1200);
+  }
+  function pitchNarrationAvailable() {
+    return typeof window !== 'undefined' && typeof window.SpeechSynthesisUtterance === 'function' && typeof window.speechSynthesis?.speak === 'function';
+  }
+  function buildPitchCues() {
+    if (!plannedShots.length) throw new Error('A validated storyboard timeline is required.');
+    if (plannedShots.length > 40) throw new Error('Investor pitch preview is limited to 40 cards.');
+    let totalCharacters = 0;
+    return plannedShots.map((shot, index) => {
+      const card = isRecord(shot.storyboard_card) ? shot.storyboard_card : {};
+      const role = boundedPitchText(shot.role, 'planned shot').replaceAll('_', ' ');
+      const action = boundedPitchText(card.action, 'The planned action is not specified.');
+      const direction = boundedPitchText(card.dialogue_or_audio, 'No dialogue or audio direction is supplied for this card.');
+      const narration = `Card ${index + 1}, ${role}. ${action} Dialogue and audio direction: ${direction}`;
+      totalCharacters += narration.length;
+      if (totalCharacters > 12000) throw new Error('Investor pitch narration exceeds the bounded preview size.');
+      return {
+        sequence: index + 1,
+        shotId: boundedPitchText(shot.shot_id, `Panel ${index + 1}`),
+        role,
+        plannedIn: boundedPitchText(shot.planned_in_timecode, '--:--:--:--'),
+        plannedOut: boundedPitchText(shot.planned_out_timecode, '--:--:--:--'),
+        action,
+        dialogueAudioDirection: direction,
+        narration,
+        visualStatus: animaticPanelFor(shot.shot_id) ? 'planning illustration available' : 'visual pending',
+      };
+    });
+  }
+  function pitchNarrationScript() {
+    const cues = buildPitchCues();
+    const title = boundedPitchText(currentStoryboardPackage?.production_brief?.title, 'Untitled production');
+    const lines = [
+      `${title} — INVESTOR PITCH NARRATION / CUE SCRIPT`,
+      'PREVISUALIZATION ONLY — STORYBOARD ART IS NOT FINAL FOOTAGE',
+      'Dialogue/audio fields are planning direction unless explicit script lines are present.',
+      '',
+    ];
+    for (const cue of cues) {
+      lines.push(
+        `CARD ${cue.sequence} — ${cue.shotId} — ${cue.plannedIn} to ${cue.plannedOut}`,
+        `VISUAL: ${cue.action}`,
+        `NARRATION: ${cue.narration}`,
+        `ART: ${cue.visualStatus}`,
+        '',
+      );
+    }
+    return `${lines.join('\n')}\n`;
+  }
+  function pitchNarrationFilename() {
+    const title = boundedPitchText(currentStoryboardPackage?.production_brief?.title, 'video-studio')
+      .normalize('NFKD').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 80).toLowerCase() || 'video-studio';
+    return `${title}-investor-pitch-narration.txt`;
+  }
+  function updatePitchControls() {
+    const hasPlan = plannedShots.length > 0;
+    $('pitchPlay').disabled = !hasPlan || !pitchNarrationAvailable() || pitchPlaying;
+    $('pitchStop').disabled = !pitchPlaying;
+    $('downloadPitchScript').disabled = !hasPlan;
+    $('pitchPlay').textContent = pitchPlaying ? 'Narrating…' : 'Narrate investor pitch';
+  }
+  function stopNarratedPitch({announce = false} = {}) {
+    pitchGeneration += 1;
+    pitchPlaying = false;
+    if (typeof window !== 'undefined' && typeof window.speechSynthesis?.cancel === 'function') window.speechSynthesis.cancel();
+    updatePitchControls();
+    if (announce && plannedShots.length) $('animaticTruth').textContent = 'PITCH NARRATION STOPPED · DEVICE VOICE · NO EXPORTED VIDEO';
+  }
+  function playNarratedPitch() {
+    if (!pitchNarrationAvailable() || !plannedShots.length) return;
+    let cues;
+    try { cues = buildPitchCues(); }
+    catch (error) { showError(String(error?.message || error)); return; }
+    stopAnimatic();
+    stopNarratedPitch();
+    const generation = pitchGeneration;
+    pitchPlaying = true;
+    updatePitchControls();
+    $('animaticTruth').textContent = 'INVESTOR PITCH PREVIEW · DEVICE VOICE · NOT EMBEDDED IN VIDEO';
+    const speakAt = index => {
+      if (!pitchPlaying || generation !== pitchGeneration) return;
+      if (index >= cues.length) {
+        pitchPlaying = false;
+        updatePitchControls();
+        $('animaticTruth').textContent = 'PITCH PREVIEW COMPLETE · STORYBOARD ART + DEVICE VOICE · NOT FINAL FOOTAGE';
+        return;
+      }
+      animaticElapsedSeconds = plannedShots.slice(0, index).reduce((total, shot) => total + Math.max(0.1, Number(shot.planned_duration_seconds) || 0), 0);
+      showAnimaticFrame(index);
+      const utterance = new window.SpeechSynthesisUtterance(cues[index].narration);
+      utterance.rate = 0.96;
+      utterance.pitch = 1;
+      utterance.volume = 1;
+      utterance.onend = () => {
+        if (pitchPlaying && generation === pitchGeneration) setTimeout(() => speakAt(index + 1), 200);
+      };
+      utterance.onerror = () => {
+        if (generation !== pitchGeneration) return;
+        pitchPlaying = false;
+        updatePitchControls();
+        showError(`Device narration stopped on card ${index + 1}. The silent animatic and pitch script remain available.`);
+      };
+      window.speechSynthesis.speak(utterance);
+    };
+    speakAt(0);
+  }
+  function downloadPitchNarrationScript() {
+    try { downloadText(pitchNarrationScript(), pitchNarrationFilename(), 'text/plain;charset=utf-8'); }
+    catch (error) { showError(String(error?.message || error)); }
+  }
   function showAnimaticFrame(index) {
     if (!plannedShots.length) return;
     animaticIndex = Math.max(0, Math.min(plannedShots.length - 1, index));
@@ -670,7 +994,7 @@
     if (animaticTimer) { clearTimeout(animaticTimer); animaticTimer = null; }
     if (reset) { animaticIndex = 0; animaticElapsedSeconds = 0; if (plannedShots.length) showAnimaticFrame(0); }
     $('animaticPlay').disabled = !plannedShots.length;
-    $('animaticPlay').textContent = 'Play animatic';
+    $('animaticPlay').textContent = 'Play timed animatic';
     $('animaticStop').disabled = !plannedShots.length;
   }
   function playAnimaticShot(index) {
@@ -701,10 +1025,12 @@
     playAnimaticShot(0);
   }
   function renderAnimatic() {
+    stopNarratedPitch();
     stopAnimatic();
     $('animatic').classList.toggle('hidden', !plannedShots.length);
     $('animaticPlay').disabled = !plannedShots.length;
     $('animaticStop').disabled = !plannedShots.length;
+    updatePitchControls();
     if (!plannedShots.length) {
       $('animaticImage').classList.add('hidden');
       $('animaticOverlay').classList.add('hidden');
@@ -749,6 +1075,27 @@
   }
   function sourceAwareEdlFilename() {
     return `${packageBaseFilename()}-source-aware-rough-cut-edl.csv`;
+  }
+  function locationPlanFilename() {
+    return `${packageBaseFilename()}-location-production-plan.html`;
+  }
+  function locationScheduleFilename() {
+    return `${packageBaseFilename()}-location-schedule.csv`;
+  }
+  function locationPlanJsonFilename() {
+    return `${packageBaseFilename()}-location-production-plan.json`;
+  }
+  function characterSynopsisHtmlFilename() {
+    return `${packageBaseFilename()}-character-synopsis.html`;
+  }
+  function characterSynopsisTextFilename() {
+    return `${packageBaseFilename()}-character-synopsis.txt`;
+  }
+  function characterSynopsisJsonFilename() {
+    return `${packageBaseFilename()}-character-synopsis.json`;
+  }
+  function characterAppearancesCsvFilename() {
+    return `${packageBaseFilename()}-character-appearances.csv`;
   }
   function csvCell(value) {
     let text = String(value ?? '').replace(/\r\n?/g, '\n');
@@ -801,11 +1148,140 @@
     });
     return [headers.map(csvCell).join(','), ...rows].join('\r\n');
   }
+  function locationScheduleCsv() {
+    const breakdown = buildLocationBreakdown();
+    if (!breakdown) return '';
+    const headers = ['shoot_order','location_id','exact_setting','scene_numbers','shot_ids','planned_duration_seconds','characters','dialogue_scene_numbers','props_status','wardrobe_status','potential_location_changes_avoided','source_package_id','source_manifest_sha256','truth_label'];
+    const rows = breakdown.locations.map((location, index) => [
+      index + 1, location.locationId, location.displaySetting, location.sceneNumbers.join(' | '), location.shotIds.join(' | '),
+      location.plannedDurationSeconds, location.characters.join(' | '), location.dialogueSceneNumbers.join(' | '),
+      location.propsStatus, location.wardrobeStatus, breakdown.summary.potentialLocationChangesAvoided,
+      breakdown.sourcePackageId, breakdown.sourceManifestSha256, breakdown.truthLabel,
+    ].map(csvCell).join(','));
+    return [headers.map(csvCell).join(','), ...rows].join('\r\n');
+  }
+  function characterSynopsisText(dossier = deriveCharacterSynopsisDossier()) {
+    if (!dossier) return '';
+    const lines = [
+      dossier.production.title,
+      'CHARACTER LIST + SYNOPSIS',
+      '',
+      dossier.truthLabel,
+      '',
+      'PRODUCTION BRIEF SYNOPSIS',
+      dossier.production.synopsis || 'No synopsis was supplied in the production brief.',
+      '',
+      'PROJECT FACTS',
+      `Format: ${dossier.production.format || 'Not supplied'}`,
+      `Genre: ${dossier.production.genre || 'Not supplied'}`,
+      `Target audience: ${dossier.production.targetAudience || 'Not supplied'}`,
+      `Planned duration: ${dossier.production.plannedDurationSeconds || 0} seconds`,
+      `Tone: ${dossier.production.tone.join(', ') || 'Not supplied'}`,
+      '',
+      'CHARACTER APPEARANCE LIST',
+    ];
+    if (!dossier.characters.length) lines.push('No named characters were itemized in the production brief scenes.');
+    for (const character of dossier.characters) {
+      lines.push(
+        '',
+        `${character.characterId} — ${character.displayName}`,
+        'Role: Not itemized in the current brief schema; no role inferred.',
+        `Appears in scenes: ${character.appearanceSceneNumbers.join(', ') || 'None'}`,
+        `Settings: ${character.settings.join(' | ') || 'None supplied'}`,
+        `Dialogue-context scenes: ${character.dialogueContextSceneNumbers.join(', ') || 'None'}`,
+        'Dialogue note: A dialogue-context scene contains planned dialogue, but the schema does not identify who speaks.',
+      );
+      character.appearances.forEach(appearance => lines.push(`  Scene ${appearance.sceneNumber} — ${appearance.setting || 'Setting not supplied'} — ${appearance.scenePurpose || 'Purpose not supplied'}`));
+    }
+    lines.push('', 'CHRONOLOGICAL SCENE OUTLINE');
+    if (!dossier.sceneOutline.length) lines.push('No valid scene outline was supplied.');
+    dossier.sceneOutline.forEach(scene => lines.push(
+      `Scene ${scene.sceneNumber} — ${scene.setting || 'Setting not supplied'}`,
+      `Purpose: ${scene.purpose || 'Not supplied'}`,
+      `Characters: ${scene.characters.join(', ') || 'None itemized'}`,
+      `Dialogue planned in scene: ${scene.dialogueRequired ? 'Yes (speaker not identified)' : 'No'}`,
+      '',
+    ));
+    lines.push('EVIDENCE LIMITS');
+    dossier.reviewHolds.forEach(hold => lines.push(`- ${hold}`));
+    lines.push(
+      '',
+      `Source package: ${dossier.sourcePackageId || 'Not supplied'}`,
+      `Source manifest SHA-256: ${dossier.sourceManifestSha256 || 'Not supplied'}`,
+      `Derivation: ${dossier.derivation.algorithm}; model calls ${dossier.derivation.modelCalls}; package mutated ${dossier.derivation.packageMutated}`,
+    );
+    return `${lines.join('\n').trimEnd()}\n`;
+  }
+  function characterAppearancesCsv(dossier = deriveCharacterSynopsisDossier()) {
+    if (!dossier) return '';
+    const headers = ['character_id','character_name','role','role_status','appearance_scene_count','scene_number','setting','scene_purpose','scene_dialogue_required','dialogue_attribution_status','source_package_id','source_manifest_sha256','truth_label'];
+    const rows = [];
+    for (const character of dossier.characters) {
+      for (const appearance of character.appearances) {
+        rows.push([
+          character.characterId,character.displayName,'',character.roleStatus,character.appearanceSceneCount,
+          appearance.sceneNumber,appearance.setting,appearance.scenePurpose,
+          appearance.sceneDialogueRequired ? 'yes_scene_contains_dialogue' : 'no',appearance.dialogueAttributionStatus,
+          dossier.sourcePackageId,dossier.sourceManifestSha256,dossier.truthLabel,
+        ].map(csvCell).join(','));
+      }
+    }
+    return [headers.map(csvCell).join(','), ...rows].join('\r\n');
+  }
+  function characterSynopsisHtml(dossier = deriveCharacterSynopsisDossier()) {
+    if (!dossier) return '';
+    const characters = dossier.characters.map(character => {
+      const rows = character.appearances.map(appearance => `<tr><td>${esc(appearance.sceneNumber)}</td><td>${esc(appearance.setting || 'Not supplied')}</td><td>${esc(appearance.scenePurpose || 'Not supplied')}</td><td>${appearance.sceneDialogueRequired ? 'Yes — speaker not identified' : 'No'}</td></tr>`).join('');
+      return `<article class="character"><div class="character-head"><div><span>${esc(character.characterId)}</span><h2>${esc(character.displayName)}</h2></div><strong>${esc(character.appearanceSceneCount)} scene${character.appearanceSceneCount === 1 ? '' : 's'}</strong></div><p class="hold"><b>Role:</b> Not itemized in the current brief schema; no role was inferred.</p><p><b>Settings:</b> ${esc(character.settings.join(', ') || 'None supplied')}</p><p><b>Dialogue-context scenes:</b> ${esc(character.dialogueContextSceneNumbers.join(', ') || 'None')}. A scene-level dialogue flag does not identify this character as a speaker.</p><table><thead><tr><th>Scene</th><th>Setting</th><th>Scene purpose</th><th>Dialogue planned</th></tr></thead><tbody>${rows}</tbody></table></article>`;
+    }).join('') || '<p class="empty">No named characters were itemized in the production brief scenes.</p>';
+    const scenes = dossier.sceneOutline.map(scene => `<article class="scene"><span>Scene ${esc(scene.sceneNumber)}</span><h3>${esc(scene.setting || 'Setting not supplied')}</h3><p>${esc(scene.purpose || 'Purpose not supplied')}</p><dl><dt>Characters</dt><dd>${esc(scene.characters.join(', ') || 'None itemized')}</dd><dt>Dialogue planned</dt><dd>${scene.dialogueRequired ? 'Yes — speaker not identified' : 'No'}</dd></dl></article>`).join('') || '<p class="empty">No valid scene outline was supplied.</p>';
+    const holds = dossier.reviewHolds.map(hold => `<li>${esc(hold)}</li>`).join('');
+    const tone = dossier.production.tone.join(', ') || 'Not supplied';
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>${esc(dossier.production.title)} · Character list and synopsis</title><style>:root{font-family:Inter,"Segoe UI",system-ui,sans-serif;color:#17202b;background:#edf0f3}*{box-sizing:border-box}body{max-width:1100px;margin:0 auto;padding:28px}.mast,.panel,.character,.scene{border:1px solid #c8d0d9;background:#fff}.mast,.panel,.character{padding:20px}.eyebrow,.character-head span,.scene>span,dt{color:#99552a;font-size:10px;font-weight:850;letter-spacing:.1em;text-transform:uppercase}h1{margin:6px 0 8px;font-size:36px}.truth,.hold{padding:10px;border:1px solid #d7a56e;background:#fff7ec;color:#743f1d}.facts{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-top:13px}.fact{padding:10px;border:1px solid #d8dde3}.fact b,.fact span{display:block}.fact span{margin-top:4px;color:#617080;font-size:10px}.panel,.character{margin-top:12px}.character-head{display:flex;align-items:start;justify-content:space-between;gap:15px}.character-head h2{margin:3px 0}.character-head>strong{padding:6px 8px;background:#17202b;color:#fff;font-size:11px}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{padding:7px;border:1px solid #d9dee4;text-align:left;vertical-align:top;font-size:11px}th{background:#f2f4f6;font-size:9px;text-transform:uppercase}.scene-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.scene{padding:14px}.scene h3{margin:4px 0}.scene p{color:#3f4a58}dl{display:grid;grid-template-columns:auto 1fr;gap:5px 9px}dd{margin:0}.source{color:#66727f;font:9px/1.5 Consolas,monospace;overflow-wrap:anywhere}@media(max-width:760px){body{padding:12px}.facts,.scene-grid{grid-template-columns:1fr}.character-head{display:block}table{display:block;overflow-x:auto}}@page{size:letter portrait;margin:.42in}@media print{body{max-width:none;padding:0;background:#fff;font-size:9pt}.mast,.panel,.character,.scene{box-shadow:none}.character{break-inside:auto}.scene{break-inside:avoid}th,td{font-size:8pt}}</style></head><body><header class="mast"><div class="eyebrow">Video Studio · character list + synopsis</div><h1>${esc(dossier.production.title)}</h1><p>${esc(dossier.production.synopsis || 'No synopsis was supplied in the production brief.')}</p><p class="truth">${esc(dossier.truthLabel)}</p><div class="facts"><div class="fact"><b>${esc(dossier.summary.namedCharacterCount)}</b><span>named characters</span></div><div class="fact"><b>${esc(dossier.summary.validSceneCount)}</b><span>valid scenes</span></div><div class="fact"><b>${esc(dossier.production.plannedDurationSeconds)}</b><span>planned seconds</span></div><div class="fact"><b>${esc(dossier.production.genre || 'Not supplied')}</b><span>genre</span></div></div></header><section class="panel"><div class="eyebrow">Production brief synopsis</div><p>${esc(dossier.production.synopsis || 'No synopsis was supplied in the production brief.')}</p><p><b>Format:</b> ${esc(dossier.production.format || 'Not supplied')} · <b>Audience:</b> ${esc(dossier.production.targetAudience || 'Not supplied')} · <b>Tone:</b> ${esc(tone)}</p></section><section><div class="eyebrow panel">Character appearance list</div>${characters}</section><section class="panel"><div class="eyebrow">Chronological scene outline</div><div class="scene-grid">${scenes}</div></section><section class="panel"><div class="eyebrow">Evidence limits / human review holds</div><ul>${holds}</ul><p class="source">Source package ${esc(dossier.sourcePackageId || 'not supplied')} · manifest SHA-256 ${esc(dossier.sourceManifestSha256 || 'not supplied')} · ${esc(dossier.derivation.algorithm)} · no additional model call · signed source package not mutated</p></section></body></html>`;
+  }
+  function locationPlanHtml() {
+    const breakdown = buildLocationBreakdown();
+    if (!breakdown) return '';
+    const title = boundedPitchText(currentStoryboardPackage?.production_brief?.title, 'Untitled production');
+    const metric = (value, label) => `<div class="metric"><strong>${esc(value)}</strong><span>${esc(label)}</span></div>`;
+    const cards = breakdown.locations.map((location, index) => {
+      const purposes = location.scenePurposes.map(item => `<li><strong>Scene ${esc(item.sceneNumber)}</strong> — ${esc(item.purpose || 'Purpose not supplied.')}</li>`).join('');
+      const continuity = location.continuityRequirements.map(item => `<li>${esc(item)}</li>`).join('') || '<li>No card-level continuity requirement supplied.</li>';
+      return `<article class="card"><div class="order">Suggested block ${index + 1}</div><h2>${esc(location.locationId)} · ${esc(location.displaySetting)}</h2><p class="facts">Scenes ${esc(location.sceneNumbers.join(', '))} · ${esc(location.shotIds.length)} planned shots · ${esc(location.plannedDurationSeconds)} seconds of planned screen time</p><div class="cols"><section><h3>People + dialogue</h3><p><strong>Characters:</strong> ${esc(location.characters.join(', ') || 'None itemized')}</p><p><strong>Dialogue scenes:</strong> ${esc(location.dialogueSceneNumbers.join(', ') || 'None')}</p><h3>Scene purposes</h3><ul>${purposes}</ul></section><section><h3>Audio + continuity</h3><p>${esc(location.briefAudioDirection || 'No overall audio direction supplied.')}</p>${location.audioNotes.length ? `<p>${esc(location.audioNotes.join(' | '))}</p>` : ''}<ul>${continuity}</ul><p class="hold"><strong>Production review holds:</strong> props and wardrobe are not itemized in the current brief schema. Permits, access, travel, cast availability, booking, and cost were not analyzed.</p></section></div><p class="shots"><strong>Shot IDs:</strong> ${esc(location.shotIds.join(', ') || 'None')}</p></article>`;
+    }).join('');
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:"><title>${esc(title)} · Location production plan</title><style>:root{font-family:Inter,"Segoe UI",system-ui,sans-serif;color:#17202a;background:#eef1f4}*{box-sizing:border-box}body{max-width:1100px;margin:0 auto;padding:28px}.mast,.card{border:1px solid #c7cfd8;background:#fff}.mast{padding:22px}.eyebrow,.order{color:#99552a;font-size:10px;font-weight:850;letter-spacing:.1em;text-transform:uppercase}h1{margin:6px 0 8px;font-size:30px}.truth{padding:9px;border:1px solid #b36c32;background:#fff7ec;color:#7a401c;font-weight:750}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-top:12px}.metric{padding:10px;border:1px solid #d5dbe2}.metric strong,.metric span{display:block}.metric strong{font-size:22px}.metric span{color:#687482;font-size:8px;text-transform:uppercase}.card{margin-top:12px;padding:18px;break-inside:avoid}.card h2{margin:4px 0 5px}.facts,.shots{color:#566270}.cols{display:grid;grid-template-columns:1fr 1fr;gap:22px}.cols h3{margin:12px 0 5px;font-size:12px}.cols p,.cols li{font-size:10px;line-height:1.45}.hold{padding:8px;border:1px solid #d7a56e;background:#fff7ec;color:#7a401c}.source{margin-top:12px;color:#66727f;font:9px/1.5 Consolas,monospace}@media(max-width:720px){body{padding:12px}.metrics,.cols{grid-template-columns:1fr 1fr}}@page{size:letter portrait;margin:.45in}@media print{body{max-width:none;padding:0;background:#fff}.mast,.card{box-shadow:none}.card{page-break-inside:avoid}}</style></head><body><header class="mast"><div class="eyebrow">Video Studio · derived location production plan</div><h1>${esc(title)}</h1><p>Exact-setting grouping for independent-film pre-production review. Similar-looking location names are deliberately kept separate unless they match after case, whitespace, and Unicode normalization.</p><p class="truth">${esc(breakdown.truthLabel)}</p><div class="metrics">${metric(breakdown.summary.uniqueLocationCount,'exact locations / sets')}${metric(breakdown.summary.narrativeLocationChangeCount,'story-order changes')}${metric(breakdown.summary.suggestedLocationChangeCount,'grouped shoot changes')}${metric(breakdown.summary.potentialLocationChangesAvoided,'potential changes avoided')}</div></header>${cards}<p class="source">Derived without another model call. Source package ${esc(breakdown.sourcePackageId || 'not supplied')} · manifest SHA-256 ${esc(breakdown.sourceManifestSha256 || 'not supplied')} · algorithm ${esc(breakdown.derivation.algorithm)}</p></body></html>`;
+  }
   function downloadShotListCsv() {
     downloadText(shotListCsv(), shotListFilename());
   }
   function downloadSourceAwareEdlCsv() {
     downloadText(sourceAwareEdlCsv(), sourceAwareEdlFilename());
+  }
+  function downloadLocationPlanHtml() {
+    downloadText(locationPlanHtml(), locationPlanFilename(), 'text/html;charset=utf-8');
+  }
+  function downloadLocationScheduleCsv() {
+    downloadText(locationScheduleCsv(), locationScheduleFilename());
+  }
+  function downloadLocationPlanJson() {
+    const breakdown = buildLocationBreakdown();
+    if (breakdown) downloadText(`${JSON.stringify(breakdown, null, 2)}\n`, locationPlanJsonFilename(), 'application/json;charset=utf-8');
+  }
+  function downloadCharacterSynopsisHtml() {
+    const dossier = deriveCharacterSynopsisDossier();
+    if (dossier) downloadText(characterSynopsisHtml(dossier), characterSynopsisHtmlFilename(), 'text/html;charset=utf-8');
+  }
+  function downloadCharacterSynopsisText() {
+    const dossier = deriveCharacterSynopsisDossier();
+    if (dossier) downloadText(characterSynopsisText(dossier), characterSynopsisTextFilename(), 'text/plain;charset=utf-8');
+  }
+  function downloadCharacterSynopsisJson() {
+    const dossier = deriveCharacterSynopsisDossier();
+    if (dossier) downloadText(`${JSON.stringify(dossier, null, 2)}\n`, characterSynopsisJsonFilename(), 'application/json;charset=utf-8');
+  }
+  function downloadCharacterAppearancesCsv() {
+    const dossier = deriveCharacterSynopsisDossier();
+    if (dossier) downloadText(characterAppearancesCsv(dossier), characterAppearancesCsvFilename());
   }
   function downloadStoryboardPackage() {
     if (!currentStoryboardPackage) return;
@@ -993,8 +1469,11 @@
   $('footageFiles').addEventListener('change', async event => { showError(''); await inventoryFootage(event.target.files); });
   $('animaticPlay').addEventListener('click', playAnimatic);
   $('animaticStop').addEventListener('click', stopAnimatic);
-  $('cancel').addEventListener('click', async () => { try { render(await request(`/v1/jobs/${currentJob.job_id}:cancel`, {method:'POST', body:'{}'})); } catch (error) { if (error.job) render(error.job); showError(error.message); } });
-  $('retry').addEventListener('click', async () => { showError(''); $('brief').classList.add('hidden'); try { render(await request(`/v1/jobs/${currentJob.job_id}:retry`, {method:'POST', body:'{}'})); poll(); } catch (error) { if (error.job) render(error.job); showError(error.message); } });
+  $('pitchPlay').addEventListener('click', playNarratedPitch);
+  $('pitchStop').addEventListener('click', () => stopNarratedPitch({announce:true}));
+  $('downloadPitchScript').addEventListener('click', downloadPitchNarrationScript);
+  $('cancel').addEventListener('click', async () => { stopNarratedPitch(); try { render(await request(`/v1/jobs/${currentJob.job_id}:cancel`, {method:'POST', body:'{}'})); } catch (error) { if (error.job) render(error.job); showError(error.message); } });
+  $('retry').addEventListener('click', async () => { stopNarratedPitch(); showError(''); $('brief').classList.add('hidden'); try { render(await request(`/v1/jobs/${currentJob.job_id}:retry`, {method:'POST', body:'{}'})); poll(); } catch (error) { if (error.job) render(error.job); showError(error.message); } });
   $('timelineFirst').addEventListener('click', () => selectScene(0));
   $('timelinePrevious').addEventListener('click', () => selectScene(selectedSceneIndex - 1));
   $('timelineNext').addEventListener('click', () => selectScene(selectedSceneIndex + 1));

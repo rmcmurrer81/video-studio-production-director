@@ -123,9 +123,9 @@ test("short clarification answers compose complete one-field context across repe
     "timelineStatus", "timelineEmpty", "timelineTimecode", "timelinePlayhead",
     "timelineSelection", "timelineFirst", "timelinePrevious", "timelineNext", "timelineLast",
     "downloadPackage", "downloadVisualStoryboard", "printVisualStoryboard", "downloadDetailedSheet",
-    "downloadShotList", "downloadEdl", "accessHelp", "sourceSummary", "attachmentButton",
+    "downloadLocationPlan", "downloadLocationCsv", "downloadLocationJson", "downloadCharacterHtml", "downloadCharacterText", "downloadCharacterJson", "downloadCharacterCsv", "downloadShotList", "downloadEdl", "accessHelp", "sourceSummary", "attachmentButton",
     "attachmentMenu", "attachStory", "attachFootage", "scriptFile", "footageFiles",
-    "scriptStatus", "footageStatus", "animatic", "animaticPlay", "animaticStop",
+    "scriptStatus", "footageStatus", "animatic", "animaticPlay", "animaticStop", "pitchPlay", "pitchStop", "downloadPitchScript",
     "animaticImage", "animaticPlaceholder", "animaticOverlay", "animaticShot",
     "animaticAction", "animaticBar", "animaticTime", "animaticTruth", "installApp",
   ];
@@ -223,9 +223,9 @@ test("visual and detailed HTML downloads stay separate, escaped, scriptless, and
     "timelineStatus", "timelineEmpty", "timelineTimecode", "timelinePlayhead",
     "timelineSelection", "timelineFirst", "timelinePrevious", "timelineNext", "timelineLast",
     "downloadPackage", "downloadVisualStoryboard", "printVisualStoryboard", "downloadDetailedSheet",
-    "downloadShotList", "downloadEdl", "accessHelp", "sourceSummary", "attachmentButton",
+    "downloadLocationPlan", "downloadLocationCsv", "downloadLocationJson", "downloadCharacterHtml", "downloadCharacterText", "downloadCharacterJson", "downloadCharacterCsv", "downloadShotList", "downloadEdl", "accessHelp", "sourceSummary", "attachmentButton",
     "attachmentMenu", "attachStory", "attachFootage", "scriptFile", "footageFiles",
-    "scriptStatus", "footageStatus", "animatic", "animaticPlay", "animaticStop",
+    "scriptStatus", "footageStatus", "animatic", "animaticPlay", "animaticStop", "pitchPlay", "pitchStop", "downloadPitchScript",
     "animaticImage", "animaticPlaceholder", "animaticOverlay", "animaticShot",
     "animaticAction", "animaticBar", "animaticTime", "animaticTruth", "installApp",
   ];
@@ -251,6 +251,7 @@ test("visual and detailed HTML downloads stay separate, escaped, scriptless, and
       title: "A <Director> & \"Friend\"",
       summary: "A summary with <script>alert(1)</script>.",
       format: "short scene",
+      target_audience: "Independent filmmakers & investors",
       genre: "science fiction & drama",
       duration_seconds: 12,
       tone: ["warm", "<b>untrusted tone</b>"],
@@ -262,6 +263,18 @@ test("visual and detailed HTML downloads stay separate, escaped, scriptless, and
         setting: "Repair <shop>",
         purpose: "Choose & commit.",
         characters: ["Alex <Lead>"],
+        dialogue_required: true,
+      }, {
+        number: 2,
+        setting: "=Dock",
+        purpose: "Inspect the departure route.",
+        characters: ["Alex <Lead>", "Morgan", "=HYPERLINK(\"bad\")", "+COMMAND", "-DANGER", "@SUM"],
+        dialogue_required: false,
+      }, {
+        number: 3,
+        setting: "  repair   <SHOP> ",
+        purpose: "Return and decide.",
+        characters: ["Morgan", "  alex <lead>  "],
         dialogue_required: true,
       }],
       secret: "nested-secret-that-must-not-export",
@@ -292,7 +305,7 @@ test("visual and detailed HTML downloads stay separate, escaped, scriptless, and
       }, {
         shot_id: "SC01-SH02",
         sequence: 2,
-        scene_number: 1,
+        scene_number: 3,
         role: "reaction_coverage",
         planned_in_timecode: "00:00:06:00",
         planned_out_timecode: "00:00:12:00",
@@ -390,6 +403,15 @@ test("visual and detailed HTML downloads stay separate, escaped, scriptless, and
     focus() {},
     print() { printCount += 1; },
   };
+  const spoken = [];
+  let speechCancels = 0;
+  class FakeUtterance {
+    constructor(textValue) { this.text = textValue; this.onend = null; this.onerror = null; }
+  }
+  const speechSynthesis = {
+    speak(utterance) { spoken.push(utterance); },
+    cancel() { speechCancels += 1; },
+  };
 
   const html = fs.readFileSync(path.join(__dirname, "..", "web", "all-things-agentic.html"), "utf8");
   const script = html.match(/<script>\s*([\s\S]*?)\s*<\/script>/)[1];
@@ -401,32 +423,70 @@ test("visual and detailed HTML downloads stay separate, escaped, scriptless, and
     document: documentObject,
     fetch: fetchObject,
     setTimeout(callback) { Promise.resolve().then(callback); return 1; },
-    window: {addEventListener() {}, open() { return printWindow; }},
+    window: {addEventListener() {}, open() { return printWindow; }, speechSynthesis, SpeechSynthesisUtterance: FakeUtterance},
   }, {filename: "all-things-agentic.html"});
 
   elements.get("message").value = "Build the safe storyboard sheet.";
   await elements.get("submit").listeners.get("click")();
   await settle();
   assert.equal(elements.get("animaticPlay").disabled, false);
+  assert.equal(elements.get("pitchPlay").disabled, false);
+  assert.equal(elements.get("downloadPitchScript").disabled, false);
   assert.equal(elements.get("animaticImage").src, "data:image/jpeg;base64,/9j/2Q==");
   assert.match(elements.get("animaticShot").textContent, /SC01-SH01/);
   assert.equal(elements.get("animaticTime").textContent, "00:00 / 00:12");
+  elements.get("pitchPlay").click();
+  assert.equal(spoken.length, 1);
+  assert.match(spoken[0].text, /^Card 1, primary coverage\./);
+  spoken[0].onend();
+  await settle();
+  assert.equal(spoken.length, 2);
+  assert.match(spoken[1].text, /^Card 2, reaction coverage\./);
+  elements.get("pitchStop").click();
+  spoken[1].onend();
+  await settle();
+  assert.equal(spoken.length, 2, "stale speech callbacks cannot advance after Stop");
+  assert.ok(speechCancels >= 1);
   elements.get("downloadDetailedSheet").click();
   elements.get("downloadVisualStoryboard").click();
+  elements.get("downloadLocationPlan").click();
+  elements.get("downloadLocationCsv").click();
+  elements.get("downloadLocationJson").click();
+  elements.get("downloadCharacterHtml").click();
+  elements.get("downloadCharacterText").click();
+  elements.get("downloadCharacterJson").click();
+  elements.get("downloadCharacterCsv").click();
   elements.get("printVisualStoryboard").click();
   elements.get("downloadShotList").click();
   elements.get("downloadEdl").click();
+  elements.get("downloadPitchScript").click();
   await settle();
 
-  assert.equal(blobs.length, 4);
+  assert.equal(blobs.length, 12);
   assert.equal(blobs[0].type, "text/html;charset=utf-8");
   assert.equal(blobs[1].type, "text/html;charset=utf-8");
-  assert.equal(blobs[2].type, "text/csv;charset=utf-8");
+  assert.equal(blobs[2].type, "text/html;charset=utf-8");
   assert.equal(blobs[3].type, "text/csv;charset=utf-8");
+  assert.equal(blobs[4].type, "application/json;charset=utf-8");
+  assert.equal(blobs[5].type, "text/html;charset=utf-8");
+  assert.equal(blobs[6].type, "text/plain;charset=utf-8");
+  assert.equal(blobs[7].type, "application/json;charset=utf-8");
+  assert.equal(blobs[8].type, "text/csv;charset=utf-8");
+  assert.equal(blobs[9].type, "text/csv;charset=utf-8");
+  assert.equal(blobs[10].type, "text/csv;charset=utf-8");
+  assert.equal(blobs[11].type, "text/plain;charset=utf-8");
   const detailed = blobs[0].parts.join("");
   const visual = blobs[1].parts.join("");
-  const shotList = blobs[2].parts.join("");
-  const edl = blobs[3].parts.join("");
+  const locationHtml = blobs[2].parts.join("");
+  const locationCsv = blobs[3].parts.join("");
+  const locationJson = blobs[4].parts.join("");
+  const characterHtml = blobs[5].parts.join("");
+  const characterText = blobs[6].parts.join("");
+  const characterJson = blobs[7].parts.join("");
+  const characterCsv = blobs[8].parts.join("");
+  const shotList = blobs[9].parts.join("");
+  const edl = blobs[10].parts.join("");
+  const pitchScript = blobs[11].parts.join("");
   assert.match(detailed, /^<!doctype html>/);
   assert.match(detailed, /Content-Security-Policy/);
   assert.match(detailed, /default-src 'none'/);
@@ -458,22 +518,92 @@ test("visual and detailed HTML downloads stay separate, escaped, scriptless, and
   assert.match(edl, /no local source selected; planned editorial event only/);
   assert.match(edl, /source_duration_deficit_seconds/);
   assert.match(edl, /NO SOURCE ASSIGNED/);
-  assert.doesNotMatch(detailed + visual + shotList + edl, /private-judge-code|package-secret|top-level-secret|nested-secret|visual-secret/);
+  assert.match(locationHtml, /derived location production plan/i);
+  assert.match(locationHtml, /potential changes avoided/i);
+  assert.match(locationHtml, /Props and wardrobe are not itemized/i);
+  assert.match(locationHtml, /Repair &lt;shop&gt;/);
+  assert.doesNotMatch(locationHtml, /<script\b/i);
+  assert.equal((locationCsv.match(/\r\n/g) || []).length, 2, "location CSV has header plus two exact-location rows");
+  assert.match(locationCsv, /not_itemized_in_current_brief_schema/);
+  assert.match(locationCsv, /"'=Dock"/, "spreadsheet formula-leading cells are neutralized");
+  const parsedLocation = JSON.parse(locationJson);
+  assert.equal(parsedLocation.summary.uniqueLocationCount, 2);
+  assert.equal(parsedLocation.summary.narrativeLocationChangeCount, 2);
+  assert.equal(parsedLocation.summary.suggestedLocationChangeCount, 1);
+  assert.equal(parsedLocation.summary.potentialLocationChangesAvoided, 1);
+  assert.deepEqual(parsedLocation.locations[0].sceneNumbers, [1, 3]);
+  assert.deepEqual(parsedLocation.locations[0].characters, ["Alex <Lead>", "Morgan"]);
+  assert.match(characterHtml, /^<!doctype html>/);
+  assert.match(characterHtml, /Content-Security-Policy/);
+  assert.match(characterHtml, /Production brief synopsis/);
+  assert.match(characterHtml, /A &lt;Director&gt; &amp; &quot;Friend&quot;/);
+  assert.match(characterHtml, /A summary with &lt;script&gt;alert\(1\)&lt;\/script&gt;\./);
+  assert.match(characterHtml, /Role:<\/b> Not itemized/);
+  assert.match(characterHtml, /does not identify this character as a speaker/);
+  assert.doesNotMatch(characterHtml, /<script\b|<img\b/i);
+  assert.match(characterText, /CHARACTER LIST \+ SYNOPSIS/);
+  assert.match(characterText, /Appears in scenes: 1, 2, 3/);
+  assert.match(characterText, /does not identify who speaks/);
+  assert.match(characterText, /no role inferred/i);
+  const parsedCharacter = JSON.parse(characterJson);
+  assert.equal(parsedCharacter.schema, "video-studio.character-synopsis-dossier/v1");
+  assert.equal(parsedCharacter.summary.namedCharacterCount, 6);
+  assert.equal(parsedCharacter.summary.roleCount, 0);
+  assert.equal(parsedCharacter.derivation.modelCalls, 0);
+  assert.equal(parsedCharacter.derivation.packageMutated, false);
+  assert.equal(parsedCharacter.characters[0].displayName, "Alex <Lead>");
+  assert.deepEqual(parsedCharacter.characters[0].appearanceSceneNumbers, [1, 2, 3]);
+  assert.deepEqual(parsedCharacter.characters[0].dialogueContextSceneNumbers, [1, 3]);
+  assert.equal(parsedCharacter.characters[0].role, null);
+  assert.match(characterCsv, /scene_level_only_not_attributed_to_character/);
+  assert.match(characterCsv, /"'=HYPERLINK\(""bad""\)"/);
+  assert.match(characterCsv, /"'\+COMMAND"/);
+  assert.match(characterCsv, /"'-DANGER"/);
+  assert.match(characterCsv, /"'@SUM"/);
+  assert.doesNotMatch(characterCsv, /,"=HYPERLINK|,"\+COMMAND|,"-DANGER|,"@SUM/);
+  assert.match(pitchScript, /INVESTOR PITCH NARRATION \/ CUE SCRIPT/);
+  assert.match(pitchScript, /Dialogue and audio direction: Protect dialogue <clearly>\./);
+  assert.match(pitchScript, /CARD 2 — SC01-SH02/);
+  assert.doesNotMatch(detailed + visual + locationHtml + locationCsv + locationJson + characterHtml + characterText + characterJson + characterCsv + shotList + edl + pitchScript, /private-judge-code|package-secret|top-level-secret|nested-secret|visual-secret/);
   assert.doesNotMatch(detailed + visual, /https?:\/\//i);
-  assert.equal(appended.length, 4);
+  assert.equal(appended.length, 12);
   assert.equal(appended[0].download, "a-director-friend-detailed-production-sheet.html");
   assert.equal(appended[1].download, "a-director-friend-visual-storyboard.html");
-  assert.equal(appended[2].download, "a-director-friend-shot-list.csv");
-  assert.equal(appended[3].download, "a-director-friend-source-aware-rough-cut-edl.csv");
+  assert.equal(appended[2].download, "a-director-friend-location-production-plan.html");
+  assert.equal(appended[3].download, "a-director-friend-location-schedule.csv");
+  assert.equal(appended[4].download, "a-director-friend-location-production-plan.json");
+  assert.equal(appended[5].download, "a-director-friend-character-synopsis.html");
+  assert.equal(appended[6].download, "a-director-friend-character-synopsis.txt");
+  assert.equal(appended[7].download, "a-director-friend-character-synopsis.json");
+  assert.equal(appended[8].download, "a-director-friend-character-appearances.csv");
+  assert.equal(appended[9].download, "a-director-friend-shot-list.csv");
+  assert.equal(appended[10].download, "a-director-friend-source-aware-rough-cut-edl.csv");
+  assert.equal(appended[11].download, "a-director-friend-investor-pitch-narration.txt");
   assert.equal(appended[0].clickCount, 1);
   assert.equal(appended[1].clickCount, 1);
   assert.equal(appended[2].clickCount, 1);
   assert.equal(appended[3].clickCount, 1);
+  assert.equal(appended[4].clickCount, 1);
+  assert.equal(appended[5].clickCount, 1);
+  assert.equal(appended[6].clickCount, 1);
+  assert.equal(appended[7].clickCount, 1);
+  assert.equal(appended[8].clickCount, 1);
+  assert.equal(appended[9].clickCount, 1);
+  assert.equal(appended[10].clickCount, 1);
+  assert.equal(appended[11].clickCount, 1);
   assert.equal(appended[0].removed, true);
   assert.equal(appended[1].removed, true);
   assert.equal(appended[2].removed, true);
   assert.equal(appended[3].removed, true);
-  assert.deepEqual(revoked, ["blob:storyboard-1", "blob:storyboard-2", "blob:storyboard-3", "blob:storyboard-4"]);
+  assert.equal(appended[4].removed, true);
+  assert.equal(appended[5].removed, true);
+  assert.equal(appended[6].removed, true);
+  assert.equal(appended[7].removed, true);
+  assert.equal(appended[8].removed, true);
+  assert.equal(appended[9].removed, true);
+  assert.equal(appended[10].removed, true);
+  assert.equal(appended[11].removed, true);
+  assert.deepEqual(revoked, ["blob:storyboard-1", "blob:storyboard-2", "blob:storyboard-3", "blob:storyboard-4", "blob:storyboard-5", "blob:storyboard-6", "blob:storyboard-7", "blob:storyboard-8", "blob:storyboard-9", "blob:storyboard-10", "blob:storyboard-11", "blob:storyboard-12"]);
   assert.equal(printWindow.opener, null);
   assert.equal(printCount, 1);
   assert.equal(printedSheet, visual);
@@ -488,9 +618,9 @@ test("owner v2 blocks blank access, imports whole or bounded scripts locally, an
     "timelineStatus", "timelineEmpty", "timelineTimecode", "timelinePlayhead",
     "timelineSelection", "timelineFirst", "timelinePrevious", "timelineNext", "timelineLast",
     "downloadPackage", "downloadVisualStoryboard", "printVisualStoryboard", "downloadDetailedSheet",
-    "downloadShotList", "downloadEdl", "accessHelp", "sourceSummary", "attachmentButton",
+    "downloadLocationPlan", "downloadLocationCsv", "downloadLocationJson", "downloadCharacterHtml", "downloadCharacterText", "downloadCharacterJson", "downloadCharacterCsv", "downloadShotList", "downloadEdl", "accessHelp", "sourceSummary", "attachmentButton",
     "attachmentMenu", "attachStory", "attachFootage", "scriptFile", "footageFiles",
-    "scriptStatus", "footageStatus", "animatic", "animaticPlay", "animaticStop",
+    "scriptStatus", "footageStatus", "animatic", "animaticPlay", "animaticStop", "pitchPlay", "pitchStop", "downloadPitchScript",
     "animaticImage", "animaticPlaceholder", "animaticOverlay", "animaticShot",
     "animaticAction", "animaticBar", "animaticTime", "animaticTruth", "installApp",
   ];
@@ -615,4 +745,66 @@ test("owner v2 blocks blank access, imports whole or bounded scripts locally, an
   assert.equal(Buffer.from(posted, "utf8").toString("utf8"), posted);
   assert.equal(posts[0].options.headers["X-Video-Studio-Access"], "private-code-never-in-body");
   assert.equal(Object.keys(JSON.parse(posts[0].options.body)).join(","), "message");
+});
+
+
+test("character dossier fails closed on missing evidence and never mutates its source package", () => {
+  const elements = new Map();
+  const element = id => {
+    if (!elements.has(id)) elements.set(id, new FakeElement(id));
+    return elements.get(id);
+  };
+  const documentObject = {
+    body: {append() {}},
+    getElementById(id) { return element(id); },
+    createElement() { return new FakeElement(); },
+    querySelectorAll() { return []; },
+  };
+  const html = fs.readFileSync(path.join(__dirname, "..", "web", "all-things-agentic.html"), "utf8");
+  const sourceScript = html.match(/<script>\s*([\s\S]*?)\s*<\/script>/)[1];
+  const instrumentedScript = sourceScript.replace(/\}\)\(\);\s*$/, `
+    globalThis.__characterDossierTestApi = {
+      deriveCharacterSynopsisDossier,
+      characterSynopsisHtml,
+      characterSynopsisText,
+      characterAppearancesCsv,
+    };
+  })();`);
+  const context = {
+    clearTimeout() {},
+    console,
+    document: documentObject,
+    fetch() { throw new Error("network should not be used"); },
+    setTimeout() { return 1; },
+    window: {addEventListener() {}},
+  };
+  vm.runInNewContext(instrumentedScript, context, {filename: "all-things-agentic-character-test.html"});
+  const api = context.__characterDossierTestApi;
+  assert.ok(api);
+  assert.equal(api.deriveCharacterSynopsisDossier({}), null);
+
+  const sourcePackage = {
+    package_id: "storyboard-missing-evidence",
+    manifest_sha256: "f".repeat(64),
+    production_brief: {
+      title: "",
+      summary: "",
+      scenes: [null, {number: 0}, {number: 1, setting: "", purpose: "", characters: [], dialogue_required: false}],
+    },
+  };
+  const before = JSON.stringify(sourcePackage);
+  const dossier = api.deriveCharacterSynopsisDossier(sourcePackage);
+  assert.equal(JSON.stringify(sourcePackage), before);
+  assert.equal(dossier.production.title, "Untitled production");
+  assert.equal(dossier.production.synopsis, "");
+  assert.equal(dossier.summary.validSceneCount, 1);
+  assert.equal(dossier.summary.namedCharacterCount, 0);
+  assert.equal(dossier.summary.roleCount, 0);
+  assert.ok(dossier.reviewHolds.some(value => value.includes("did not supply a synopsis")));
+  assert.ok(dossier.reviewHolds.some(value => value.includes("No named characters")));
+  assert.ok(dossier.reviewHolds.some(value => value.includes("Scene entry 1 was omitted")));
+  assert.ok(dossier.reviewHolds.some(value => value.includes("were not inferred")));
+  assert.match(api.characterSynopsisText(dossier), /No synopsis was supplied/);
+  assert.match(api.characterSynopsisHtml(dossier), /No named characters were itemized/);
+  assert.equal(api.characterAppearancesCsv(dossier).split("\r\n").length, 1);
 });

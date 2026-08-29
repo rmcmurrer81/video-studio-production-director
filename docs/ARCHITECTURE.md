@@ -18,15 +18,18 @@ flowchart LR
     Worker -->|Validated creative brief| Compiler[Deterministic storyboard<br/>timeline compiler + auditor]
     Compiler -->|Plan-only JSON package<br/>manifest digest| Worker
     UI -->|Poll status| API
-    UI -->|Local downloads| Package[JSON + visual/detailed HTML<br/>shot-list CSV + rough-cut EDL CSV]
+    UI -->|Local deterministic derivation| Handoffs[Exact-setting location plan<br/>character + synopsis dossier]
+    UI -->|Local downloads| Package[Package JSON + visual/detailed HTML<br/>location HTML/CSV/JSON<br/>character HTML/TXT/JSON/CSV<br/>shot-list CSV + rough-cut EDL CSV]
     UI -->|Compiled durations + panels| Animatic[Timed in-app animatic<br/>previsualization only]
+    UI -->|Bounded cue text| Pitch[Browser/device speech preview<br/>narration TXT only]
 ```
 
 ## Responsibilities
 
 | Component | Responsibility |
 | --- | --- |
-| Browser UI | Collect natural chat; locally extract supported story files; inventory raw-video metadata without uploading bytes; display durable status; compose clarification context in window memory; render visual/detailed boards and a timed animatic; export JSON, HTML, shot-list CSV, and source-aware rough-cut EDL CSV; and open the visual sheet for Print / Save PDF. |
+| Browser UI | Collect natural chat; locally extract supported story files; inventory raw-video metadata without uploading bytes; display durable status; compose clarification context in window memory; render visual/detailed boards and a timed animatic; derive exact-setting location and evidence-limited character/synopsis handoffs; preview bounded cue text with browser/device speech; export JSON, HTML, TXT, CSV, and source-aware rough-cut EDL files; and open the visual sheet for Print / Save PDF. |
+| Browser-side plan derivations | Group exact normalized settings and compute scheduling metrics; combine the brief synopsis with exact supported character appearances and scene outline. These derivations make no additional model call, do not mutate the source package, do not merge merely similar locations, and do not infer unsupported character roles, biographies, relationships, arcs, casting, pronouns, or speaker attribution. |
 | PWA shell | Provide a same-origin manifest, static shell service worker, install prompt integration, and standalone display. API/job routes are never cached. |
 | Local source boundary | Read PDF/text story content and raw-video metadata in the browser. Script text is sent only as creative source inside the same-origin job request; selected video bytes are never sent. No footage-content analysis is claimed. |
 | Visual sidecar | Keep one ordered record per planned shot, validate hashes/base64/JPEG dimensions and byte limits, show missing panels explicitly, and never weaken or rewrite the deterministic JSON plan. |
@@ -69,4 +72,4 @@ The first ETA is unavailable. ETA ranges appear only after successful jobs provi
 
 ## Evidence boundary
 
-Local tests inject model, task, repository, or runtime doubles. Their evidence labels (`injected_test_client` and `test_double`) are deliberately different from `live_google_provider_response`. Configuration health, a successful container build, deterministic audit success, and mocked tests are useful verification, but none proves a live Google Cloud execution. Likewise, a valid package proves an internally consistent editorial plan—not rendered media.
+Local tests inject model, task, repository, or runtime doubles. Their evidence labels (`injected_test_client` and `test_double`) are deliberately different from `live_google_provider_response`. Configuration health, a successful container build, deterministic audit success, and mocked tests are useful verification, but none proves a live Google Cloud execution. Likewise, a valid package proves an internally consistent editorial plan—not rendered media. Browser/device pitch speech is not generated audio and is not embedded in a media file; character/synopsis outputs prove only the synopsis and exact appearance evidence present in the current brief.

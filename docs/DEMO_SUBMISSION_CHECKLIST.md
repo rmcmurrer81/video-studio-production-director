@@ -58,9 +58,12 @@ Do not check these boxes based on mocks, configuration text, `/health`, or deplo
 - [ ] Show job ID, stage, progress, application attempt, and the honestly unavailable first-run ETA.
 - [ ] Show the final title, summary, generated planning illustrations or explicit pending frames, ordered detailed cards, planned in/out timecodes, framing/camera/action/audio direction, deterministic audit, both manifest digests, and live execution metadata.
 - [ ] Play the timed animatic and call it previsualization assembled from planning panels—not a rendered scene or finished video.
+- [ ] Run **Narrate investor pitch** for one or two cues, stop it, and download the narration TXT. State that browser/device speech is not generated audio and is not embedded in an MP4/MOV/audio file.
+- [ ] Show exact-setting location grouping and download its HTML, schedule CSV, and JSON. State that similar-looking settings are not silently merged and props/wardrobe are not itemized by the current brief.
+- [ ] Show the character/synopsis dossier and download its HTML, TXT, JSON, and character-appearance CSV. State that it derives supported synopsis/appearance evidence without another model call and does not infer roles, biographies, relationships, arcs, casting, pronouns, or speaker attribution.
 - [ ] Download the package JSON, visual storyboard HTML, detailed production sheet, shot-list CSV, and source-aware rough-cut EDL CSV; demonstrate Print / Save PDF. Call them editorial planning artifacts—not a video, applied edit, footage analysis, or located source footage.
 - [ ] Show one clarification round, then cancel/retry behavior if time permits.
-- [ ] Keep claims narrow: the contest edition produces a brief, storyboard, animatic, continuity audit, and editorial instructions. It does not render the Local edition's final video, voice, lip sync, or applied raw-footage edit.
+- [ ] Keep claims narrow: the contest edition produces a brief, visual/detailed boards, timed animatic, device-voice pitch preview plus narration TXT, exact-setting location exports, evidence-limited character/synopsis exports, continuity audit, and editorial instructions. It does not render the Local edition's final video, generate/attach an audio track, create lip sync, or apply a raw-footage edit.
 - [ ] Remove or blur unrelated account, billing, email, project, tab, and notification details from screenshots and video.
 
 ## Submission form
