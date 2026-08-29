@@ -43,6 +43,32 @@ claim that footage was selected, edited, mutated, or rendered. Return JSON only.
 Do not add Markdown or fields outside the schema."""
 
 
+def _vertex_response_schema(value: Any) -> Any:
+    """Return the strict brief schema in the subset accepted by Vertex v1.
+
+    Vertex structured output currently rejects ``maxItems`` in this nested
+    schema.  Removing it here is provider compatibility only: the immutable
+    source schema retains those limits and ``ProductionBrief.from_json``
+    enforces them, exact fields, numeric bounds, and scene sequencing before a
+    provider response can enter the workflow.
+    """
+
+    if isinstance(value, Mapping):
+        return {
+            key: _vertex_response_schema(item)
+            for key, item in value.items()
+            if key != "maxItems"
+        }
+    if isinstance(value, list):
+        return [_vertex_response_schema(item) for item in value]
+    return value
+
+
+VERTEX_PRODUCTION_BRIEF_RESPONSE_SCHEMA: dict[str, Any] = _vertex_response_schema(
+    PRODUCTION_BRIEF_RESPONSE_SCHEMA
+)
+
+
 class GoogleDependencyError(ConfigurationError):
     """A required Google SDK is absent from the contest runtime."""
 
@@ -108,9 +134,9 @@ class GoogleGenAIBriefProvider:
             config={
                 "system_instruction": SYSTEM_INSTRUCTION,
                 "response_mime_type": "application/json",
-                # This contract is standard JSON Schema. The Google Gen AI SDK
-                # exposes response_json_schema specifically for that dialect.
-                "response_json_schema": PRODUCTION_BRIEF_RESPONSE_SCHEMA,
+                # The provider receives its supported JSON-Schema subset. The
+                # exact local contract is still enforced on the returned JSON.
+                "response_json_schema": VERTEX_PRODUCTION_BRIEF_RESPONSE_SCHEMA,
                 "temperature": 0.2,
             },
         )

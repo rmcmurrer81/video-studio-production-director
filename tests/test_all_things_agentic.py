@@ -30,6 +30,7 @@ from kira_studio.all_things_agentic import (
 from kira_studio.all_things_google import (
     CloudTasksDispatcher,
     GoogleGenAIBriefProvider,
+    VERTEX_PRODUCTION_BRIEF_RESPONSE_SCHEMA,
 )
 
 
@@ -367,6 +368,11 @@ class AllThingsAgenticTests(unittest.TestCase):
         with self.assertRaises(BriefValidationError):
             ProductionBrief.from_mapping(invalid)
 
+        too_many_tones = brief_mapping()
+        too_many_tones["tone"] = [f"tone-{index}" for index in range(9)]
+        with self.assertRaises(BriefValidationError):
+            ProductionBrief.from_mapping(too_many_tones)
+
     def test_storyboard_package_is_deterministic_self_auditing_and_plan_only(self) -> None:
         brief = ProductionBrief.from_mapping(brief_mapping())
         first = build_storyboard_package(brief)
@@ -525,7 +531,18 @@ class AllThingsAgenticTests(unittest.TestCase):
         self.assertEqual(client.models.generate_calls[0]["model"], "gemini-3.5-flash")
         config = client.models.generate_calls[0]["config"]
         self.assertEqual(config["response_mime_type"], "application/json")
-        self.assertEqual(config["response_json_schema"], PRODUCTION_BRIEF_RESPONSE_SCHEMA)
+        self.assertEqual(
+            config["response_json_schema"], VERTEX_PRODUCTION_BRIEF_RESPONSE_SCHEMA
+        )
+        self.assertEqual(
+            PRODUCTION_BRIEF_RESPONSE_SCHEMA["properties"]["tone"]["maxItems"], 8
+        )
+        self.assertNotIn(
+            "maxItems", json.dumps(VERTEX_PRODUCTION_BRIEF_RESPONSE_SCHEMA)
+        )
+        self.assertIn(
+            "minItems", json.dumps(VERTEX_PRODUCTION_BRIEF_RESPONSE_SCHEMA)
+        )
         self.assertNotIn("response_schema", config)
         self.assertEqual(result.execution["evidence_origin"], "injected_test_client")
         provider.create_brief("Make another scene.", job_id="job-2")
