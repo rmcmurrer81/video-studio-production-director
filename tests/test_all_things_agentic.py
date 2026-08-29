@@ -20,6 +20,7 @@ from kira_studio.all_things_agentic import (
     JobTransitionError,
     PRODUCTION_BRIEF_RESPONSE_SCHEMA,
     ProductionBrief,
+    STORYBOARD_FRAME_RATE,
     STORYBOARD_PACKAGE_SCHEMA,
     audit_storyboard_package,
     build_storyboard_package,
@@ -75,6 +76,18 @@ def brief_mapping(*, ready: bool = True) -> dict[str, object]:
         "clarifying_questions": [] if ready else ["Should the ending feel hopeful or uncertain?"],
         "ready_for_production": ready,
     }
+
+
+def browser_json_number_roundtrip(value: object) -> object:
+    """Model JavaScript JSON.stringify's integral-number representation."""
+
+    if isinstance(value, dict):
+        return {key: browser_json_number_roundtrip(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [browser_json_number_roundtrip(item) for item in value]
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
 
 
 class MemoryRepository:
@@ -368,10 +381,38 @@ class AllThingsAgenticTests(unittest.TestCase):
         with self.assertRaises(BriefValidationError):
             ProductionBrief.from_mapping(invalid)
 
+        over_limits: list[tuple[str, dict[str, object]]] = []
         too_many_tones = brief_mapping()
         too_many_tones["tone"] = [f"tone-{index}" for index in range(9)]
-        with self.assertRaises(BriefValidationError):
-            ProductionBrief.from_mapping(too_many_tones)
+        over_limits.append(("tone", too_many_tones))
+        too_many_deliverables = brief_mapping()
+        too_many_deliverables["deliverables"] = [f"item-{index}" for index in range(17)]
+        over_limits.append(("deliverables", too_many_deliverables))
+        too_many_scenes = brief_mapping()
+        too_many_scenes["scenes"] = [
+            {
+                "number": number,
+                "purpose": f"Purpose {number}",
+                "setting": "Set",
+                "characters": [],
+                "dialogue_required": False,
+            }
+            for number in range(1, 42)
+        ]
+        over_limits.append(("scenes", too_many_scenes))
+        too_many_characters = brief_mapping()
+        too_many_characters["scenes"][0]["characters"] = [  # type: ignore[index]
+            f"Character {index}" for index in range(13)
+        ]
+        over_limits.append(("characters", too_many_characters))
+        too_many_questions = brief_mapping(ready=False)
+        too_many_questions["clarifying_questions"] = [
+            f"Question {index}?" for index in range(7)
+        ]
+        over_limits.append(("clarifying_questions", too_many_questions))
+        for label, candidate in over_limits:
+            with self.subTest(limit=label), self.assertRaises(BriefValidationError):
+                ProductionBrief.from_mapping(candidate)
 
     def test_storyboard_package_is_deterministic_self_auditing_and_plan_only(self) -> None:
         brief = ProductionBrief.from_mapping(brief_mapping())
@@ -408,6 +449,21 @@ class AllThingsAgenticTests(unittest.TestCase):
         self.assertIn("contiguous_timeline", audit["issue_codes"])
         with self.assertRaises(BriefValidationError):
             validate_storyboard_package(tampered)
+
+    def test_storyboard_package_manifest_survives_browser_json_download(self) -> None:
+        package = build_storyboard_package(ProductionBrief.from_mapping(brief_mapping()))
+        downloaded = browser_json_number_roundtrip(package)
+        self.assertEqual(package, downloaded)
+        self.assertEqual(downloaded, validate_storyboard_package(downloaded))
+        whole_second_shots = [
+            shot
+            for shot in package["timeline"]["shots"]
+            if shot["planned_duration_frames"] % STORYBOARD_FRAME_RATE == 0
+        ]
+        self.assertTrue(whole_second_shots)
+        self.assertTrue(
+            all(isinstance(shot["planned_duration_seconds"], int) for shot in whole_second_shots)
+        )
 
     def test_storyboard_timeline_handles_minimum_duration_and_maximum_scenes(self) -> None:
         value = brief_mapping()

@@ -110,6 +110,50 @@ class AllThingsAgenticUiTests(unittest.TestCase):
         )[0]
         self.assertNotIn("access", download_body.casefold())
 
+    def test_package_html_download_is_escaped_allowlisted_and_plan_only(self) -> None:
+        for marker in (
+            'id="downloadStoryboardSheet"',
+            "Download storyboard HTML",
+            "function storyboardSheetHtml()",
+            "function downloadStoryboardSheet()",
+            "{type:'text/html;charset=utf-8'}",
+            "link.download = storyboardSheetFilename()",
+            "-storyboard-sheet.html",
+            "Content-Security-Policy",
+            "default-src 'none'",
+            "PLAN ONLY · NO RENDERED MEDIA",
+            "Creative direction",
+            "Planned storyboard cards",
+            "Deterministic audit",
+            "Source-footage guidance",
+            "Bridge guidance:",
+            "esc(brief.title",
+            "esc(brief.summary",
+            "esc(brief.visual_direction",
+            "esc(brief.audio_direction",
+            "esc(shot?.planned_in_timecode",
+            "esc(shot?.planned_out_timecode",
+            "esc(card.framing",
+            "esc(card.camera",
+            "esc(card.action",
+            "esc(card.dialogue_or_audio",
+            "esc(card.source_footage_guidance",
+            "esc(card.bridge_shot_guidance",
+            "items.map(value => `<li>${esc(value)}</li>`)",
+            "esc(check?.evidence",
+            "allowlisted fields",
+        ):
+            self.assertIn(marker, self.html)
+        sheet_body = self.html.split("function storyboardSheetList", 1)[1].split(
+            "function responseError", 1
+        )[0]
+        self.assertNotIn("JSON.stringify", sheet_body)
+        self.assertNotIn("fetch(", sheet_body)
+        self.assertNotIn("access", sheet_body.casefold())
+        self.assertNotIn("secret", sheet_body.casefold())
+        self.assertNotIn("<script", sheet_body.casefold())
+        self.assertIn("URL.revokeObjectURL(url)", sheet_body)
+
     def test_same_origin_job_and_access_contract_is_unchanged(self) -> None:
         for marker in (
             "'X-Video-Studio-Access':$('access').value",

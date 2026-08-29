@@ -219,13 +219,14 @@
     const statusClass = questions ? ' needs-direction' : '';
     const audit = storyboardPackage?.audit;
     const auditChecks = (audit?.checks || []).map(check => `<div class="audit-check${check.status === 'pass' ? '' : ' fail'}"><b>${esc(check.status)} · ${esc(check.id).replaceAll('_', ' ')}</b><span>${esc(check.evidence)}</span></div>`).join('');
-    $('brief').innerHTML = `<div class="brief-top"><div><div class="eyebrow">Creative plan + deterministic editorial package</div><h2>${esc(brief.title)}</h2><p>${esc(brief.summary)}</p></div><div class="brief-actions"><span class="brief-status${statusClass}">${questions ? 'Direction required' : 'Package ready'}</span><button id="downloadPackage" type="button"${storyboardPackage ? '' : ' disabled'}>Download package JSON</button></div></div><h3>Direction</h3><div class="brief-direction"><p>${esc(brief.format)} · ${esc(brief.genre)} · ${esc(brief.duration_seconds)}s<br>${esc(brief.visual_direction)}</p><p>${esc(brief.audio_direction)}</p></div><h3>Scenes from Gemini creative plan</h3><div class="scenes">${scenes}</div>${questions ? `<h3>Questions before production</h3><ul>${questions}</ul>` : ''}${auditChecks ? `<h3>Deterministic coverage + continuity audit</h3><div class="audit-summary">${auditChecks}</div>` : ''}`;
+    $('brief').innerHTML = `<div class="brief-top"><div><div class="eyebrow">Creative plan + deterministic editorial package</div><h2>${esc(brief.title)}</h2><p>${esc(brief.summary)}</p></div><div class="brief-actions"><span class="brief-status${statusClass}">${questions ? 'Direction required' : 'Package ready'}</span><button id="downloadPackage" type="button"${storyboardPackage ? '' : ' disabled'}>Download package JSON</button><button id="downloadStoryboardSheet" type="button"${storyboardPackage ? '' : ' disabled'}>Download storyboard HTML</button></div></div><h3>Direction</h3><div class="brief-direction"><p>${esc(brief.format)} · ${esc(brief.genre)} · ${esc(brief.duration_seconds)}s<br>${esc(brief.visual_direction)}</p><p>${esc(brief.audio_direction)}</p></div><h3>Scenes from Gemini creative plan</h3><div class="scenes">${scenes}</div>${questions ? `<h3>Questions before production</h3><ul>${questions}</ul>` : ''}${auditChecks ? `<h3>Deterministic coverage + continuity audit</h3><div class="audit-summary">${auditChecks}</div>` : ''}`;
     $('brief').classList.remove('hidden');
     $('downloadPackage').addEventListener('click', downloadStoryboardPackage);
+    $('downloadStoryboardSheet').addEventListener('click', downloadStoryboardSheet);
     renderStoryboardPackage(storyboardPackage);
     updateClarificationSession(brief, jobId);
     if (jobId && lastBriefMessageJobId !== jobId) {
-      addConversationMessage('assistant', questions ? `I need ${brief.clarifying_questions.length === 1 ? 'one detail' : 'a few details'} before the package is ready:\n${numberedQuestions(brief.clarifying_questions)}\n\nAnswer naturally below. This page will include the earlier request and questions in the next one-field job.` : `The plan-only storyboard/edit-decision package for “${brief.title}” is ready. Review the ordered shot cards and audit below, or download the deterministic JSON manifest.`);
+      addConversationMessage('assistant', questions ? `I need ${brief.clarifying_questions.length === 1 ? 'one detail' : 'a few details'} before the package is ready:\n${numberedQuestions(brief.clarifying_questions)}\n\nAnswer naturally below. This page will include the earlier request and questions in the next one-field job.` : `The plan-only storyboard/edit-decision package for “${brief.title}” is ready. Review the ordered shot cards and audit below, download the deterministic JSON manifest, or save the human-friendly HTML storyboard sheet.`);
       lastBriefMessageJobId = jobId;
     }
   }
@@ -269,16 +270,83 @@
     const playhead = $('timelinePlayhead'); playhead.style.left = `${selected.offsetLeft + 1}px`; playhead.classList.remove('hidden');
     if (focus) selected.scrollIntoView({behavior:'smooth',block:'nearest',inline:'center'});
   }
-  function packageFilename() {
+  function packageBaseFilename() {
     const title = currentStoryboardPackage?.production_brief?.title || 'video-studio';
     const safe = String(title).normalize('NFKD').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 80).toLowerCase() || 'video-studio';
-    return `${safe}-storyboard-edl.json`;
+    return safe;
+  }
+  function packageFilename() {
+    return `${packageBaseFilename()}-storyboard-edl.json`;
+  }
+  function storyboardSheetFilename() {
+    return `${packageBaseFilename()}-storyboard-sheet.html`;
   }
   function downloadStoryboardPackage() {
     if (!currentStoryboardPackage) return;
     const blob = new Blob([JSON.stringify(currentStoryboardPackage, null, 2)], {type:'application/json'});
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a'); link.href = url; link.download = packageFilename(); link.hidden = true;
+    document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+  function storyboardSheetList(values, emptyMessage = 'None specified.') {
+    const items = Array.isArray(values) ? values : [];
+    return items.length
+      ? `<ul>${items.map(value => `<li>${esc(value)}</li>`).join('')}</ul>`
+      : `<p class="muted">${esc(emptyMessage)}</p>`;
+  }
+  function storyboardSheetHtml() {
+    if (!currentStoryboardPackage) return '';
+    const packageValue = currentStoryboardPackage;
+    const brief = packageValue.production_brief && typeof packageValue.production_brief === 'object' ? packageValue.production_brief : {};
+    const timeline = packageValue.timeline && typeof packageValue.timeline === 'object' ? packageValue.timeline : {};
+    const audit = packageValue.audit && typeof packageValue.audit === 'object' ? packageValue.audit : {};
+    const shots = Array.isArray(timeline.shots) ? timeline.shots : [];
+    const scenes = Array.isArray(brief.scenes) ? brief.scenes : [];
+    const scenePlans = scenes.map(scene => {
+      const characters = Array.isArray(scene?.characters) ? scene.characters.map(value => String(value)).join(', ') : '';
+      return `<article class="scene"><div class="scene-number">Scene ${esc(scene?.number)}</div><h3>${esc(scene?.setting || 'Setting not specified')}</h3><p>${esc(scene?.purpose || 'Purpose not specified')}</p><dl><dt>Characters</dt><dd>${esc(characters || 'None specified')}</dd><dt>Dialogue</dt><dd>${scene?.dialogue_required === true ? 'Required' : 'Not required'}</dd></dl></article>`;
+    }).join('');
+    const cards = shots.map((shot, index) => {
+      const card = shot?.storyboard_card && typeof shot.storyboard_card === 'object' ? shot.storyboard_card : {};
+      const continuity = storyboardSheetList(card.continuity_requirements, 'No continuity requirements supplied.');
+      return `<article class="card"><header><div><span class="shot-label">Shot ${esc(shot?.shot_id || index + 1)}</span><h3>${esc(String(shot?.role || 'planned shot').replaceAll('_', ' '))}</h3></div><div class="timecode"><strong>${esc(shot?.planned_in_timecode || '--:--:--:--')}</strong><span>to</span><strong>${esc(shot?.planned_out_timecode || '--:--:--:--')}</strong></div></header><div class="card-grid"><section><h4>Framing</h4><p>${esc(card.framing || 'Not specified')}</p></section><section><h4>Camera</h4><p>${esc(card.camera || 'Not specified')}</p></section><section class="wide"><h4>Action</h4><p>${esc(card.action || 'Not specified')}</p></section><section class="wide"><h4>Dialogue / audio</h4><p>${esc(card.dialogue_or_audio || 'Not specified')}</p></section><section class="wide"><h4>Continuity</h4>${continuity}</section><section class="wide"><h4>Source-footage guidance</h4><p>${esc(card.source_footage_guidance || 'Not specified')}</p><p class="secondary"><strong>Bridge guidance:</strong> ${esc(card.bridge_shot_guidance || 'Not specified')}</p></section></div><footer>Scene ${esc(shot?.scene_number)} · sequence ${esc(shot?.sequence)} · ${esc(shot?.planned_duration_seconds)} planned seconds</footer></article>`;
+    }).join('');
+    const auditChecks = (Array.isArray(audit.checks) ? audit.checks : []).map(check => {
+      const passed = check?.status === 'pass';
+      return `<article class="audit-check ${passed ? 'pass' : 'hold'}"><strong>${passed ? 'PASS' : 'HOLD'} · ${esc(String(check?.id || 'unnamed check').replaceAll('_', ' '))}</strong><p>${esc(check?.evidence || 'No evidence supplied.')}</p></article>`;
+    }).join('');
+    const auditLabel = audit.passed === true ? 'PASS' : 'HOLD';
+    const auditClass = audit.passed === true ? 'pass' : 'hold';
+    return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <title>${esc(brief.title || 'Video Studio storyboard')} · Storyboard sheet</title>
+  <style>
+    :root{color-scheme:light;font-family:Inter,"Segoe UI",system-ui,sans-serif;color:#18202b;background:#edf0f3}*{box-sizing:border-box}body{margin:0;background:#edf0f3;line-height:1.5}.sheet{width:min(1100px,calc(100% - 32px));margin:28px auto 60px}.masthead,.panel,.card{border:1px solid #cbd2da;border-radius:14px;background:#fff;box-shadow:0 12px 34px rgba(30,40,55,.07)}.masthead{padding:28px}.eyebrow,.shot-label,h2,h4,dt{font-weight:800;letter-spacing:.08em;text-transform:uppercase}.eyebrow,.shot-label{color:#9b5728;font-size:11px}.masthead h1{margin:8px 0 10px;font-size:clamp(30px,5vw,54px);line-height:1.04}.summary{max-width:780px;color:#465160;font-size:17px}.notice{margin-top:22px;padding:16px;border:2px solid #a34b43;border-radius:10px;background:#fff3f1;color:#6c241f}.notice strong,.notice span{display:block}.notice strong{font-size:16px;letter-spacing:.1em}.notice span{margin-top:4px}.panel{margin-top:18px;padding:22px}.panel>h2{margin:0 0 15px;color:#485362;font-size:13px}.direction,.scene-grid,.card-grid,.audit-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.direction section,.scene,.card-grid section,.audit-check{padding:14px;border:1px solid #d9dee4;border-radius:9px;background:#f8f9fa}.direction h3,.scene h3,.card h3{margin:3px 0 7px}.direction p,.scene p,.card p,.audit-check p{margin:0;color:#3f4a58}.scene-number{color:#9b5728;font-size:10px;font-weight:800;text-transform:uppercase}dl{display:grid;grid-template-columns:auto 1fr;gap:5px 10px;margin:12px 0 0}dt{color:#697585;font-size:9px}dd{margin:0}.card{margin-top:14px;overflow:hidden}.card>header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:18px;border-bottom:1px solid #d9dee4}.card>header h3{font-size:19px;text-transform:capitalize}.timecode{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;background:#17202b;color:#fff;font-family:Consolas,monospace;white-space:nowrap}.timecode span{color:#aeb8c4;font-size:10px}.card-grid{padding:16px}.card-grid .wide{grid-column:1/-1}h4{margin:0 0 6px;color:#697585;font-size:9px}ul{margin:7px 0 0;padding-left:20px}.secondary{margin-top:10px!important;padding-top:10px;border-top:1px solid #d9dee4}.card>footer{padding:10px 18px;background:#f2f4f6;color:#697585;font-size:11px}.audit-summary{display:flex;align-items:center;gap:12px;margin-bottom:14px}.audit-badge{padding:7px 10px;border-radius:999px;font-size:11px;font-weight:850;letter-spacing:.08em}.audit-badge.pass,.audit-check.pass strong{color:#17643b}.audit-badge.pass{background:#e7f7ee}.audit-badge.hold,.audit-check.hold strong{color:#8b352f}.audit-badge.hold{background:#fff0ee}.muted{color:#74808e!important}.identity{margin-top:16px;color:#74808e;font:11px/1.6 Consolas,monospace;overflow-wrap:anywhere}.sheet-footer{margin-top:22px;color:#667281;font-size:11px;text-align:center}@media(max-width:720px){.direction,.scene-grid,.card-grid,.audit-grid{grid-template-columns:1fr}.card-grid .wide{grid-column:auto}.card>header{flex-direction:column}.timecode{white-space:normal}}@media print{body{background:#fff}.sheet{width:100%;margin:0}.masthead,.panel,.card{box-shadow:none}.card{break-inside:avoid}}
+  </style>
+</head>
+<body>
+  <main class="sheet">
+    <header class="masthead"><div class="eyebrow">Video Studio · production storyboard</div><h1>${esc(brief.title || 'Untitled storyboard')}</h1><p class="summary">${esc(brief.summary || 'No summary supplied.')}</p><div class="notice"><strong>PLAN ONLY · NO RENDERED MEDIA</strong><span>This sheet contains editorial instructions and planned timecodes. It does not contain or claim generated footage, final audio, or a finished video.</span></div></header>
+    <section class="panel"><h2>Creative direction</h2><div class="direction"><section><h3>${esc(brief.format || 'Format not specified')}</h3><p>${esc(brief.genre || 'Genre not specified')} · ${esc(brief.duration_seconds)} planned seconds</p><h4>Tone</h4>${storyboardSheetList(brief.tone, 'No tone supplied.')}</section><section><h4>Visual direction</h4><p>${esc(brief.visual_direction || 'Not specified')}</p><h4>Audio direction</h4><p>${esc(brief.audio_direction || 'Not specified')}</p></section></div><h4>Requested deliverables</h4>${storyboardSheetList(brief.deliverables, 'No deliverables supplied.')}</section>
+    <section class="panel"><h2>Scene plan</h2><div class="scene-grid">${scenePlans || '<p class="muted">No scene plan supplied.</p>'}</div></section>
+    <section class="panel"><h2>Planned storyboard cards</h2><p class="muted">${esc(timeline.shot_count ?? shots.length)} cards · ${esc(timeline.timecode_basis || 'timecode basis not supplied')} · ${esc(timeline.frame_rate || 24)} fps · ${esc(timeline.start_timecode || '--:--:--:--')} to ${esc(timeline.end_timecode || '--:--:--:--')}</p>${cards || '<p class="muted">No planned cards supplied.</p>'}</section>
+    <section class="panel"><h2>Deterministic audit</h2><div class="audit-summary"><span class="audit-badge ${auditClass}">${auditLabel}</span><span>Structurally valid: ${audit.structurally_valid === true ? 'yes' : 'no'} · ready for editorial: ${audit.ready_for_editorial === true ? 'yes' : 'no'}</span></div><div class="audit-grid">${auditChecks || '<p class="muted">No audit checks supplied.</p>'}</div><h4>Issue codes</h4>${storyboardSheetList(audit.issue_codes, 'None.')}<h4>Hold reasons</h4>${storyboardSheetList(audit.hold_reasons, 'None.')}<p class="identity">Package ${esc(packageValue.package_id || 'not supplied')} · manifest SHA-256 ${esc(packageValue.manifest_sha256 || 'not supplied')} · media status ${esc(packageValue.media_status || 'unrendered_plan')}</p></section>
+    <footer class="sheet-footer"><strong>PLAN ONLY · NO RENDERED MEDIA</strong><br>This self-contained review sheet was assembled locally from the allowlisted fields of the current storyboard package.</footer>
+  </main>
+</body>
+</html>`;
+  }
+  function downloadStoryboardSheet() {
+    const sheet = storyboardSheetHtml();
+    if (!sheet) return;
+    const blob = new Blob([sheet], {type:'text/html;charset=utf-8'});
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a'); link.href = url; link.download = storyboardSheetFilename(); link.hidden = true;
     document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 0);
   }
   function responseError(payload, status) {

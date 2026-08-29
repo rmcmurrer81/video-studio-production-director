@@ -509,6 +509,20 @@ def _planned_timecode(frame: int, *, frame_rate: int = STORYBOARD_FRAME_RATE) ->
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}:{frames:02d}"
 
 
+def _planned_duration_seconds(frame_count: int) -> int | float:
+    """Return a JSON-stable duration number for a planned frame count.
+
+    Browsers serialize integral JSON numbers without a decimal suffix. Emit an
+    integer at the source when the frame count is an exact second so a package
+    downloaded through ``JSON.stringify`` keeps its manifest digest.
+    """
+
+    whole_seconds, remainder = divmod(frame_count, STORYBOARD_FRAME_RATE)
+    if remainder == 0:
+        return whole_seconds
+    return round(frame_count / STORYBOARD_FRAME_RATE, 3)
+
+
 def _equal_positive_allocation(total: int, count: int, *, minimum: int) -> tuple[int, ...]:
     if count < 1 or total < count * minimum:
         raise BriefValidationError("the planned duration cannot cover every storyboard card")
@@ -625,10 +639,7 @@ def compile_storyboard_timeline(brief: ProductionBrief) -> dict[str, Any]:
                     "planned_in_timecode": _planned_timecode(cursor),
                     "planned_out_timecode": _planned_timecode(out_frame),
                     "planned_duration_frames": duration_frames,
-                    "planned_duration_seconds": round(
-                        duration_frames / STORYBOARD_FRAME_RATE,
-                        3,
-                    ),
+                    "planned_duration_seconds": _planned_duration_seconds(duration_frames),
                     "storyboard_card": {
                         "framing": blueprint["framing"],
                         "camera": blueprint["camera"],
