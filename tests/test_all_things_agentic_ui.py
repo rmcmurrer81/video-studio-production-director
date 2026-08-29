@@ -318,7 +318,7 @@ class AllThingsAgenticUiTests(unittest.TestCase):
     def test_investor_pitch_requires_a_clearly_labeled_natural_english_voice(self) -> None:
         for marker in (
             'id="pitchVoiceStatus" class="pitch-disclosure" aria-live="polite"',
-            "Natural pitch voice unavailable on this device.",
+            "Natural pitch voice unavailable in this browser.",
             "download the pitch narration script instead",
             "function naturalPitchVoiceScore(voice)",
             "/\\b(?:natural|neural)\\b/i.test(name)",
@@ -327,6 +327,11 @@ class AllThingsAgenticUiTests(unittest.TestCase):
             "utterance.voice = pitchVoice",
             "utterance.lang = pitchVoice.lang",
             "window.speechSynthesis?.addEventListener?.('voiceschanged', refreshPitchVoiceSelection)",
+            "buildPitchCues('export')",
+            "buildPitchCues('playback')",
+            "Complete deterministic text export:",
+            "no card text was truncated or omitted",
+            "QUALIFIED NATURAL/NEURAL BROWSER VOICE",
         ):
             self.assertIn(marker, self.html)
         self.assertIn("$('pitchPlay').disabled = !hasPlan || !naturalVoiceReady || pitchPlaying", self.html)

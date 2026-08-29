@@ -118,7 +118,7 @@
     </section>
     <section id="brief" class="panel brief hidden" aria-live="polite"></section>
     <section id="animatic" class="panel animatic hidden" aria-labelledby="animaticTitle">
-      <div class="animatic-head"><div><h2 id="animaticTitle">Playable timed animatic + investor pitch preview</h2><p>Plays planning illustrations or explicit placeholders for each compiled shot. No final footage, dialogue performance, lip sync, or finished audio is claimed.</p><p id="pitchVoiceStatus" class="pitch-disclosure" aria-live="polite">Natural pitch voice unavailable on this device. Narration playback stays disabled; download the pitch narration script instead. Dialogue/audio text is planning direction unless explicit lines are shown.</p></div><div class="animatic-controls"><button id="animaticPlay" type="button" disabled>Play timed animatic</button><button id="animaticStop" type="button" disabled>Stop timing</button><button id="pitchPlay" type="button" disabled>Natural voice unavailable</button><button id="pitchStop" type="button" disabled>Stop voice</button><button id="downloadPitchScript" type="button" disabled>Pitch narration script</button></div></div>
+      <div class="animatic-head"><div><h2 id="animaticTitle">Playable timed animatic + investor pitch preview</h2><p>Plays planning illustrations or explicit placeholders for each compiled shot. No final footage, dialogue performance, lip sync, or finished audio is claimed.</p><p id="pitchVoiceStatus" class="pitch-disclosure" aria-live="polite">Natural pitch voice unavailable in this browser. Narration playback stays disabled; download the pitch narration script instead. Dialogue/audio text is planning direction unless explicit lines are shown.</p></div><div class="animatic-controls"><button id="animaticPlay" type="button" disabled>Play timed animatic</button><button id="animaticStop" type="button" disabled>Stop timing</button><button id="pitchPlay" type="button" disabled>Natural voice unavailable</button><button id="pitchStop" type="button" disabled>Stop voice</button><button id="downloadPitchScript" type="button" disabled>Pitch narration script</button></div></div>
       <div id="animaticStage" class="animatic-stage"><div id="animaticPlaceholder" class="animatic-placeholder">Create a production plan to assemble the timed animatic.</div><img id="animaticImage" class="hidden" alt=""><div id="animaticOverlay" class="animatic-overlay hidden"><strong id="animaticShot">No shot</strong><span id="animaticAction">No planned action.</span></div></div>
       <div class="animatic-progress" aria-hidden="true"><span id="animaticBar"></span></div><div class="animatic-status"><span id="animaticTime">00:00 / 00:00</span><span id="animaticTruth">PREVISUALIZATION · PLANNING ART · NO RENDERED VIDEO</span></div>
     </section>
@@ -862,6 +862,11 @@
     const cleaned = String(value ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, ' ').replace(/\s+/g, ' ').trim();
     return (cleaned || fallback).slice(0, 1200);
   }
+  function completePitchField(value, fallback, label) {
+    const cleaned = String(value ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, ' ').replace(/\s+/g, ' ').trim() || fallback;
+    if (cleaned.length > 1200) throw new Error(`${label} exceeds the 1,200-character per-field safety bound; no pitch text was truncated.`);
+    return cleaned;
+  }
   function naturalPitchVoiceScore(voice) {
     const name = String(voice?.name || '');
     const language = String(voice?.lang || '').replace('_', '-').toLowerCase();
@@ -890,24 +895,30 @@
     if (pitchPlaying && previousVoice !== selectedPitchVoice) stopNarratedPitch();
     updatePitchControls();
   }
-  function buildPitchCues() {
+  const pitchLimits = Object.freeze({
+    playback: Object.freeze({maxCards:40,maxCharacters:12000,label:'Investor pitch browser playback'}),
+    export: Object.freeze({maxCards:400,maxCharacters:250000,label:'Investor pitch narration TXT export'}),
+  });
+  function buildPitchCues(purpose = 'playback') {
+    const limits = pitchLimits[purpose];
+    if (!limits) throw new Error('Unknown investor pitch cue purpose.');
     if (!plannedShots.length) throw new Error('A validated storyboard timeline is required.');
-    if (plannedShots.length > 40) throw new Error('Investor pitch preview is limited to 40 cards.');
+    if (plannedShots.length > limits.maxCards) throw new Error(`${limits.label} is limited to ${limits.maxCards} cards; no cards were omitted.`);
     let totalCharacters = 0;
     return plannedShots.map((shot, index) => {
       const card = isRecord(shot.storyboard_card) ? shot.storyboard_card : {};
-      const role = boundedPitchText(shot.role, 'planned shot').replaceAll('_', ' ');
-      const action = boundedPitchText(card.action, 'The planned action is not specified.');
-      const direction = boundedPitchText(card.dialogue_or_audio, 'No dialogue or audio direction is supplied for this card.');
+      const role = completePitchField(shot.role, 'planned shot', `Card ${index + 1} role`).replaceAll('_', ' ');
+      const action = completePitchField(card.action, 'The planned action is not specified.', `Card ${index + 1} action`);
+      const direction = completePitchField(card.dialogue_or_audio, 'No dialogue or audio direction is supplied for this card.', `Card ${index + 1} dialogue/audio direction`);
       const narration = `Card ${index + 1}, ${role}. ${action} Dialogue and audio direction: ${direction}`;
       totalCharacters += narration.length;
-      if (totalCharacters > 12000) throw new Error('Investor pitch narration exceeds the bounded preview size.');
+      if (totalCharacters > limits.maxCharacters) throw new Error(`${limits.label} exceeds its ${limits.maxCharacters.toLocaleString('en-US')}-character safety bound; no pitch text was truncated or omitted.`);
       return {
         sequence: index + 1,
-        shotId: boundedPitchText(shot.shot_id, `Panel ${index + 1}`),
+        shotId: completePitchField(shot.shot_id, `Panel ${index + 1}`, `Card ${index + 1} shot ID`),
         role,
-        plannedIn: boundedPitchText(shot.planned_in_timecode, '--:--:--:--'),
-        plannedOut: boundedPitchText(shot.planned_out_timecode, '--:--:--:--'),
+        plannedIn: completePitchField(shot.planned_in_timecode, '--:--:--:--', `Card ${index + 1} planned-in timecode`),
+        plannedOut: completePitchField(shot.planned_out_timecode, '--:--:--:--', `Card ${index + 1} planned-out timecode`),
         action,
         dialogueAudioDirection: direction,
         narration,
@@ -916,15 +927,17 @@
     });
   }
   function pitchNarrationScript() {
-    const cues = buildPitchCues();
+    const cues = buildPitchCues('export');
     const title = boundedPitchText(currentStoryboardPackage?.production_brief?.title, 'Untitled production');
     const lines = [
       `${title} — INVESTOR PITCH NARRATION / CUE SCRIPT`,
       'PREVISUALIZATION ONLY — STORYBOARD ART IS NOT FINAL FOOTAGE',
       'Dialogue/audio fields are planning direction unless explicit script lines are present.',
+      `Complete deterministic text export: ${cues.length} of ${plannedShots.length} cards included; no card text was truncated or omitted.`,
       '',
     ];
-    for (const cue of cues) {
+    for (const [index, cue] of cues.entries()) {
+      if (index % 20 === 0) lines.push(`SECTION ${Math.floor(index / 20) + 1} — CARDS ${index + 1}–${Math.min(index + 20, cues.length)}`, '');
       lines.push(
         `CARD ${cue.sequence} — ${cue.shotId} — ${cue.plannedIn} to ${cue.plannedOut}`,
         `VISUAL: ${cue.action}`,
@@ -950,33 +963,33 @@
     $('pitchPlay').title = naturalVoiceReady ? `Uses ${selectedPitchVoice.name} (${selectedPitchVoice.lang})` : 'No clearly labeled English Natural or Neural browser voice is available.';
     $('pitchVoiceStatus').textContent = naturalVoiceReady
       ? `Natural pitch voice ready: ${selectedPitchVoice.name} (${selectedPitchVoice.lang}). This browser preview is not embedded in a video file. Dialogue/audio text is planning direction unless explicit lines are shown.`
-      : 'Natural pitch voice unavailable on this device. Narration playback stays disabled; download the pitch narration script instead. Dialogue/audio text is planning direction unless explicit lines are shown.';
+      : 'Natural pitch voice unavailable in this browser. Narration playback stays disabled; download the pitch narration script instead. Dialogue/audio text is planning direction unless explicit lines are shown.';
   }
   function stopNarratedPitch({announce = false} = {}) {
     pitchGeneration += 1;
     pitchPlaying = false;
     if (typeof window !== 'undefined' && typeof window.speechSynthesis?.cancel === 'function') window.speechSynthesis.cancel();
     updatePitchControls();
-    if (announce && plannedShots.length) $('animaticTruth').textContent = 'PITCH NARRATION STOPPED · DEVICE VOICE · NO EXPORTED VIDEO';
+    if (announce && plannedShots.length) $('animaticTruth').textContent = 'PITCH NARRATION STOPPED · QUALIFIED NATURAL/NEURAL BROWSER VOICE · NO EXPORTED VIDEO';
   }
   function playNarratedPitch() {
     if (!pitchNarrationAvailable() || !plannedShots.length) return;
     const pitchVoice = selectedPitchVoice;
     let cues;
-    try { cues = buildPitchCues(); }
+    try { cues = buildPitchCues('playback'); }
     catch (error) { showError(String(error?.message || error)); return; }
     stopAnimatic();
     stopNarratedPitch();
     const generation = pitchGeneration;
     pitchPlaying = true;
     updatePitchControls();
-    $('animaticTruth').textContent = 'INVESTOR PITCH PREVIEW · DEVICE VOICE · NOT EMBEDDED IN VIDEO';
+    $('animaticTruth').textContent = 'INVESTOR PITCH PREVIEW · QUALIFIED NATURAL/NEURAL BROWSER VOICE · NOT EMBEDDED IN VIDEO';
     const speakAt = index => {
       if (!pitchPlaying || generation !== pitchGeneration) return;
       if (index >= cues.length) {
         pitchPlaying = false;
         updatePitchControls();
-        $('animaticTruth').textContent = 'PITCH PREVIEW COMPLETE · STORYBOARD ART + DEVICE VOICE · NOT FINAL FOOTAGE';
+        $('animaticTruth').textContent = 'PITCH PREVIEW COMPLETE · STORYBOARD ART + QUALIFIED NATURAL/NEURAL BROWSER VOICE · NOT FINAL FOOTAGE';
         return;
       }
       animaticElapsedSeconds = plannedShots.slice(0, index).reduce((total, shot) => total + Math.max(0.1, Number(shot.planned_duration_seconds) || 0), 0);

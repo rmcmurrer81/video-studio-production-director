@@ -634,6 +634,147 @@ test("visual and detailed HTML downloads stay separate, escaped, scriptless, and
 });
 
 
+test("full-screenplay pitch TXT includes every card while browser playback keeps the smaller safety bound", async () => {
+  const ids = [
+    "access", "message", "submit", "cancel", "retry", "error", "state", "stage",
+    "progress", "progressBar", "bar", "eta", "job", "brief", "monitor",
+    "conversationFeed", "conversationContext", "timelineTrack", "timelineRuler",
+    "timelineStatus", "timelineEmpty", "timelineTimecode", "timelinePlayhead",
+    "timelineSelection", "timelineFirst", "timelinePrevious", "timelineNext", "timelineLast",
+    "downloadPackage", "downloadVisualStoryboard", "printVisualStoryboard", "downloadDetailedSheet",
+    "downloadLocationPlan", "downloadLocationCsv", "downloadLocationJson", "downloadCharacterHtml", "downloadCharacterText", "downloadCharacterJson", "downloadCharacterCsv", "downloadShotList", "downloadEdl", "accessHelp", "sourceSummary", "attachmentButton",
+    "attachmentMenu", "attachStory", "attachFootage", "scriptFile", "footageFiles",
+    "scriptStatus", "footageStatus", "animatic", "animaticPlay", "animaticStop", "pitchPlay", "pitchStop", "pitchVoiceStatus", "downloadPitchScript",
+    "animaticImage", "animaticPlaceholder", "animaticOverlay", "animaticShot",
+    "animaticAction", "animaticBar", "animaticTime", "animaticTruth", "installApp",
+  ];
+  const elements = new Map(ids.map(id => [id, new FakeElement(id)]));
+  elements.get("access").value = "private-judge-code";
+  const appended = [];
+  const documentObject = {
+    body: {append(node) { appended.push(node); }},
+    getElementById(id) { return elements.get(id); },
+    createElement() { return new FakeElement(); },
+    querySelectorAll(selector) {
+      if (selector !== ".timeline-clip") return [];
+      return elements.get("timelineTrack").children.filter(child => child.classList.contains("timeline-clip"));
+    },
+  };
+  const productionBrief = {
+    title: "Full Screenplay Pitch Test",
+    summary: "A complete long-form production plan.",
+    format: "feature screenplay",
+    target_audience: "Independent film investors",
+    genre: "science fiction drama",
+    duration_seconds: 216,
+    tone: ["urgent", "hopeful"],
+    visual_direction: "Grounded practical production design.",
+    audio_direction: "Protect intelligible dialogue and continuous room tone.",
+    deliverables: ["previsualization plan"],
+    scenes: [{number: 1, setting: "Orbital repair bay", purpose: "Keep Battery C online.", characters: ["Mara", "Ilan"], dialogue_required: true}],
+    clarifying_questions: [],
+    ready_for_production: true,
+  };
+  const repeatedAction = "Battery C remains the focus while Mara crosses the repair bay, verifies the failing cells, and signals Ilan to hold position. ".repeat(4).trim();
+  const repeatedDirection = "Keep the stated dialogue intelligible over restrained alarm texture and preserve the planned pause before the response. ".repeat(4).trim();
+  const shots = Array.from({length: 36}, (_, index) => ({
+    shot_id: `SC01-SH${String(index + 1).padStart(2, "0")}`,
+    sequence: index + 1,
+    scene_number: 1,
+    role: index % 2 ? "reaction_coverage" : "primary_coverage",
+    planned_in_timecode: `00:00:${String(index * 6).padStart(2, "0")}:00`,
+    planned_out_timecode: `00:00:${String((index + 1) * 6).padStart(2, "0")}:00`,
+    planned_duration_seconds: 6,
+    storyboard_card: {
+      framing: "Medium planned coverage",
+      camera: "Locked and level",
+      action: `${repeatedAction} Card ${index + 1}.`,
+      dialogue_or_audio: `${repeatedDirection} Card ${index + 1}.`,
+      continuity_requirements: ["Preserve Battery C state and wardrobe continuity."],
+      source_footage_guidance: "Verify source coverage before conform.",
+      bridge_shot_guidance: "Flag missing coverage for editorial review.",
+    },
+  }));
+  const storyboardPackage = {
+    package_id: "full-screenplay-pitch-test",
+    media_status: "unrendered_plan",
+    manifest_sha256: "a".repeat(64),
+    production_brief: productionBrief,
+    timeline: {
+      shot_count: shots.length,
+      timecode_basis: "planned_non_drop_24fps",
+      frame_rate: 24,
+      start_timecode: "00:00:00:00",
+      end_timecode: "00:03:36:00",
+      shots,
+    },
+    audit: {structurally_valid: true, ready_for_editorial: true, passed: true, checks: [], issue_codes: [], hold_reasons: []},
+  };
+  const queued = job("full-pitch-job");
+  const completed = {
+    ...job("full-pitch-job", {questions: [], ready: true}),
+    brief: productionBrief,
+    storyboard_package: storyboardPackage,
+  };
+  async function fetchObject(url) {
+    const payload = url === "/v1/jobs" ? queued : completed;
+    return {ok: true, status: url === "/v1/jobs" ? 202 : 200, async json() { return payload; }};
+  }
+  const blobs = [];
+  class FakeBlob {
+    constructor(parts, options) { this.parts = parts; this.type = options.type; blobs.push(this); }
+  }
+  const urlObject = {
+    createObjectURL(blob) { return `blob:full-pitch-${blobs.indexOf(blob) + 1}`; },
+    revokeObjectURL() {},
+  };
+  const spoken = [];
+  const naturalVoice = {name: "Microsoft Aria Online (Natural) - English (United States)", lang: "en-US"};
+  class FakeUtterance { constructor(textValue) { this.text = textValue; } }
+  const speechSynthesis = {
+    getVoices() { return [naturalVoice]; },
+    addEventListener() {},
+    speak(utterance) { spoken.push(utterance); },
+    cancel() {},
+  };
+  const html = fs.readFileSync(path.join(__dirname, "..", "web", "all-things-agentic.html"), "utf8");
+  assert.doesNotMatch(html, /DEVICE VOICE|on this device/i);
+  const script = html.match(/<script>\s*([\s\S]*?)\s*<\/script>/)[1];
+  vm.runInNewContext(script, {
+    Blob: FakeBlob,
+    URL: urlObject,
+    clearTimeout() {},
+    console,
+    document: documentObject,
+    fetch: fetchObject,
+    setTimeout(callback) { Promise.resolve().then(callback); return 1; },
+    window: {addEventListener() {}, speechSynthesis, SpeechSynthesisUtterance: FakeUtterance},
+  }, {filename: "all-things-agentic.html"});
+
+  elements.get("message").value = "Build the complete full-screenplay pitch package.";
+  await elements.get("submit").listeners.get("click")();
+  await settle();
+  assert.equal(elements.get("pitchPlay").disabled, false, "a qualified voice is still eligible before bounded playback begins");
+  elements.get("pitchPlay").click();
+  assert.equal(spoken.length, 0, "over-bound browser narration must not start or fall back to another voice");
+  assert.match(elements.get("error").textContent, /browser playback exceeds its 12,000-character safety bound; no pitch text was truncated or omitted/i);
+
+  elements.get("downloadPitchScript").click();
+  await settle();
+  assert.equal(blobs.length, 1, "complete narration TXT should download even when browser playback is over-bound");
+  assert.equal(blobs[0].type, "text/plain;charset=utf-8");
+  const pitchScript = blobs[0].parts.join("");
+  assert.match(pitchScript, /Complete deterministic text export: 36 of 36 cards included; no card text was truncated or omitted\./);
+  assert.match(pitchScript, /SECTION 1 — CARDS 1–20/);
+  assert.match(pitchScript, /SECTION 2 — CARDS 21–36/);
+  assert.match(pitchScript, /CARD 36 — SC01-SH36/);
+  assert.match(pitchScript, /Battery C remains the focus/);
+  assert.equal((pitchScript.match(/^CARD \d+ —/gm) || []).length, 36);
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0].download, "full-screenplay-pitch-test-investor-pitch-narration.txt");
+});
+
+
 test("owner v2 blocks blank access, imports whole or bounded scripts locally, and wires desktop install", async () => {
   const ids = [
     "access", "message", "submit", "cancel", "retry", "error", "state", "stage",
