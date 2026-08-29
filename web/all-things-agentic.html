@@ -142,6 +142,9 @@
   let currentVisualStoryboard = null;
   let currentPitchPreview = null;
   let currentPitchVideoUrl = null;
+  let currentPitchNarrationText = null;
+  let currentPitchNarrationJobId = null;
+  let currentPitchNarrationArtifactId = null;
   let hydratedArtifactJobId = null;
   let hydratingArtifactJobId = null;
   let lastBriefMessageJobId = null;
@@ -499,7 +502,16 @@
     submissionPending = false;
     updateSubmitState();
     if (job.error) showError(`${job.error.code || 'Job failed'} (${job.error.type || 'error'})`);
-    currentPitchPreview = normalizePitchPreview(job.pitch_preview, job.storyboard_package?.timeline?.shots?.length || 0);
+    const nextPitchPreview = normalizePitchPreview(job.pitch_preview, job.storyboard_package?.timeline?.shots?.length || 0);
+    if (
+      currentPitchNarrationJobId !== job.job_id
+      || currentPitchNarrationArtifactId !== nextPitchPreview?.narration_text?.artifact_id
+    ) {
+      currentPitchNarrationText = null;
+      currentPitchNarrationJobId = null;
+      currentPitchNarrationArtifactId = null;
+    }
+    currentPitchPreview = nextPitchPreview;
     renderPitchPreview();
     if (job.brief) renderBrief(job.brief, job.storyboard_package || null, job.visual_storyboard || null, job.job_id);
     else if (!job.storyboard_package) { currentVisualStoryboard = null; renderStoryboardPackage(null); }
@@ -591,6 +603,35 @@
     if (blob.type !== expectedType || blob.size !== artifact.byte_length) throw new Error(`Private artifact ${artifact.artifact_id} failed its media integrity check.`);
     return blob;
   }
+  async function privateArtifactText(jobId, artifact) {
+    const blob = await privateArtifactBlob(jobId, artifact, 'text/plain; charset=utf-8');
+    const textValue = await blob.text();
+    if (!textValue.trim()) throw new Error(`Private artifact ${artifact.artifact_id} contained no narration text.`);
+    return textValue;
+  }
+  function cachePitchNarrationText(jobId, pitch, textValue) {
+    if (
+      currentJob?.job_id !== jobId
+      || currentPitchPreview?.narration_text?.artifact_id !== pitch?.narration_text?.artifact_id
+    ) return false;
+    currentPitchNarrationText = textValue;
+    currentPitchNarrationJobId = jobId;
+    currentPitchNarrationArtifactId = pitch.narration_text.artifact_id;
+    return true;
+  }
+  async function loadCurrentPitchNarrationText() {
+    const jobId = currentJob?.job_id;
+    const pitch = currentPitchPreview;
+    if (!jobId || !pitch?.narration_text) return null;
+    if (
+      currentPitchNarrationText
+      && currentPitchNarrationJobId === jobId
+      && currentPitchNarrationArtifactId === pitch.narration_text.artifact_id
+    ) return currentPitchNarrationText;
+    const textValue = await privateArtifactText(jobId, pitch.narration_text);
+    cachePitchNarrationText(jobId, pitch, textValue);
+    return textValue;
+  }
   function blobDataUrl(blob) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -625,10 +666,13 @@
         const blob = await privateArtifactBlob(job.job_id, panel, 'image/jpeg');
         panel.data_url = await blobDataUrl(blob);
       }
+      const narrationText = await privateArtifactText(job.job_id, pitch.narration_text);
       const videoBlob = await privateArtifactBlob(job.job_id, pitch.video, 'video/mp4');
+      if (currentJob?.job_id !== job.job_id) return;
       if (currentPitchVideoUrl) URL.revokeObjectURL(currentPitchVideoUrl);
       currentPitchVideoUrl = URL.createObjectURL(videoBlob);
       currentPitchPreview = pitch;
+      cachePitchNarrationText(job.job_id, pitch, narrationText);
       hydratedArtifactJobId = job.job_id;
       renderBrief(job.brief, job.storyboard_package, visual, job.job_id);
       renderPitchPreview();
@@ -1017,7 +1061,9 @@
     const title = boundedPitchText(currentStoryboardPackage?.production_brief?.title, 'Untitled production');
     const lines = [
       `${title} — INVESTOR PITCH NARRATION / CUE SCRIPT`,
+      'BROWSER-GENERATED FALLBACK — AUTHENTICATED CLOUD NARRATION ARTIFACT UNAVAILABLE',
       'PREVISUALIZATION ONLY — STORYBOARD ART IS NOT FINAL FOOTAGE',
+      'This fallback is regenerated from the visible timeline and is not guaranteed to match the cloud MP4 narration track.',
       'Dialogue/audio fields are planning direction unless explicit script lines are present.',
       `Complete deterministic text export: ${cues.length} of ${plannedShots.length} cards included; no card text was truncated or omitted.`,
       '',
@@ -1107,8 +1153,15 @@
     };
     speakAt(0);
   }
-  function downloadPitchNarrationScript() {
-    try { downloadText(pitchNarrationScript(), pitchNarrationFilename(), 'text/plain;charset=utf-8'); }
+  async function downloadPitchNarrationScript() {
+    let textValue = null;
+    if (currentPitchPreview?.narration_text && currentJob?.job_id) {
+      try { textValue = await loadCurrentPitchNarrationText(); }
+      catch (error) {
+        showError('The authenticated cloud narration script is temporarily unavailable. Downloading a clearly labelled browser-generated planning fallback that may not match the cloud MP4.');
+      }
+    }
+    try { downloadText(textValue || pitchNarrationScript(), pitchNarrationFilename(), 'text/plain;charset=utf-8'); }
     catch (error) { showError(String(error?.message || error)); }
   }
   function downloadPitchVideo() {
@@ -1588,6 +1641,7 @@
     catch (error) { showError(String(error?.message || error)); updateSubmitState(); return; }
     showError(''); $('brief').classList.add('hidden'); renderStoryboardPackage(null); stopAnimatic();
     hydratedArtifactJobId = null; hydratingArtifactJobId = null; currentPitchPreview = null;
+    currentPitchNarrationText = null; currentPitchNarrationJobId = null; currentPitchNarrationArtifactId = null;
     if (currentPitchVideoUrl) { URL.revokeObjectURL(currentPitchVideoUrl); currentPitchVideoUrl = null; }
     renderPitchPreview();
     submissionPending = true; updateSubmitState();

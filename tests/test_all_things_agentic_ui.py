@@ -360,6 +360,13 @@ class AllThingsAgenticUiTests(unittest.TestCase):
             "verified 1920×1080 H.264/AAC MP4 ready for owner review",
             "function downloadPitchVideo()",
             "-narrated-storyboard-pitch.mp4",
+            "async function privateArtifactText(jobId, artifact)",
+            "async function loadCurrentPitchNarrationText()",
+            "await privateArtifactText(job.job_id, pitch.narration_text)",
+            "await loadCurrentPitchNarrationText()",
+            "textValue || pitchNarrationScript()",
+            "BROWSER-GENERATED FALLBACK — AUTHENTICATED CLOUD NARRATION ARTIFACT UNAVAILABLE",
+            "not guaranteed to match the cloud MP4 narration track",
         ):
             self.assertIn(marker, self.html)
         self.assertIn("download.disabled = !ready", self.html)

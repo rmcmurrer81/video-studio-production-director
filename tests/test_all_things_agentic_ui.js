@@ -586,6 +586,8 @@ test("visual and detailed HTML downloads stay separate, escaped, scriptless, and
   assert.match(characterCsv, /"'@SUM"/);
   assert.doesNotMatch(characterCsv, /,"=HYPERLINK|,"\+COMMAND|,"-DANGER|,"@SUM/);
   assert.match(pitchScript, /INVESTOR PITCH NARRATION \/ CUE SCRIPT/);
+  assert.match(pitchScript, /BROWSER-GENERATED FALLBACK — AUTHENTICATED CLOUD NARRATION ARTIFACT UNAVAILABLE/);
+  assert.match(pitchScript, /not guaranteed to match the cloud MP4 narration track/);
   assert.match(pitchScript, /Dialogue and audio direction: Protect dialogue <clearly>\./);
   assert.match(pitchScript, /CARD 2 — SC01-SH02/);
   assert.doesNotMatch(detailed + visual + locationHtml + locationCsv + locationJson + characterHtml + characterText + characterJson + characterCsv + shotList + edl + pitchScript, /private-judge-code|package-secret|top-level-secret|nested-secret|visual-secret/);
@@ -631,6 +633,187 @@ test("visual and detailed HTML downloads stay separate, escaped, scriptless, and
   assert.equal(printWindow.opener, null);
   assert.equal(printCount, 1);
   assert.equal(printedSheet, visual);
+});
+
+
+test("pitch narration download uses the authenticated cloud TXT that matches the MP4", async () => {
+  const ids = [
+    "access", "message", "submit", "cancel", "retry", "error", "state", "stage",
+    "progress", "progressBar", "bar", "eta", "job", "brief", "monitor",
+    "conversationFeed", "conversationContext", "timelineTrack", "timelineRuler",
+    "timelineStatus", "timelineEmpty", "timelineTimecode", "timelinePlayhead",
+    "timelineSelection", "timelineFirst", "timelinePrevious", "timelineNext", "timelineLast",
+    "downloadPackage", "downloadVisualStoryboard", "printVisualStoryboard", "downloadDetailedSheet",
+    "downloadLocationPlan", "downloadLocationCsv", "downloadLocationJson", "downloadCharacterHtml", "downloadCharacterText", "downloadCharacterJson", "downloadCharacterCsv", "downloadShotList", "downloadEdl", "accessHelp", "sourceSummary", "attachmentButton",
+    "attachmentMenu", "attachStory", "attachFootage", "scriptFile", "footageFiles",
+    "scriptStatus", "footageStatus", "animatic", "animaticPlay", "animaticStop", "pitchPlay", "pitchStop", "pitchVoiceStatus", "downloadPitchScript", "downloadPitchVideo", "pitchVideo",
+    "animaticImage", "animaticPlaceholder", "animaticOverlay", "animaticShot",
+    "animaticAction", "animaticBar", "animaticTime", "animaticTruth", "installApp",
+  ];
+  const elements = new Map(ids.map(id => [id, new FakeElement(id)]));
+  elements.get("access").value = "private-judge-code";
+  const appended = [];
+  const documentObject = {
+    body: {append(node) { appended.push(node); }},
+    getElementById(id) { return elements.get(id); },
+    createElement() { return new FakeElement(); },
+    querySelectorAll(selector) {
+      if (selector !== ".timeline-clip") return [];
+      return elements.get("timelineTrack").children.filter(child => child.classList.contains("timeline-clip"));
+    },
+  };
+  const productionBrief = {
+    title: "Cloud Dialogue Match",
+    summary: "Mara and Ilan decide how long to hold a failing power cell.",
+    format: "dialogue scene",
+    target_audience: "Independent film investors",
+    genre: "science fiction drama",
+    duration_seconds: 6,
+    tone: ["urgent"],
+    visual_direction: "Grounded repair-bay lighting.",
+    audio_direction: "Keep the spoken line intelligible.",
+    deliverables: ["previsualization plan"],
+    scenes: [{number: 1, setting: "Orbital repair bay", purpose: "Hold Battery C.", characters: ["Mara", "Ilan"], dialogue_required: true}],
+    clarifying_questions: [],
+    ready_for_production: true,
+  };
+  const shot = {
+    shot_id: "SC01-SH01",
+    sequence: 1,
+    scene_number: 1,
+    role: "primary_coverage",
+    planned_in_timecode: "00:00:00:00",
+    planned_out_timecode: "00:00:06:00",
+    planned_duration_seconds: 6,
+    storyboard_card: {
+      framing: "Medium two-shot",
+      camera: "Locked and level",
+      action: "Mara checks Battery C while Ilan watches the pressure gauge.",
+      dialogue_or_audio: "Protect dialogue over a restrained alarm texture.",
+      continuity_requirements: ["Preserve the Battery C warning state."],
+      source_footage_guidance: "Verify source coverage before conform.",
+      bridge_shot_guidance: "Flag a missing gauge insert.",
+    },
+  };
+  const storyboardPackage = {
+    package_id: "cloud-dialogue-match",
+    media_status: "unrendered_plan",
+    manifest_sha256: "a".repeat(64),
+    production_brief: productionBrief,
+    timeline: {
+      shot_count: 1,
+      timecode_basis: "planned_non_drop_24fps",
+      frame_rate: 24,
+      start_timecode: "00:00:00:00",
+      end_timecode: "00:00:06:00",
+      shots: [shot],
+    },
+    audit: {structurally_valid: true, ready_for_editorial: true, passed: true, checks: [], issue_codes: [], hold_reasons: []},
+  };
+  const cloudNarration = [
+    "Cloud Dialogue Match — NARRATED STORYBOARD PITCH",
+    "CARD 1 — SC01-SH01",
+    "MARA: I can keep Battery C alive for six more minutes.",
+    "ILAN: Then six minutes is what we have.",
+    "",
+  ].join("\n");
+  const artifact = (artifactId, objectName, contentType, byteLength, extra = {}) => ({
+    artifact_id: artifactId,
+    object_name: objectName,
+    content_type: contentType,
+    sha256: "b".repeat(64),
+    byte_length: byteLength,
+    ...extra,
+  });
+  const pitchPreview = {
+    schema: "video-studio.narrated-pitch/v1",
+    status: "complete",
+    card_count: 1,
+    cue_count: 1,
+    video: artifact("pitch-video", "jobs/cloud-pitch-job/pitch.mp4", "video/mp4", 4096, {
+      width: 1920, height: 1080, video_codec: "h264", audio_codec: "aac", duration_seconds: 6,
+    }),
+    narration_text: artifact("pitch-narration", "jobs/cloud-pitch-job/pitch.txt", "text/plain; charset=utf-8", cloudNarration.length),
+    subtitles: artifact("pitch-subtitles", "jobs/cloud-pitch-job/pitch.srt", "application/x-subrip", 80),
+    manifest_sha256: "c".repeat(64),
+    voice: {
+      provider: "Google Cloud Text-to-Speech",
+      model: "Chirp 3 HD",
+      name: "en-US-Chirp3-HD-Aoede",
+      language_code: "en-US",
+      segment_count: 1,
+    },
+    verification: {
+      status: "passed",
+      scope: "container_codecs_dimensions_and_duration",
+      video_stream_count: 1,
+      audio_stream_count: 1,
+      video_codec: "h264",
+      audio_codec: "aac",
+      width: 1920,
+      height: 1080,
+      duration_seconds: 6,
+    },
+  };
+  const queued = job("cloud-pitch-job");
+  const completed = {
+    ...job("cloud-pitch-job", {questions: [], ready: true}),
+    brief: productionBrief,
+    storyboard_package: storyboardPackage,
+    pitch_preview: pitchPreview,
+  };
+  const fetchCalls = [];
+  const artifactBlob = {
+    type: "text/plain; charset=utf-8",
+    size: cloudNarration.length,
+    async text() { return cloudNarration; },
+  };
+  async function fetchObject(url, options = {}) {
+    fetchCalls.push({url, options});
+    if (url === "/v1/jobs/cloud-pitch-job/artifacts/pitch-narration") {
+      return {ok: true, status: 200, async blob() { return artifactBlob; }};
+    }
+    const payload = url === "/v1/jobs" ? queued : completed;
+    return {ok: true, status: url === "/v1/jobs" ? 202 : 200, async json() { return payload; }};
+  }
+  const blobs = [];
+  class FakeBlob {
+    constructor(parts, options) { this.parts = parts; this.type = options.type; blobs.push(this); }
+  }
+  const urlObject = {
+    createObjectURL(blob) { return `blob:cloud-narration-${blobs.indexOf(blob) + 1}`; },
+    revokeObjectURL() {},
+  };
+  const speechSynthesis = {getVoices() { return []; }, addEventListener() {}, cancel() {}};
+  const html = fs.readFileSync(path.join(__dirname, "..", "web", "all-things-agentic.html"), "utf8");
+  const script = html.match(/<script>\s*([\s\S]*?)\s*<\/script>/)[1];
+  vm.runInNewContext(script, {
+    Blob: FakeBlob,
+    URL: urlObject,
+    clearTimeout() {},
+    console,
+    document: documentObject,
+    fetch: fetchObject,
+    setTimeout(callback) { Promise.resolve().then(callback); return 1; },
+    window: {addEventListener() {}, speechSynthesis},
+  }, {filename: "all-things-agentic.html"});
+
+  elements.get("message").value = "Build the cloud narration match package.";
+  await elements.get("submit").listeners.get("click")();
+  await settle();
+  assert.equal(elements.get("downloadPitchScript").disabled, false);
+  await elements.get("downloadPitchScript").listeners.get("click")();
+  await settle();
+
+  const narrationFetches = fetchCalls.filter(call => call.url === "/v1/jobs/cloud-pitch-job/artifacts/pitch-narration");
+  assert.equal(narrationFetches.length, 1);
+  assert.equal(narrationFetches[0].options.headers["X-Video-Studio-Access"], "private-judge-code");
+  assert.equal(blobs.length, 1);
+  assert.equal(blobs[0].type, "text/plain;charset=utf-8");
+  assert.equal(blobs[0].parts.join(""), cloudNarration, "downloaded TXT must be the same cue/dialogue script used by the cloud MP4");
+  assert.doesNotMatch(blobs[0].parts.join(""), /BROWSER-GENERATED FALLBACK|Complete deterministic text export/);
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0].download, "cloud-dialogue-match-investor-pitch-narration.txt");
 });
 
 
@@ -764,6 +947,7 @@ test("full-screenplay pitch TXT includes every card while browser playback keeps
   assert.equal(blobs.length, 1, "complete narration TXT should download even when browser playback is over-bound");
   assert.equal(blobs[0].type, "text/plain;charset=utf-8");
   const pitchScript = blobs[0].parts.join("");
+  assert.match(pitchScript, /BROWSER-GENERATED FALLBACK — AUTHENTICATED CLOUD NARRATION ARTIFACT UNAVAILABLE/);
   assert.match(pitchScript, /Complete deterministic text export: 36 of 36 cards included; no card text was truncated or omitted\./);
   assert.match(pitchScript, /SECTION 1 — CARDS 1–20/);
   assert.match(pitchScript, /SECTION 2 — CARDS 21–36/);
