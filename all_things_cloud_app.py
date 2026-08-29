@@ -34,6 +34,10 @@ from kira_studio.all_things_google import (
     GoogleGenAIBriefProvider,
     GoogleGenAIVisualPanelProvider,
 )
+from kira_studio.all_things_cloud_media import (
+    GoogleCloudArtifactStore,
+    GoogleCloudNarratedPitchRenderer,
+)
 
 
 # Holds the 160k-character screenplay envelope plus bounded clarification and
@@ -43,6 +47,10 @@ _JOB_PATH = re.compile(r"^/v1/jobs/(?P<job_id>[0-9a-f-]{36})$")
 _CANCEL_PATH = re.compile(r"^/v1/jobs/(?P<job_id>[0-9a-f-]{36}):cancel$")
 _RETRY_PATH = re.compile(r"^/v1/jobs/(?P<job_id>[0-9a-f-]{36}):retry$")
 _RUN_PATH = re.compile(r"^/internal/v1/jobs/(?P<job_id>[0-9a-f-]{36}):run$")
+_ARTIFACT_PATH = re.compile(
+    r"^/v1/jobs/(?P<job_id>[0-9a-f-]{36})/artifacts/"
+    r"(?P<artifact_id>[A-Za-z0-9][A-Za-z0-9._-]{0,127})$"
+)
 _ACCESS_HASH = re.compile(r"^[0-9a-f]{64}$")
 _DEMO_PATH = Path(__file__).resolve().parent / "web" / "all-things-agentic.html"
 _WEB_PATH = _DEMO_PATH.parent
@@ -107,11 +115,15 @@ class Runtime:
             )
         config = AllThingsConfig.from_environment(environment)
         config.assert_valid(require_dispatch=role == "api")
+        if not config.artifacts_bucket:
+            raise ConfigurationError("KIRA_ALL_THINGS_ARTIFACTS_BUCKET is required")
         repository = FirestoreJobRepository(config)
+        artifact_store = GoogleCloudArtifactStore(config.artifacts_bucket)
         self.role = role
         # This is a one-way digest, never the owner/judge access code.
         self.demo_access_sha256 = access_hash
         self.config = config
+        self.artifact_store = artifact_store
         self.service = AllThingsJobService(
             config=config,
             repository=repository,
@@ -119,6 +131,15 @@ class Runtime:
             provider=GoogleGenAIBriefProvider(config) if role == "worker" else None,
             visual_provider=(
                 GoogleGenAIVisualPanelProvider(config) if role == "worker" else None
+            ),
+            artifact_store=artifact_store,
+            narrated_pitch_renderer=(
+                GoogleCloudNarratedPitchRenderer(
+                    artifact_store,
+                    voice_name=config.tts_voice,
+                )
+                if role == "worker"
+                else None
             ),
         )
 
@@ -131,6 +152,8 @@ class Runtime:
             "demo_access_required": self.role == "api",
             "live_provider_call_proven": False,
             "visual_storyboard_configured": self.role == "worker",
+            "private_artifacts_configured": bool(self.config.artifacts_bucket),
+            "narrated_pitch_configured": self.role == "worker",
             "note": "Health verifies configuration only; completed jobs carry live provider evidence.",
         }
 
@@ -263,6 +286,99 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
+    @staticmethod
+    def _artifact_descriptor(
+        job: Mapping[str, Any], artifact_id: str
+    ) -> dict[str, Any]:
+        """Resolve only artifacts declared by this exact completed job.
+
+        The browser never supplies a GCS object name.  It supplies a bounded
+        artifact identifier, and this method binds that identifier to the
+        immutable manifest already stored on the succeeded job.
+        """
+
+        if job.get("state") != "succeeded" or ".." in artifact_id:
+            raise JobNotFoundError("artifact not found")
+        candidates: list[dict[str, Any]] = []
+        visuals = job.get("visual_storyboard")
+        if (
+            isinstance(visuals, Mapping)
+            and visuals.get("status") == "complete"
+            and visuals.get("representation") == "private_artifact_route"
+        ):
+            panels = visuals.get("panels")
+            if isinstance(panels, list):
+                for panel in panels:
+                    if (
+                        isinstance(panel, Mapping)
+                        and panel.get("status") == "available"
+                        and panel.get("artifact_id") == artifact_id
+                    ):
+                        candidates.append(
+                            {
+                                "artifact_id": artifact_id,
+                                "object_name": panel.get("object_name"),
+                                "content_type": panel.get("mime_type"),
+                                "sha256": panel.get("content_sha256"),
+                                "byte_length": panel.get("byte_length"),
+                            }
+                        )
+        pitch = job.get("pitch_preview")
+        if isinstance(pitch, Mapping) and pitch.get("status") == "complete":
+            for key in ("video", "narration_text", "subtitles"):
+                value = pitch.get(key)
+                if isinstance(value, Mapping) and value.get("artifact_id") == artifact_id:
+                    candidates.append(dict(value))
+        if len(candidates) != 1:
+            raise JobNotFoundError("artifact not found")
+        descriptor = candidates[0]
+        object_name = descriptor.get("object_name")
+        content_type = descriptor.get("content_type")
+        digest = descriptor.get("sha256")
+        byte_length = descriptor.get("byte_length", descriptor.get("bytes"))
+        if (
+            descriptor.get("byte_length") is not None
+            and descriptor.get("bytes") is not None
+            and descriptor.get("byte_length") != descriptor.get("bytes")
+        ):
+            raise ConfigurationError("completed artifact manifest is invalid")
+        if (
+            not isinstance(object_name, str)
+            or not object_name.startswith(f"jobs/{job.get('job_id')}/artifacts/")
+            or not isinstance(content_type, str)
+            or content_type
+            not in {
+                "image/jpeg",
+                "video/mp4",
+                "text/plain; charset=utf-8",
+                "application/x-subrip",
+            }
+            or not isinstance(digest, str)
+            or _ACCESS_HASH.fullmatch(digest) is None
+            or isinstance(byte_length, bool)
+            or not isinstance(byte_length, int)
+            or byte_length < 1
+        ):
+            raise ConfigurationError("completed artifact manifest is invalid")
+        descriptor["byte_length"] = byte_length
+        return descriptor
+
+    def _serve_private_artifact(self, job_id: str, artifact_id: str) -> None:
+        job = self.runtime.service.status(job_id)
+        descriptor = self._artifact_descriptor(job, artifact_id)
+        data = self.runtime.artifact_store.get_bytes(descriptor["object_name"])
+        if (
+            len(data) != descriptor["byte_length"]
+            or hashlib.sha256(data).hexdigest() != descriptor["sha256"]
+        ):
+            raise ConfigurationError("completed artifact bytes failed integrity validation")
+        self._asset(
+            HTTPStatus.OK,
+            data,
+            content_type=descriptor["content_type"],
+            cache_control="private, no-store",
+        )
+
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         try:
             request_path = urlsplit(self.path).path
@@ -288,6 +404,14 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._require_demo_access():
                     return
                 self._json(HTTPStatus.OK, self.runtime.service.status(match.group("job_id")))
+                return
+            artifact = _ARTIFACT_PATH.fullmatch(request_path)
+            if artifact and self.runtime.role == "api":
+                if not self._require_demo_access():
+                    return
+                self._serve_private_artifact(
+                    artifact.group("job_id"), artifact.group("artifact_id")
+                )
                 return
             self._json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "route not found"})
         except Exception as exc:

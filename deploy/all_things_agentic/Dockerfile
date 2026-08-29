@@ -6,6 +6,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY contest_config/all_things_agentic.requirements.txt /tmp/requirements.txt
 RUN python -m pip install --no-cache-dir --requirement /tmp/requirements.txt
 

@@ -1,75 +1,133 @@
 # Architecture
 
-Video Studio Storyboard Artist & Production Planner separates the public job-control surface from private model execution. The API and worker run the same pinned container image with different service-role configuration. A deterministic local compiler transforms the validated creative brief into an audited, downloadable plan-only package. An optional Gemini image stage adds bounded planning illustrations as a separately validated sidecar; it does not render or modify source media.
+Video Studio Storyboard Artist & Production Planner separates public job control from private model and media execution. The API and worker run the same pinned container with different service-role configuration. Every successful production-ready job includes the deterministic plan, all-card private visual coverage, and a verified narrated pitch MP4.
 
 ```mermaid
 flowchart LR
-    User[Judge or creator] -->|HTTPS / installed PWA| UI[Same-origin standalone-capable UI]
-    User -->|Local + Attach| LocalSources[PDF or text story<br/>raw-video metadata]
-    LocalSources -->|Extracted text + bounded inventory<br/>raw bytes stay local| UI
-    UI -->|Same-origin job routes<br/>access code header| API[Public Cloud Run API<br/>role = api]
-    API -->|Create/read/update job| DB[(Cloud Firestore)]
-    API -->|Enqueue job ID| Queue[Google Cloud Tasks]
-    Queue -->|OIDC token<br/>Cloud Run audience| Worker[Private Cloud Run worker<br/>role = worker]
-    Worker -->|Lease-fenced claim<br/>transactional result| DB
-    Worker -->|Structured brief request<br/>official google-genai SDK| Vertex[Vertex AI<br/>Gemini 3.5+ brief model]
-    Worker -->|Bounded 16:9 panel requests| ImageModel[Vertex AI<br/>Gemini 3.1 Image]
-    Vertex -->|Schema-constrained response<br/>provider metadata| Worker
-    Worker -->|Validated creative brief| Compiler[Deterministic storyboard<br/>timeline compiler + auditor]
-    Compiler -->|Plan-only JSON package<br/>manifest digest| Worker
-    UI -->|Poll status| API
-    UI -->|Local deterministic derivation| Handoffs[Exact-setting location plan<br/>character + synopsis dossier]
-    UI -->|Local downloads| Package[Package JSON + visual/detailed HTML<br/>location HTML/CSV/JSON<br/>character HTML/TXT/JSON/CSV<br/>shot-list CSV + rough-cut EDL CSV]
-    UI -->|Compiled durations + panels| Animatic[Timed in-app animatic<br/>previsualization only]
-    UI -->|Bounded cue text| Pitch[Qualified English Natural/Neural browser speech when available<br/>narration TXT always]
+    User[Judge or creator] -->|HTTPS / installed PWA| UI[Same-origin standalone UI]
+    User -->|Local + Attach| Sources[PDF or text story<br/>raw-video metadata]
+    Sources -->|Extracted text + bounded inventory<br/>raw-video bytes stay local| UI
+
+    UI -->|Access header + relative job routes| API[Public Cloud Run API]
+    API <--> DB[(Cloud Firestore)]
+    API -->|Named task| Queue[Cloud Tasks]
+    Queue -->|OIDC + 1740s deadline| Worker[Private Cloud Run worker]
+
+    Worker -->|Structured brief| Gemini[Vertex AI<br/>Gemini 3.5+]
+    Worker -->|One request per card| Images[Vertex AI<br/>image model]
+    Worker --> Compiler[Deterministic cards<br/>24fps timeline + audit]
+    Worker -->|One cue per card| TTS[Cloud Text-to-Speech<br/>Chirp 3 HD]
+    Worker --> Media[FFmpeg assembly<br/>FFprobe verification]
+
+    Images -->|Validated JPEG bytes| Store[(Private Cloud Storage<br/>PAP enforced + uniform access)]
+    Media -->|1920x1080 H.264/AAC MP4<br/>TXT + SRT| Store
+    Worker -->|Job-bound manifests + hashes| DB
+
+    UI -->|Authenticated artifact ID| API
+    API -->|Resolve only from completed job<br/>read + rehash bytes| Store
+    API -->|Private no-store response| UI
+
+    UI --> Exports[Visual + detailed boards<br/>characters + synopsis<br/>locations + shot list + EDL]
 ```
 
 ## Responsibilities
 
 | Component | Responsibility |
 | --- | --- |
-| Browser UI | Collect natural chat; locally extract supported story files; inventory raw-video metadata without uploading bytes; display durable status; compose clarification context in window memory; render visual/detailed boards and a timed animatic; derive exact-setting location and evidence-limited character/synopsis handoffs; preview bounded cue text only with a qualified English Natural/Neural browser or operating-system voice; export JSON, HTML, TXT, CSV, and source-aware rough-cut EDL files; and open the visual sheet for Print / Save PDF. |
-| Browser-side plan derivations | Group exact normalized settings and compute scheduling metrics; combine the brief synopsis with exact supported character appearances and scene outline. These derivations make no additional model call, do not mutate the source package, do not merge merely similar locations, and do not infer unsupported character roles, biographies, relationships, arcs, casting, pronouns, or speaker attribution. |
-| PWA shell | Provide a same-origin manifest, static shell service worker, install prompt integration, and standalone display. API/job routes are never cached. |
-| Local source boundary | Read PDF/text story content and raw-video metadata in the browser. Script text is sent only as creative source inside the same-origin job request; selected video bytes are never sent. No footage-content analysis is claimed. |
-| Visual sidecar | Keep one ordered record per planned shot, validate hashes/base64/JPEG dimensions and byte limits, show missing panels explicitly, and never weaken or rewrite the deterministic JSON plan. |
-| Public API | Validate the access code and exact request body, enforce shared Firestore admission limits, create/read/cancel/retry jobs, and enqueue work. |
-| Firestore | Persist admission state, the lease-fenced job state machine, cancellation intent, attempts, structured result, execution metadata, and measured durations. |
-| Cloud Tasks | Deliver the job ID plus application attempt to the private worker with an OIDC identity, worker-specific audience, and deterministic task name. |
-| Private worker | Transactionally claim or reclaim work, call the configured model, validate the exact brief schema, compile/audit the package, and finalize only while holding the current lease. |
-| Vertex AI adapter | Verify model lookup and request schema-constrained JSON through the official Google Gen AI SDK. |
-| Deterministic compiler/auditor | Expand ordered scenes into planned shot cards, allocate a contiguous non-drop 24-fps timeline, verify coverage/continuity and source guidance, and hash the canonical package. |
+| Browser UI/PWA | Collect natural chat, locally extract supported story files, inventory raw-video metadata without uploading footage bytes, show durable progress, hydrate authenticated private panels, play/download the cloud-rendered pitch MP4, and export the review package. |
+| Local source boundary | Send extracted creative text as job input. Keep selected raw-video bytes local. Do not claim footage-content analysis or applied editing. |
+| Public Cloud Run API | Validate the owner/judge code, enforce shared admission limits, create/read/cancel/retry jobs, enqueue work, and serve only job-declared artifacts through an authenticated same-origin route. |
+| Firestore | Persist admission state, attempts, cancellation intent, lease/fencing state, execution evidence, deterministic package, visual manifest, narrated-pitch manifest, and measured durations. |
+| Cloud Tasks | Deliver job ID plus application attempt to the private worker with an OIDC token, worker URL audience, deterministic task name, and a 1,740-second dispatch deadline. |
+| Private Cloud Run worker | Claim work transactionally, call the configured providers, compile and audit cards, require all-card visuals, synthesize narration, render/probe the MP4, and finalize only while holding the current 1,800-second lease. |
+| Vertex brief adapter | Look up the configured Gemini 3.5+ model and request the exact structured creative-plan contract through the official Google Gen AI SDK. |
+| Deterministic compiler/auditor | Expand scenes into establishing/primary/continuity cards, allocate contiguous non-drop 24-fps frame ranges, verify coverage/continuity/source guidance, and hash the canonical package. |
+| Vertex visual adapter | Generate a planning illustration for every card, normalize it to a bounded 16:9 JPEG, and reject malformed/unsupported output. It does not alter the deterministic card plan. |
+| Private artifact store | Require a PAP-enforced, Uniform Bucket-Level Access bucket; write immutable content-addressed objects with create-only preconditions; verify hashes on read; never return a bucket, public, or signed URL. |
+| Narration planner | Extract exact screenplay dialogue where confidently identifiable; otherwise label generated prose as planned direction; emit exactly one cue per card. |
+| Cloud TTS adapter | Synthesize each cue with the configured Chirp 3 HD voice using the worker service identity. |
+| FFmpeg/FFprobe stage | Render every image/audio segment, concatenate the complete sequence, add subtitles, and fail unless final media is 1920×1080 H.264/AAC with complete duration/card/cue coverage. |
+| Browser-side exports | Present visual and detailed boards plus synopsis/character-appearance, exact-setting location, shot-list, continuity, and source-aware EDL files. Unsupported biography, casting, relationship, pronoun, or speaker claims remain review holds. |
 
-## Trust boundaries
+## Private artifact design
 
-- The page uses relative, same-origin requests. The server does not emit a permissive CORS header, and the page content-security policy limits connections to its own origin.
-- Every job create/read/cancel/retry request requires the owner-created demo access code. Only its SHA-256 digest is configured server-side, and comparisons are constant-time. This is demo cost control, not a general user-account system or rate limiter.
-- A global Firestore admission record defaults to 24 new jobs per hour with a three-second cooldown. It bounds shared-demo admission but is not a hard provider-call ceiling because crash redeliveries are separate from the three application attempts.
-- The worker is not public. Cloud Run IAM validates the Cloud Tasks caller's OIDC token before the internal route is reached.
-- Worker leases fence stale deliveries. Expired work can be reclaimed; a late worker cannot publish after losing its lease, and cancellation wins when it reaches transactional finalization first.
-- The API, worker, and task caller use separate least-privilege service accounts.
-- User text is creative input. The model system instruction requires the exact JSON contract and treats text inside the request as content rather than authority to change that contract.
-- The plaintext access code remains only in the password input for the current window. It is never put in a URL, localStorage, sessionStorage, durable job body, download, or log. Only the same-origin authentication header carries it to protected job routes.
-- Successful jobs discard the raw submitted message after provider use. The durable result is additionally bounded below the Firestore document limit; optional visual panels are shed before the audited plan if necessary.
+Objects are content addressed:
+
+```text
+jobs/{job_id}/artifacts/{sha256}/{artifact_id}
+```
+
+The worker stores panel JPEGs plus `narrated-pitch.mp4`, `narration.txt`, and `subtitles.srt`. A manifest records only safe identifiers, object names inside the adapter-owned prefix, SHA-256, byte count, and content type. It does not expose a bucket URL.
+
+The browser requests:
+
+```text
+GET /v1/jobs/{job_id}/artifacts/{artifact_id}
+```
+
+with the same owner/judge access header used for job status. The API:
+
+1. requires the job to be `succeeded`;
+2. resolves the artifact ID only from that job's visual or narrated-pitch manifest;
+3. rejects path traversal, arbitrary object names, and cross-job prefixes;
+4. downloads with the API service identity;
+5. verifies the exact byte length and SHA-256; and
+6. returns private/no-store bytes.
+
+Public Access Prevention blocks `allUsers` and `allAuthenticatedUsers`; Uniform Bucket-Level Access disables per-object ACL authority. The API has bucket metadata/read permission only. The worker has bucket metadata plus create/read permission only.
+
+## Completion boundary
+
+The cloud path is fail closed. For a production-ready brief:
+
+- `required_panel_count` must equal card count;
+- `generated_panel_count` must equal `required_panel_count`;
+- no panel may be missing or pending;
+- cue and subtitle counts must equal card count;
+- each panel and pitch artifact must pass job-prefix, byte-count, content-type, and SHA-256 checks;
+- the final video must probe as 1920×1080 H.264/AAC; and
+- only then may the worker publish `succeeded`.
+
+A provider/quota/safety rejection, TTS error, FFmpeg timeout, missing image, or codec/integrity mismatch is a failed job, not a visually incomplete success. Diagnostic partials are not owner-review media.
 
 ## Durable job lifecycle
 
 ```mermaid
 stateDiagram-v2
     [*] --> queued
-    queued --> running: worker claims
+    queued --> running: worker claims attempt + fencing token
     running --> running: expired lease reclaimed
     queued --> cancelled: cancel before claim
     running --> cancelling: cancel requested
-    running --> succeeded: valid brief stored
-    running --> failed: provider or validation failure
-    cancelling --> cancelled: provider result discarded
-    failed --> queued: bounded retry
-    cancelled --> queued: bounded retry
+    running --> succeeded: full package + all visuals + verified MP4
+    running --> failed: provider, coverage, storage, TTS, or media gate fails
+    cancelling --> cancelled: late provider/media result discarded
+    failed --> queued: bounded application retry
+    cancelled --> queued: bounded application retry
 ```
 
-The first ETA is unavailable. ETA ranges appear only after successful jobs provide measured duration samples. Cancellation during a provider request records intent and discards the eventual result; it does not claim to preempt an in-flight external call. Retries are bounded to three application attempts, while Cloud Tasks delivery retry is a separate crash-recovery path whose window must outlive the worker lease.
+The first ETA is unavailable. Ranges appear only after completed live jobs provide measured durations. Cancellation during an external call records intent and discards the eventual result; it does not claim to preempt the provider request. The task deadline and Cloud Run timeout are 1,740 seconds; the fencing lease is 1,800 seconds. Cloud Tasks delivery retry is separate from the three application attempts.
+
+## Trust boundaries
+
+- The page uses relative same-origin requests and does not need public bucket access or a permissive CORS policy.
+- Every create/read/cancel/retry/artifact request requires the owner-created access code; only its SHA-256 digest is configured server-side. This is a bounded judge-demo control, not a production user-account system.
+- The plaintext code is never stored in a URL, browser storage, job body, export, source file, or log.
+- The worker is private; Cloud Run IAM authenticates the Cloud Tasks OIDC caller before the internal route runs.
+- API, worker, and task caller use separate service identities.
+- The private bucket must have Public Access Prevention enforced and Uniform Bucket-Level Access enabled. Runtime startup verifies both.
+- User text is creative content, not authority to change the model schema or service contract.
+- Raw-video bytes never leave the browser in this contest path.
+- Successful jobs discard the raw submitted message after provider use; durable records remain bounded below the Firestore document limit because binary media is in Cloud Storage.
+
+## Product truth boundary
+
+The visual storyboard and narrated MP4 are previsualization. They help an independent filmmaker plan composition, locations, coverage, dialogue beats, continuity, and a pitch. They are not evidence that actors were filmed, characters were lip-synced, footage was color-matched, bridge shots were generated, or a final movie was rendered.
+
+`plan_only = true` remains truthful even though the package includes an MP4: the MP4 is a narrated sequence of storyboard cards, not finished filmed media.
 
 ## Evidence boundary
 
-Local tests inject model, task, repository, or runtime doubles. Their evidence labels (`injected_test_client` and `test_double`) are deliberately different from `live_google_provider_response`. Configuration health, a successful container build, deterministic audit success, and mocked tests are useful verification, but none proves a live Google Cloud execution. Likewise, a valid package proves an internally consistent editorial plan—not rendered media. Browser/device pitch speech is not generated audio and is not embedded in a media file; character/synopsis outputs prove only the synopsis and exact appearance evidence present in the current brief.
+Local tests inject provider, storage, TTS, command, task, repository, or runtime doubles. Their evidence labels are intentionally different from `live_google_provider_response`. Passing tests, `/health`, configuration text, a container build, or deployed revisions do not prove a live job.
+
+End-to-end proof requires a real completed job with provider evidence, every visual, a complete narrated-pitch manifest, verified codec/resolution fields, successful authenticated artifact playback/download, and recorded real hashes/IDs. Do not claim that proof before it exists.

@@ -869,6 +869,13 @@ class CloudTasksDispatcher:
             method = self._tasks.HttpMethod.POST
         task = {
             "name": task_name,
+            # Cloud Tasks otherwise applies its shorter default HTTP deadline.
+            # Keep the request slightly inside the durable worker lease so a
+            # full-script all-card visual/TTS/MP4 job can finish and commit its
+            # immutable manifest before another worker is allowed to reclaim it.
+            "dispatch_deadline": {
+                "seconds": min(1_740, max(60, self.config.worker_lease_seconds - 60))
+            },
             "http_request": {
                 "http_method": method,
                 "url": url,

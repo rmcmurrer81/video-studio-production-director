@@ -1,102 +1,52 @@
-# Video Studio Storyboard Artist & Production Planner — All Things Agentic deployment and demo
+# Video Studio All Things Agentic deployment and demo
 
-## Submission clock
+This is the operator document for the corrected contest build. Start with [START_HERE_TEST.md](START_HERE_TEST.md) if the services are already deployed.
 
-- **Internal code/deployment freeze:** August 30, 2026 at 5:00 PM EDT.
-- **Official submission cutoff:** August 31, 2026 at 5:00 PM PT (8:00 PM EDT), as shown by the organizer's final-call notice.
-- Treat the internal freeze as the operating deadline. Use the remaining day only for an already-built demo upload, submission-form checks, and emergency rollback.
+## What a successful job must contain
 
-Official event sources: [event home](https://allthingsagentichackathon.devpost.com/) and [rules](https://allthingsagentichackathon.devpost.com/rules).
+A production-ready request is complete only when the same durable job contains:
 
-## What this edition actually does
+1. a schema-validated creative brief;
+2. the deterministic detailed card/timeline package and passing continuity audit;
+3. a private planning JPEG for every card—no `VISUAL PENDING` entries;
+4. a synopsis and evidence-limited character, location, shot-list, and EDL exports;
+5. one narration and subtitle cue for every card; and
+6. a complete narrated-pitch manifest whose MP4 has been probed as 1920×1080 H.264 video with AAC audio.
 
-The contest path is intentionally small and testable:
-
-1. A user types a normal creative request or uses the single **+ Attach** menu to add a PDF/text screenplay and optional local raw-video inventory. Supported ordinary scripts within the displayed 147,000-character source allowance use full extracted text. Larger books or PDFs use clearly labeled beginning/middle/end excerpts; the UI always shows exact included and extracted character counts. PDF.js extracts text locally and preserves PDF line endings when available. Scanned/image-only PDFs require OCR or a text export.
-2. The public Cloud Run API validates the request, stores a durable Firestore job, and enqueues an authenticated Cloud Task.
-3. Cloud Tasks calls a private Cloud Run worker with an OIDC token.
-4. The worker verifies that the configured model is reachable, then uses the official `google-genai` SDK and Vertex AI v1 with `gemini-3.5-flash` to produce an exact creative-plan schema.
-5. Local deterministic code expands every ordered scene into establishing, primary-coverage, and continuity-bridge storyboard cards; allocates a contiguous 24-fps planned timeline; then independently audits ordering, duration, coverage, continuity, source-footage guidance, and dialogue/audio coverage.
-6. For a production-ready brief, the worker asks Gemini 3.1 Flash Image for at most six representative studio-style panels, normalizes each to a bounded 768×432 JPEG, and records a truthful missing reason for any panel that cannot be retained.
-7. The browser polls the durable job, presents the visual board plus every detailed card and audit check, plays a timed previsualization animatic, and offers a bounded investor-pitch narration TXT plus browser playback only when a clearly labeled English Natural or Neural voice is available. Deterministic browser-side derivations provide an exact-setting location plan (HTML, schedule CSV, JSON) and an evidence-limited character/synopsis dossier (HTML, TXT, JSON, appearance CSV). The UI also downloads the canonical package JSON, visual/detailed HTML, shot-list CSV, and metadata-aware rough-cut EDL CSV without publishing them to a separate URL. Print / Save PDF uses the browser's print dialog.
-
-The first ETA is deliberately **unavailable**. An estimate appears only after successful jobs provide measured durations. Cancellation before the worker starts is final. Cancellation during a model call records the request and discards the result when the call returns; it does not claim that an in-flight provider request was preempted. Final success/failure and cancellation serialize in one Firestore transaction, so a cancellation that wins that transaction cannot be overwritten by a late provider result.
-
-Each task is deterministically named from the job ID and application attempt. The body carries both values, so a delayed task from an older retry is acknowledged without running the newer attempt. The deployed worker claim has a 960-second lease—slightly longer than its 900-second request timeout—and a random fencing token. Active duplicate deliveries receive a retryable non-2xx response; an expired `running`/`cancelling` lease can be reclaimed, while every stage and terminal write must still own the exact attempt and fencing token.
-
-This path produces a structured creative brief plus a deterministic storyboard/edit-decision **plan**, optional generated planning stills, a timed animatic assembled from those stills and compiled durations, an investor-pitch narration script with qualified Natural/Neural browser-voice preview when available, exact-setting location handoffs, and an evidence-limited character/synopsis dossier. Each package says `media_status = unrendered_plan` and `plan_only = true`: the illustrations and animatic are previsualization, not source clips or finished frames, and the system does not claim that media was watched, mutated, edited, or rendered. Browser speech is not generated audio and is not embedded in MP4/MOV/audio. The character dossier uses supported synopsis and exact appearance evidence only; it does not infer roles, biographies, relationships, arcs, pronouns, casting, or speaker attribution. Raw-video selection records browser-readable metadata only; its bytes stay in the browser. A visual status of `complete` verifies technical asset integrity only; every sheet still requires human visual review. It does not claim a live model call, Cloud deployment, or contest receipt until a completed Firestore job contains matching live provider evidence.
+This is still **preproduction and investor-pitch media**. The planning illustrations and narrated card sequence are not filmed footage, an acted or lip-synced scene, or a completed raw-footage edit.
 
 ## Architecture
 
 ```text
-browser chat
+installed PWA / browser
     |
+    | same-origin job API + owner/judge access header
     v
-public Cloud Run API -----> Firestore job <----- browser status polling
-    |
-    v
-Google Cloud Tasks (OIDC)
-    |
-    v
-private Cloud Run worker -----> Vertex AI / Gemini 3.5 Flash creative plan
-    |
-    +----> deterministic timeline compiler ----> deterministic audit
-    |
-    +-------------------------------------------> Firestore package + measured duration
+public Cloud Run API <----------> Firestore durable job
+    |                                  ^
+    | named Cloud Task                 | lease-fenced updates
+    v                                  |
+Cloud Tasks --OIDC--> private Cloud Run worker
+                              |
+                              +--> Vertex AI Gemini 3.5+ brief
+                              +--> Vertex AI image model: every card
+                              +--> Cloud TTS Chirp 3 HD: every cue
+                              +--> FFmpeg + FFprobe: 1080p H.264/AAC MP4
+                              +--> private Cloud Storage artifacts
+
+PWA --authenticated job-bound artifact route--> API --service identity--> bucket
 ```
 
-The API and worker use the same container image but different `KIRA_ALL_THINGS_SERVICE_ROLE` values. Cloud Run IAM, not a shared secret in source, protects the worker endpoint. The public demo page is readable, but every job create/read/cancel/retry route also requires an owner-created access code. The API stores only its SHA-256 digest and compares digests in constant time. Because this is one shared judge gate rather than end-user identity, Firestore also enforces one global admission window: by default 24 new jobs per hour with a three-second cooldown. Each job has at most three **application attempts**. Cloud Tasks delivery retries are a separate crash-recovery mechanism and must not be described as additional user retries or silently omitted from worst-case provider-cost analysis.
+The bucket is never public. The page receives neither a `gs://` URL nor a signed/public URL. The API serves only artifact IDs declared by that exact completed job and verifies the object prefix, byte count, and SHA-256 before returning bytes.
 
-## Source map
+## Before running commands
 
-- `kira_studio/all_things_agentic.py`: strict creative-plan contract, deterministic storyboard compiler/auditor, and durable job state machine.
-- `kira_studio/all_things_google.py`: official Google Gen AI, Firestore, and Cloud Tasks adapters.
-- `all_things_cloud_app.py`: dependency-light Cloud Run HTTP entry point.
-- `web/all-things-agentic.html`: natural chat, one + attachment menu, job controls, visual/detailed boards, timed animatic, Natural/Neural-browser-voice-gated pitch preview with narration-script fallback, location and character/synopsis derivations, and editorial exports.
-- `web/manifest.webmanifest` and `web/sw.js`: installable standalone PWA shell; job/API routes are never cached.
-- `web/vendor/pdfjs/`: vendored Apache-2.0 PDF.js text extraction assets for local PDF reading.
-- `contest_config/all_things_agentic.env.example`: non-secret configuration template.
-- `contest_config/all_things_agentic.requirements.txt`: Cloud image dependencies.
-- `deploy/all_things_agentic/Dockerfile`: non-root Cloud Run container.
-- `cloudbuild.yaml`: clean Cloud Build path that builds and pushes the reviewed image without local Docker.
-
-## Required Google Cloud setup
-
-Use one billing-enabled Google Cloud project. The current candidate project is not written into source or defaults; supply the owner-selected project at deploy time.
-
-Enable these APIs:
-
-```powershell
-gcloud services enable run.googleapis.com cloudtasks.googleapis.com firestore.googleapis.com aiplatform.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com iamcredentials.googleapis.com --project $env:AT_PROJECT
-```
-
-Create a Firestore database in Native mode, an Artifact Registry Docker repository, and a Cloud Tasks queue in the same operating region as the Cloud Run services. The Vertex AI location remains `global`; the Cloud Tasks location must be a real region such as `us-central1`.
-
-Use separate identities with least privilege:
-
-| Identity | Required use |
-| --- | --- |
-| API Cloud Run service account | Firestore read/write, Cloud Tasks enqueue, and permission to act as the task-caller identity |
-| Worker Cloud Run service account | Firestore read/write and Vertex AI user |
-| Cloud Tasks caller service account | Cloud Run Invoker on the private worker only |
-
-Google's Cloud Tasks service agent must be able to mint the OIDC token. Review the exact IAM bindings before deployment; do not use owner/editor as the application runtime identity.
-
-Authoritative setup references:
-
-- [Verified Vertex AI Python sample using `gemini-3.5-flash`](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/samples/googlegenaisdk-textgen-with-local-video)
-- [Google Gen AI SDK on PyPI](https://pypi.org/project/google-genai/)
-- [Cloud Run container deployment](https://docs.cloud.google.com/run/docs/deploying)
-- [Cloud Tasks to a private Cloud Run service](https://docs.cloud.google.com/run/docs/triggering/using-tasks)
-- [Firestore server client libraries](https://cloud.google.com/firestore/docs/reference/libraries)
-
-## Build once, deploy twice
-
-Run from the repository root after setting owner-reviewed PowerShell variables:
+Use an owner-selected billing-enabled project. The commands below are PowerShell examples. Review every substituted value before pressing Enter. They create billable resources.
 
 ```powershell
 $env:AT_PROJECT = "your-project-id"
 $env:AT_REGION = "us-central1"
+$env:AT_BUCKET = "globally-unique-video-studio-artifacts-name"
 $env:AT_REPOSITORY = "video-studio"
 $env:AT_IMAGE = "$($env:AT_REGION)-docker.pkg.dev/$($env:AT_PROJECT)/$($env:AT_REPOSITORY)/all-things-agentic:submission"
 $env:AT_WORKER = "video-studio-agent-worker"
@@ -107,103 +57,187 @@ $env:AT_TASKS_SA = "video-studio-tasks@$($env:AT_PROJECT).iam.gserviceaccount.co
 $env:AT_ACCESS_SHA256 = py -c "import getpass,hashlib; print(hashlib.sha256(getpass.getpass('New judge access code: ').encode('utf-8')).hexdigest())"
 ```
 
-The access-code prompt does not echo the plaintext and only the resulting digest enters the Cloud Run environment. Give the plaintext code to judges through an owner-controlled channel; never add it to source, screenshots, logs, shell history, Firestore, or the submission text. Re-run the hash command and deploy a new API revision to rotate it.
+Choose a globally unique bucket name that contains no email address, access code, or other sensitive information. Bucket names are globally visible even when their contents are private.
 
-Create the three service accounts once, then grant only the runtime roles described above. These commands are required on a fresh project; the later deploy commands do not create identities or runtime IAM for you:
+The plaintext owner/judge code must never enter source, a committed `.env`, a URL, logs, screenshots, Firestore, or the submission form. Only its SHA-256 digest is deployed. Give the plaintext to judges through an owner-controlled channel.
+
+## 1. Enable the required APIs
 
 ```powershell
-gcloud iam service-accounts create video-studio-api --project $env:AT_PROJECT --display-name "Video Studio All Things API"
-gcloud iam service-accounts create video-studio-worker --project $env:AT_PROJECT --display-name "Video Studio All Things worker"
-gcloud iam service-accounts create video-studio-tasks --project $env:AT_PROJECT --display-name "Video Studio Cloud Tasks caller"
+gcloud services enable run.googleapis.com cloudtasks.googleapis.com firestore.googleapis.com aiplatform.googleapis.com texttospeech.googleapis.com storage.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com iamcredentials.googleapis.com --project $env:AT_PROJECT
+```
 
+The corrected build adds `texttospeech.googleapis.com` and `storage.googleapis.com`; omitting either prevents the full-media path from completing.
+
+## 2. Create the private artifact bucket exactly once
+
+Create it with Uniform Bucket-Level Access and Public Access Prevention enabled from the beginning:
+
+```powershell
+gcloud storage buckets create "gs://$($env:AT_BUCKET)" --project $env:AT_PROJECT --location $env:AT_REGION --default-storage-class STANDARD --uniform-bucket-level-access --public-access-prevention --soft-delete-duration=0
+```
+
+`--soft-delete-duration=0` is a deliberate short-lived contest-cost choice: accidentally deleted objects are not recoverable. If recovery matters more than temporary storage cost, use an owner-reviewed soft-delete period instead.
+
+Verify both required privacy controls before deployment:
+
+```powershell
+gcloud storage buckets describe "gs://$($env:AT_BUCKET)" --project $env:AT_PROJECT --format="yaml(name,location,public_access_prevention,uniform_bucket_level_access)"
+```
+
+The output must show Public Access Prevention as `enforced` and Uniform Bucket-Level Access as enabled/true. The application also reloads bucket metadata and refuses to start when either condition is absent.
+
+Official references: [bucket creation](https://docs.cloud.google.com/storage/docs/creating-buckets), [Public Access Prevention](https://docs.cloud.google.com/storage/docs/public-access-prevention), and [Uniform Bucket-Level Access](https://docs.cloud.google.com/storage/docs/using-uniform-bucket-level-access).
+
+## 3. Create service accounts and least-privilege storage roles
+
+Create three runtime identities:
+
+```powershell
+gcloud iam service-accounts create video-studio-api --project $env:AT_PROJECT --display-name "Video Studio API"
+gcloud iam service-accounts create video-studio-worker --project $env:AT_PROJECT --display-name "Video Studio worker"
+gcloud iam service-accounts create video-studio-tasks --project $env:AT_PROJECT --display-name "Video Studio Cloud Tasks caller"
+```
+
+If an identity already exists, skip only that `create` command and inspect its policy. Do not grant Owner or Editor to an application identity.
+
+The storage adapter checks bucket metadata as well as object bytes. Create two project custom-role definitions, then grant them only on this bucket:
+
+```powershell
+gcloud iam roles create videoStudioArtifactApi --project $env:AT_PROJECT --title "Video Studio artifact API" --description "Read declared job artifacts and verify bucket privacy" --permissions storage.buckets.get,storage.objects.get --stage GA
+gcloud iam roles create videoStudioArtifactWorker --project $env:AT_PROJECT --title "Video Studio artifact worker" --description "Create/read immutable job artifacts and verify bucket privacy" --permissions storage.buckets.get,storage.objects.create,storage.objects.get --stage GA
+
+gcloud storage buckets add-iam-policy-binding "gs://$($env:AT_BUCKET)" --member "serviceAccount:$($env:AT_API_SA)" --role "projects/$($env:AT_PROJECT)/roles/videoStudioArtifactApi"
+gcloud storage buckets add-iam-policy-binding "gs://$($env:AT_BUCKET)" --member "serviceAccount:$($env:AT_WORKER_SA)" --role "projects/$($env:AT_PROJECT)/roles/videoStudioArtifactWorker"
+```
+
+The worker creates content-addressed objects with a create-only precondition and then reads them for MP4 assembly and integrity checks. The API reads only the object named in a completed job manifest. Neither identity needs permission to make an object public or change bucket policy.
+
+If a custom role already exists, use `gcloud iam roles describe ...` and compare its permissions rather than blindly recreating it. See [Cloud Storage IAM roles](https://docs.cloud.google.com/storage/docs/access-control/iam-roles).
+
+## 4. Grant Firestore, Tasks, Vertex AI, and Text-to-Speech access
+
+```powershell
 gcloud projects add-iam-policy-binding $env:AT_PROJECT --member "serviceAccount:$($env:AT_API_SA)" --role roles/datastore.user
 gcloud projects add-iam-policy-binding $env:AT_PROJECT --member "serviceAccount:$($env:AT_API_SA)" --role roles/cloudtasks.enqueuer
 gcloud iam service-accounts add-iam-policy-binding $env:AT_TASKS_SA --project $env:AT_PROJECT --member "serviceAccount:$($env:AT_API_SA)" --role roles/iam.serviceAccountUser
 
 gcloud projects add-iam-policy-binding $env:AT_PROJECT --member "serviceAccount:$($env:AT_WORKER_SA)" --role roles/datastore.user
 gcloud projects add-iam-policy-binding $env:AT_PROJECT --member "serviceAccount:$($env:AT_WORKER_SA)" --role roles/aiplatform.user
+gcloud projects add-iam-policy-binding $env:AT_PROJECT --member "serviceAccount:$($env:AT_WORKER_SA)" --role roles/serviceusage.serviceUsageConsumer
 
 $env:AT_PROJECT_NUMBER = gcloud projects describe $env:AT_PROJECT --format "value(projectNumber)"
 $env:AT_TASKS_AGENT = "service-$($env:AT_PROJECT_NUMBER)@gcp-sa-cloudtasks.iam.gserviceaccount.com"
 gcloud iam service-accounts add-iam-policy-binding $env:AT_TASKS_SA --project $env:AT_PROJECT --member "serviceAccount:$($env:AT_TASKS_AGENT)" --role roles/iam.serviceAccountTokenCreator
 ```
 
-If an identity already exists, skip only its `create` command; still inspect its IAM policy. The final `roles/run.invoker` grant remains service-scoped and is applied after the worker exists.
+Cloud Text-to-Speech uses the worker's attached service-account Application Default Credentials. The synchronous synthesis method uses the Cloud Platform authorization scope; this path does not use Speech-to-Text roles. The API must be enabled and the worker must be allowed to consume enabled project services. See [Cloud TTS authentication](https://docs.cloud.google.com/text-to-speech/docs/authentication) and [Chirp 3 HD voices](https://docs.cloud.google.com/text-to-speech/docs/chirp3-hd).
 
-Build and push the reviewed image locally:
+## 5. Create Firestore, Artifact Registry, and the queue
+
+Create Firestore in Native mode in an owner-selected supported location. Do this once; the database location cannot be casually changed. Then create Artifact Registry and Cloud Tasks resources:
 
 ```powershell
-gcloud auth configure-docker "$($env:AT_REGION)-docker.pkg.dev"
-docker build --file deploy/all_things_agentic/Dockerfile --tag $env:AT_IMAGE .
-docker push $env:AT_IMAGE
+gcloud artifacts repositories create $env:AT_REPOSITORY --project $env:AT_PROJECT --location $env:AT_REGION --repository-format docker --description "Video Studio contest images"
+gcloud tasks queues create video-studio-production-briefs --project $env:AT_PROJECT --location $env:AT_REGION
+gcloud tasks queues update video-studio-production-briefs --project $env:AT_PROJECT --location $env:AT_REGION --max-attempts 30 --max-retry-duration 3600s --min-backoff 5s --max-backoff 60s --max-concurrent-dispatches 1 --max-dispatches-per-second 1
 ```
 
-Or build and push from the clean Cloud Build configuration without local Docker. The selected Cloud Build service account must already have permission to write to the Artifact Registry repository:
+Cloud Tasks delivery retry is crash recovery, not an extra owner-visible application retry. The application separately caps a job at three **application attempts**.
+
+The previously observed `maxAttempts=3` / `maxRetryDuration=300s` policy is unsafe because it can exhaust crash-recovery delivery before the 1,800-second fenced lease is reclaimable. The queue command above deliberately uses a longer retry window and more delivery attempts; those delivery attempts do not increase the owner-visible application-attempt cap.
+
+## 6. Build the reviewed container
+
+Run the local contract checks first:
+
+```powershell
+py -B -m unittest discover -s tests -p "test_all_things*.py" -v
+py -B -m py_compile kira_studio/all_things_agentic.py kira_studio/all_things_google.py kira_studio/all_things_media.py kira_studio/all_things_cloud_media.py all_things_cloud_app.py
+node --test tests/test_all_things_agentic_ui.js
+```
+
+Then use the clean Cloud Build path:
 
 ```powershell
 gcloud builds submit --project $env:AT_PROJECT --config cloudbuild.yaml --substitutions "_IMAGE=$($env:AT_IMAGE)" .
 ```
 
-Deploy the worker first and keep it private:
+Record the immutable image digest after the build. A successful build is not a live job or media proof.
+
+## 7. Deploy the private worker first
+
+For the all-card image and FFmpeg path, start with 2 CPU, 4 GiB, concurrency 1, and one maximum instance. This is a contest baseline, not a universal performance guarantee.
 
 ```powershell
-gcloud run deploy $env:AT_WORKER --project $env:AT_PROJECT --region $env:AT_REGION --image $env:AT_IMAGE --service-account $env:AT_WORKER_SA --no-allow-unauthenticated --min-instances 0 --max-instances 1 --cpu 1 --memory 1Gi --concurrency 1 --timeout 900 --set-env-vars "KIRA_ALL_THINGS_SERVICE_ROLE=worker,GOOGLE_CLOUD_PROJECT=$($env:AT_PROJECT),GOOGLE_CLOUD_LOCATION=global,GOOGLE_GENAI_USE_VERTEXAI=True,KIRA_ALL_THINGS_GEMINI_MODEL=gemini-3.5-flash,KIRA_ALL_THINGS_IMAGE_MODEL=gemini-3.1-flash-image,KIRA_ALL_THINGS_FIRESTORE_DATABASE=(default),KIRA_ALL_THINGS_JOBS_COLLECTION=all_things_agentic_jobs,KIRA_ALL_THINGS_TASKS_LOCATION=$($env:AT_REGION),KIRA_ALL_THINGS_TASKS_QUEUE=video-studio-production-briefs,KIRA_ALL_THINGS_WORKER_LEASE_SECONDS=960"
+gcloud run deploy $env:AT_WORKER --project $env:AT_PROJECT --region $env:AT_REGION --image $env:AT_IMAGE --service-account $env:AT_WORKER_SA --no-allow-unauthenticated --min-instances 0 --max-instances 1 --cpu 2 --memory 4Gi --concurrency 1 --timeout 1740 --set-env-vars "KIRA_ALL_THINGS_SERVICE_ROLE=worker,GOOGLE_CLOUD_PROJECT=$($env:AT_PROJECT),GOOGLE_CLOUD_LOCATION=global,GOOGLE_GENAI_USE_VERTEXAI=True,KIRA_ALL_THINGS_GEMINI_MODEL=gemini-3.5-flash,KIRA_ALL_THINGS_IMAGE_MODEL=gemini-3.1-flash-image,KIRA_ALL_THINGS_ARTIFACTS_BUCKET=$($env:AT_BUCKET),KIRA_ALL_THINGS_TTS_VOICE=en-US-Chirp3-HD-Aoede,KIRA_ALL_THINGS_FIRESTORE_DATABASE=(default),KIRA_ALL_THINGS_JOBS_COLLECTION=all_things_agentic_jobs,KIRA_ALL_THINGS_TASKS_LOCATION=$($env:AT_REGION),KIRA_ALL_THINGS_TASKS_QUEUE=video-studio-production-briefs,KIRA_ALL_THINGS_WORKER_LEASE_SECONDS=1800"
+
 $env:AT_WORKER_URL = gcloud run services describe $env:AT_WORKER --project $env:AT_PROJECT --region $env:AT_REGION --format "value(status.url)"
 gcloud run services add-iam-policy-binding $env:AT_WORKER --project $env:AT_PROJECT --region $env:AT_REGION --member "serviceAccount:$($env:AT_TASKS_SA)" --role roles/run.invoker
 ```
 
-Create the queue if it does not exist, then deploy the public demo API:
+Confirm an unauthenticated worker request is rejected by Cloud Run IAM. The corrected dispatcher sets a 1,740-second per-task HTTP deadline, the Cloud Run worker timeout is 1,740 seconds, and the fenced worker lease is 1,800 seconds. Keep those three values aligned in that order. A queue retry window alone does not extend an individual HTTP request.
+
+## 8. Deploy the public API
 
 ```powershell
-gcloud tasks queues create video-studio-production-briefs --project $env:AT_PROJECT --location $env:AT_REGION
-gcloud tasks queues update video-studio-production-briefs --project $env:AT_PROJECT --location $env:AT_REGION --max-attempts 30 --max-retry-duration 1800s --min-backoff 5s --max-backoff 60s --max-concurrent-dispatches 1 --max-dispatches-per-second 1
-gcloud tasks queues describe video-studio-production-briefs --project $env:AT_PROJECT --location $env:AT_REGION --format "yaml(retryConfig,rateLimits)"
-gcloud run deploy $env:AT_API --project $env:AT_PROJECT --region $env:AT_REGION --image $env:AT_IMAGE --service-account $env:AT_API_SA --allow-unauthenticated --min-instances 0 --max-instances 1 --cpu 1 --memory 512Mi --concurrency 20 --timeout 60 --set-env-vars "KIRA_ALL_THINGS_SERVICE_ROLE=api,GOOGLE_CLOUD_PROJECT=$($env:AT_PROJECT),GOOGLE_CLOUD_LOCATION=global,GOOGLE_GENAI_USE_VERTEXAI=True,KIRA_ALL_THINGS_GEMINI_MODEL=gemini-3.5-flash,KIRA_ALL_THINGS_IMAGE_MODEL=gemini-3.1-flash-image,KIRA_ALL_THINGS_DEMO_ACCESS_SHA256=$($env:AT_ACCESS_SHA256),KIRA_ALL_THINGS_FIRESTORE_DATABASE=(default),KIRA_ALL_THINGS_JOBS_COLLECTION=all_things_agentic_jobs,KIRA_ALL_THINGS_TASKS_LOCATION=$($env:AT_REGION),KIRA_ALL_THINGS_TASKS_QUEUE=video-studio-production-briefs,KIRA_ALL_THINGS_WORKER_URL=$($env:AT_WORKER_URL),KIRA_ALL_THINGS_TASKS_SERVICE_ACCOUNT=$($env:AT_TASKS_SA),KIRA_ALL_THINGS_ADMISSION_COOLDOWN_SECONDS=3,KIRA_ALL_THINGS_ADMISSION_WINDOW_SECONDS=3600,KIRA_ALL_THINGS_ADMISSION_MAX_JOBS=24,KIRA_ALL_THINGS_WORKER_LEASE_SECONDS=960"
+gcloud run deploy $env:AT_API --project $env:AT_PROJECT --region $env:AT_REGION --image $env:AT_IMAGE --service-account $env:AT_API_SA --allow-unauthenticated --min-instances 0 --max-instances 1 --cpu 1 --memory 1Gi --concurrency 20 --timeout 60 --set-env-vars "KIRA_ALL_THINGS_SERVICE_ROLE=api,GOOGLE_CLOUD_PROJECT=$($env:AT_PROJECT),GOOGLE_CLOUD_LOCATION=global,GOOGLE_GENAI_USE_VERTEXAI=True,KIRA_ALL_THINGS_GEMINI_MODEL=gemini-3.5-flash,KIRA_ALL_THINGS_IMAGE_MODEL=gemini-3.1-flash-image,KIRA_ALL_THINGS_ARTIFACTS_BUCKET=$($env:AT_BUCKET),KIRA_ALL_THINGS_TTS_VOICE=en-US-Chirp3-HD-Aoede,KIRA_ALL_THINGS_DEMO_ACCESS_SHA256=$($env:AT_ACCESS_SHA256),KIRA_ALL_THINGS_FIRESTORE_DATABASE=(default),KIRA_ALL_THINGS_JOBS_COLLECTION=all_things_agentic_jobs,KIRA_ALL_THINGS_TASKS_LOCATION=$($env:AT_REGION),KIRA_ALL_THINGS_TASKS_QUEUE=video-studio-production-briefs,KIRA_ALL_THINGS_WORKER_URL=$($env:AT_WORKER_URL),KIRA_ALL_THINGS_TASKS_SERVICE_ACCOUNT=$($env:AT_TASKS_SA),KIRA_ALL_THINGS_ADMISSION_COOLDOWN_SECONDS=3,KIRA_ALL_THINGS_ADMISSION_WINDOW_SECONDS=3600,KIRA_ALL_THINGS_ADMISSION_MAX_JOBS=24,KIRA_ALL_THINGS_WORKER_LEASE_SECONDS=1800"
 ```
 
-Both services scale to zero and are capped at one instance for the contest demo. The API keeps modest parallel polling capacity; the worker runs one model job at a time. The queue's delivery policy must outlive the 960-second worker lease: the observed `maxAttempts=3` / `maxRetryDuration=300s` policy is unsafe because a task can exhaust redeliveries before a crashed claim becomes reclaimable. Apply and verify the `30` / `1800s` policy above; keep the separate three-application-attempt cap. Delivery attempts can still repeat a provider call after a crash, so do not claim that 24 admissions imply a hard 72-call provider ceiling. Create project budget alerts before the live test, but remember that Google Cloud budget alerts **monitor and notify; they do not enforce a spending cap**. Keep the instance caps and delete or disable unneeded resources after evidence is captured.
+The API is publicly reachable so judges can load the application, but all job and artifact routes still require the owner/judge code. The private worker remains IAM protected.
 
-These commands are a deployment path, not a deployment receipt. Capture the immutable image digest, both Cloud Run revision names, queue resource, one completed job ID, and the Vertex response ID only after the real run succeeds. Never replace them with fabricated identifiers.
+## Required non-secret environment values
 
-## Local contract verification
+Both roles require:
 
-The Google packages are lazy imports, so contract tests run without credentials or network access:
+| Variable | Required value/use |
+| --- | --- |
+| `GOOGLE_CLOUD_PROJECT` | Selected billing-enabled project ID. |
+| `GOOGLE_CLOUD_LOCATION` | Vertex AI location; this build uses `global`. |
+| `GOOGLE_GENAI_USE_VERTEXAI` | `True`. |
+| `KIRA_ALL_THINGS_GEMINI_MODEL` | Reviewed Gemini 3.5+ brief model. |
+| `KIRA_ALL_THINGS_IMAGE_MODEL` | Reviewed Vertex image model. |
+| `KIRA_ALL_THINGS_ARTIFACTS_BUCKET` | Exact private bucket name, without `gs://`. |
+| `KIRA_ALL_THINGS_TTS_VOICE` | A valid Chirp 3 HD voice such as `en-US-Chirp3-HD-Aoede`. |
+| `KIRA_ALL_THINGS_FIRESTORE_DATABASE` | Normally `(default)`. |
+| `KIRA_ALL_THINGS_JOBS_COLLECTION` | Durable jobs collection. |
+| `KIRA_ALL_THINGS_WORKER_LEASE_SECONDS` | Longer than worker request timeout; valid code range is 60–1800 seconds. |
 
-```powershell
-py -B -m unittest tests.test_all_things_agentic tests.test_all_things_cloud_app tests.test_all_things_agentic_ui -v
-py -B -m py_compile kira_studio/all_things_agentic.py kira_studio/all_things_google.py all_things_cloud_app.py
-node --test tests/test_all_things_agentic_ui.js
-```
+The API additionally requires the access-code digest and Cloud Tasks dispatch values. The worker never needs the access-code digest. Do not put plaintext secrets or downloaded service-account keys in environment files; Cloud Run uses attached service identities.
 
-Injected clients in tests are labeled `injected_test_client` or `test_double`. They are not evidence of a live provider call.
+## Realistic time, resource, and cost cautions
 
-For a local container smoke test, provide Application Default Credentials and all configuration values, then run either the API or worker role. A single local process cannot replace Firestore, Cloud Tasks, Cloud Run IAM, or the private-worker deployment.
+- One planning image is requested per card. Three cards per scene means a 12-scene script can require 36 image generations before TTS and encoding.
+- Provider quota, safety/provider rejection, timeout, or malformed image output must fail the complete-media gate; the system must not silently substitute blank cards and call the job complete.
+- Chirp 3 HD synthesis is billable and runs once per card cue. Vertex text/image calls, Cloud Run CPU/memory time, Cloud Storage bytes/operations, Firestore, Cloud Tasks, Cloud Build, and Artifact Registry can also incur charges.
+- Google Cloud budget alerts notify; they do not stop spending. Keep worker concurrency and max instances at one during judging, watch Billing reports, and remove old artifacts/resources after the evidence window according to an owner-approved retention policy.
+- Cold starts, quota, card count, narration length, and FFmpeg work make elapsed time variable. The first job has no evidence-based ETA. Do not promise a completion time until measured live jobs exist.
+- The pitch renderer is bounded to 60 minutes and 2 GiB. The task/worker request ceiling can be lower. Use the one-minute START HERE test before a TV episode; do not use a feature-length screenplay as the first live proof.
+- 4 GiB is a reasonable contest starting point for 1080p FFmpeg work, not proof that every long script fits. Monitor worker memory and CPU before reducing it.
 
-## Judge demo path
+## Live evidence boundary
 
-1. Open the public API service root URL. The server returns the Storyboard Artist & Production Planner. Enter the **Judge / owner access code — provided with submission**; **Create production plan** remains disabled until both the code and a creative source (a message or attached script/story) are present. The page keeps the code only in the password field for this window and sends it only to same-origin job routes.
-2. Either enter `Make a one-minute science-fiction dialogue scene in an orbital repair shop. Two old friends must decide whether to leave Earth. Keep the machinery quiet enough that every line is clear.` or use **+ Attach** to select a supported story/screenplay. For an ordinary script, point out **FULL TEXT** and the included/extracted counts. For an oversized source, say explicitly that the app uses labeled beginning/middle/end excerpts rather than complete coverage.
-3. Optionally use the same **+ Attach** menu for raw video. Point out that only filename, type, size, and browser-readable duration are inventoried; the app does not upload or inspect the footage bytes.
-4. Select **Create production plan**. Point out the durable job ID, queued/running stage, progress, application attempt, and honest initially-unavailable ETA.
-5. Let the page poll through `calling_gemini`, `validating_creative_plan`, `compiling_storyboard_timeline`, `auditing_coverage_and_continuity`, and `generating_visual_storyboard`. Show the studio-style panel grid, explicit pending frames if any, scene-specific cards with planned 24-fps in/out timecodes, framing/camera/action/audio direction, continuity and source/bridge guidance, deterministic audit, and timed animatic. Demonstrate the narration TXT and, only if a qualified English Natural or Neural browser voice is available, the pitch playback; then show exact-setting location HTML/CSV/JSON, character/synopsis HTML/TXT/JSON/appearance CSV, package JSON, visual/detailed HTML, shot-list CSV, source-aware EDL CSV, Print / Save PDF, and live Vertex execution metadata. Do not describe browser speech as generated or embedded audio, and do not describe unsupported character details as inferred.
-6. Submit a deliberately ambiguous request such as `Make me a show.` Show that Gemini returns concise questions and `ready_for_production: false` instead of pretending it understood.
-7. Demonstrate cancel on a queued job and retry on that cancelled job. A retry is capped at three attempts.
+`GET /health`, a billing page, enabled APIs, a deployed revision, passing mock tests, or a generated fixture is not end-to-end proof. A real acceptance run must show:
 
-Before recording the demo, confirm `/health` names the intended project/model but explain that health is configuration evidence only. Then inspect the completed job itself for live-provider evidence. Do not rename it to a path ending in `z`; Cloud Run reserves some such paths.
+- a completed Firestore job with `execution.evidence_origin = live_google_provider_response`;
+- full `generated_panel_count == required_panel_count` coverage and no missing/pending panel;
+- private artifact manifests bound to the completed job;
+- one cue per card;
+- a narrated pitch manifest marked complete;
+- FFprobe verification of 1920×1080 H.264/AAC media;
+- successful authenticated panel and MP4 retrieval; and
+- truthful plan-only labels in the UI and exports.
 
-Access-gate smoke test: a missing code and an incorrect code must both return the same `401` response; the correct code must create a `202` queued job. The server intentionally emits no `Access-Control-Allow-Origin` header, the UI uses only relative same-origin requests, and the HTML content-security policy allows network connections only to its own origin. The access code plus Firestore admission window are a bounded shared-demo control, not a replacement for full end-user identity and production-grade abuse controls.
+Only after that run should the operator capture real job IDs, provider metadata, revision names, container digest, hashes, timing, and cost. Never replace missing proof with a fabricated receipt.
 
-## Current hold and closeout checklist
+## Primary Google references
 
-As of August 28, 2026, local source and test-double verification exist. A signed-in Google Cloud account, billing screen, or provisioned resource is not by itself end-to-end proof. Treat the deployment as live only after the selected project passes Vertex lookup, Firestore persistence, Cloud Tasks/private-worker execution, package download, and one completed job with the matching provider evidence.
-
-After billing is active:
-
-- Enable the required APIs and create/review the three service accounts.
-- Create Firestore, the queue, and Artifact Registry repository.
-- Build the clean container and record resolved package versions and image digest.
-- Deploy the private worker before the API; confirm unauthenticated worker access returns 401/403.
-- Run one clear request, one clarification request, cancel, and retry.
-- Verify Firestore durability across an API restart.
-- Capture only real resource names, revision IDs, task ID, completed job ID, and Vertex response ID.
-- Record the demo and freeze by August 30 at 5:00 PM EDT.
+- [Deploying containers to Cloud Run](https://docs.cloud.google.com/run/docs/deploying)
+- [Using Cloud Tasks with private Cloud Run services](https://docs.cloud.google.com/run/docs/triggering/using-tasks)
+- [Cloud Storage bucket creation](https://docs.cloud.google.com/storage/docs/creating-buckets)
+- [Public Access Prevention](https://docs.cloud.google.com/storage/docs/public-access-prevention)
+- [Uniform Bucket-Level Access](https://docs.cloud.google.com/storage/docs/using-uniform-bucket-level-access)
+- [Cloud Storage IAM roles](https://docs.cloud.google.com/storage/docs/access-control/iam-roles)
+- [Cloud Text-to-Speech authentication](https://docs.cloud.google.com/text-to-speech/docs/authentication)
+- [Chirp 3 HD voices](https://docs.cloud.google.com/text-to-speech/docs/chirp3-hd)
+- [Firestore server client libraries](https://cloud.google.com/firestore/docs/reference/libraries)

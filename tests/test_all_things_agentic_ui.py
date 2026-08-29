@@ -157,7 +157,7 @@ class AllThingsAgenticUiTests(unittest.TestCase):
         self.assertNotIn("<script", sheet_body.casefold())
         self.assertNotIn("break-inside:avoid", sheet_body)
 
-    def test_visual_storyboard_is_validated_embedded_and_grouped_for_landscape_pdf(self) -> None:
+    def test_visual_storyboard_is_validated_hydrated_privately_and_grouped_for_landscape_pdf(self) -> None:
         for marker in (
             'id="downloadVisualStoryboard"',
             'id="printVisualStoryboard"',
@@ -167,6 +167,7 @@ class AllThingsAgenticUiTests(unittest.TestCase):
             "video-studio.visual-storyboard/v1",
             "technical_asset_integrity_only",
             "inline_base64",
+            "private_artifact_route",
             "const rendererKeys = ['provider','framework','model','location','evidence_origin']",
             "held_for_clarification",
             "renderer_not_configured",
@@ -179,9 +180,9 @@ class AllThingsAgenticUiTests(unittest.TestCase):
             "panel.mime_type !== 'image/jpeg'",
             "panel.width !== 768",
             "panel.height !== 432",
-            "base64DecodedLength(panel.data_base64) !== panel.byte_length",
+            "base64DecodedLength(panel.data_base64) === panel.byte_length",
             "panel.data_base64.startsWith('/9j/')",
-            'src="data:image/jpeg;base64,${panel.data_base64}"',
+            "panel.data_url || (typeof panel.data_base64 === 'string'",
             "Generated planning illustration · human visual review required",
             "Visual pending",
             "function visualStoryboardHtml()",
@@ -211,6 +212,24 @@ class AllThingsAgenticUiTests(unittest.TestCase):
         self.assertNotIn("http://", visual_body.casefold())
         self.assertIn("URL.revokeObjectURL(url)", visual_body)
 
+        private_media_body = self.html.split("function privateArtifactPath(jobId, artifactId)", 1)[1].split(
+            "function visualPanelEntries", 1
+        )[0]
+        for marker in (
+            "`/v1/jobs/${encodeURIComponent(jobId)}/artifacts/${encodeURIComponent(artifactId)}`",
+            "'X-Video-Studio-Access':$('access').value",
+            "blob.type !== expectedType || blob.size !== artifact.byte_length",
+            "job.state !== 'succeeded'",
+            "visual.representation !== 'private_artifact_route'",
+            "visual.status !== 'complete'",
+            "for (const panel of visual.panels)",
+            "panel.data_url = await blobDataUrl(blob)",
+            "privateArtifactBlob(job.job_id, pitch.video, 'video/mp4')",
+            "currentPitchVideoUrl = URL.createObjectURL(videoBlob)",
+        ):
+            self.assertIn(marker, private_media_body)
+        self.assertNotIn("artifact.object_name", private_media_body)
+
     def test_same_origin_job_and_access_contract_is_unchanged(self) -> None:
         for marker in (
             "'X-Video-Studio-Access':$('access').value",
@@ -238,6 +257,8 @@ class AllThingsAgenticUiTests(unittest.TestCase):
             "animatic",
             "animaticPlay",
             "animaticStop",
+            "pitchVideo",
+            "downloadPitchVideo",
         }
         self.assertTrue(required_ids.issubset(self.parser.ids))
         for marker in (
@@ -269,12 +290,9 @@ class AllThingsAgenticUiTests(unittest.TestCase):
             "function sourceAwareEdlCsv()",
             "source_duration_deficit_seconds",
             "SOURCE TOO SHORT - ADD COVERAGE OR RETIME",
-            "PLAYABLE timed animatic".lower(),
+            "downloadable 1920×1080 MP4 with every visual card",
         ):
-            if marker == "playable timed animatic":
-                self.assertIn(marker, self.html.lower())
-            else:
-                self.assertIn(marker, self.html)
+            self.assertIn(marker, self.html)
         submit = self.parser.attributes["submit"]
         self.assertIn("disabled", submit)
         access_sensitive_exports = self.html.split("function shotListCsv()", 1)[1].split(
@@ -307,17 +325,50 @@ class AllThingsAgenticUiTests(unittest.TestCase):
 
     def test_contest_scope_is_visibly_truthful(self) -> None:
         for marker in (
-            "planning illustrations and a timed animatic are previsualization",
-            "It does not render a finished video",
-            "Final rendering, lip sync, voice generation, and footage editing remain Local edition quality gates.",
+            "planning illustrations, a timed animatic, and the narrated storyboard MP4 are previsualization",
+            "not finished filmed footage",
+            "generates every storyboard card and a natural Google Cloud narrated 1920×1080 pitch video only after the all-card completion gate passes",
+            "Actor lip sync, final scene rendering, and applied footage editing remain Local edition quality gates.",
+            "The browser voice control is a secondary device-only fallback, never the completion proof or exported production track.",
             "editorial instructions only",
-            "No final footage, dialogue performance, lip sync, or finished audio is claimed.",
+            "NO FINISHED FILM FOOTAGE",
         ):
             self.assertIn(marker, self.html)
 
-    def test_investor_pitch_requires_a_clearly_labeled_natural_english_voice(self) -> None:
+    def test_primary_pitch_requires_complete_verified_cloud_mp4_and_all_private_visuals(self) -> None:
+        for marker in (
+            'id="downloadPitchVideo" type="button" disabled',
+            'id="pitchVideo" class="hidden" controls preload="metadata" playsinline',
+            "video-studio.narrated-pitch/v1",
+            "value.status !== 'complete'",
+            "value.card_count !== expectedCards || value.cue_count !== expectedCards",
+            "validPrivateArtifact(value.video, 'video/mp4')",
+            "validPrivateArtifact(value.narration_text, 'text/plain; charset=utf-8')",
+            "validPrivateArtifact(value.subtitles, 'application/x-subrip')",
+            "isSha256(value.manifest_sha256)",
+            "value.video.width !== 1920 || value.video.height !== 1080",
+            "value.video.video_codec !== 'h264' || value.video.audio_codec !== 'aac'",
+            "value.voice.provider !== 'Google Cloud Text-to-Speech'",
+            "String(value.voice.model || '').includes('Chirp 3')",
+            "String(value.voice.name || '').includes('Chirp3-HD')",
+            "value.voice.segment_count !== expectedCards",
+            "value.verification.status !== 'passed'",
+            "value.verification.video_stream_count !== 1",
+            "value.verification.audio_stream_count !== 1",
+            "if (!visual || visual.representation !== 'private_artifact_route' || visual.status !== 'complete' || !pitch) return",
+            "The natural Google Cloud narration and MP4 appear only after every visual card passes the completion gate.",
+            "verified 1920×1080 H.264/AAC MP4 ready for owner review",
+            "function downloadPitchVideo()",
+            "-narrated-storyboard-pitch.mp4",
+        ):
+            self.assertIn(marker, self.html)
+        self.assertIn("download.disabled = !ready", self.html)
+        self.assertIn("const ready = Boolean(currentPitchPreview && currentPitchVideoUrl)", self.html)
+
+    def test_browser_voice_is_a_secondary_natural_english_fallback(self) -> None:
         for marker in (
             'id="pitchVoiceStatus" class="pitch-disclosure" aria-live="polite"',
+            ">Browser voice fallback</button>",
             "Natural pitch voice unavailable in this browser.",
             "download the pitch narration script instead",
             "function naturalPitchVoiceScore(voice)",
@@ -334,6 +385,9 @@ class AllThingsAgenticUiTests(unittest.TestCase):
             "QUALIFIED NATURAL/NEURAL BROWSER VOICE",
         ):
             self.assertIn(marker, self.html)
+        self.assertIn("if (currentPitchPreview) {", self.html)
+        self.assertIn("$('pitchPlay').textContent = 'Cloud voice in MP4'", self.html)
+        self.assertIn("$('pitchPlay').disabled = true", self.html)
         self.assertIn("$('pitchPlay').disabled = !hasPlan || !naturalVoiceReady || pitchPlaying", self.html)
         self.assertIn("$('downloadPitchScript').disabled = !hasPlan", self.html)
         self.assertNotIn("return typeof window !== 'undefined' && typeof window.SpeechSynthesisUtterance", self.html)

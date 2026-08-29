@@ -1,78 +1,126 @@
 # Demo and submission checklist
 
-This checklist separates local readiness from evidence that can exist only after a real billing-enabled Google Cloud deployment. At repository staging time on August 28, 2026, live cloud proof is not present.
+This checklist separates local contract verification from evidence that exists only after a real Google Cloud run. Do not pass or submit the corrected build while visuals are pending or the narrated MP4 is absent.
 
-## Repository freeze
+## 1. Repository freeze
 
-- [ ] Confirm this repository contains only the focused Storyboard Artist & Production Planner source, UI, deployment files, documentation, and tests.
-- [ ] Review every diff and confirm no access code, credential, token, project-private identifier, or personal billing data is committed.
+- [ ] Confirm the repository contains only the contest Storyboard Artist & Production Planner source, UI, deployment files, documentation, tests, and properly licensed vendored assets.
+- [ ] Review every diff. Confirm no plaintext owner/judge code, API key, token, credential file, email, billing data, or private project identifier is committed.
 - [ ] Confirm the copyright attribution in `LICENSE`.
-- [ ] Run the focused unit tests from the repository root:
+- [ ] Run:
 
   ```powershell
   py -B -m unittest discover -s tests -p "test_all_things*.py" -v
-  ```
-
-- [ ] Compile the three Python entry modules:
-
-  ```powershell
-  py -B -m py_compile kira_studio/all_things_agentic.py kira_studio/all_things_google.py all_things_cloud_app.py
-  ```
-
-- [ ] Run the browser behavior harness:
-
-  ```powershell
+  py -B -m py_compile kira_studio/all_things_agentic.py kira_studio/all_things_google.py kira_studio/all_things_media.py kira_studio/all_things_cloud_media.py all_things_cloud_app.py
   node --test tests/test_all_things_agentic_ui.js
   ```
 
-- [ ] Confirm the three direct Google SDK versions, Pillow version, Python base image digest, and vendored PDF.js license/notices match the reviewed pins.
-- [ ] Build the container from a clean checkout (local Docker or `cloudbuild.yaml`) and record resolved transitive package versions plus the immutable image digest.
+- [ ] Confirm the pinned Python base image and Google SDK/Pillow dependencies are reviewed.
+- [ ] Confirm the container installs FFmpeg/FFprobe and runs as a non-root user.
+- [ ] Build from a clean checkout and record the immutable container digest.
+- [ ] Remember: mocks and a clean build prove contracts, not a live cloud job.
 
-## Live Google Cloud proof
+## 2. Private cloud prerequisites
 
-Do not check these boxes based on mocks, configuration text, `/health`, or deployment commands alone.
+- [ ] Billing is active on the exact project; a cost alert is configured.
+- [ ] Required APIs are enabled: Cloud Run, Cloud Tasks, Firestore, Vertex AI, Cloud Text-to-Speech, Cloud Storage, Cloud Build, Artifact Registry, and IAM Credentials.
+- [ ] Firestore Native mode, Artifact Registry, and the Cloud Tasks queue exist in owner-reviewed locations.
+- [ ] The artifact bucket was created with Uniform Bucket-Level Access enabled and Public Access Prevention `enforced`.
+- [ ] Bucket output from `gcloud storage buckets describe` was inspected; no `allUsers` or `allAuthenticatedUsers` grant exists.
+- [ ] The API service identity has only bucket metadata/object read permissions required by the adapter.
+- [ ] The worker service identity has only bucket metadata/object create/read permissions required by the adapter.
+- [ ] API, worker, and task caller are three distinct service identities; none has Owner or Editor.
+- [ ] Worker has Firestore, Vertex AI, and enabled-service consumption access. API has Firestore and Cloud Tasks enqueue access.
+- [ ] The Cloud Tasks service agent can mint the task caller's OIDC token, and only that caller has Cloud Run Invoker on the worker.
+- [ ] The worker is private; an unauthenticated request is rejected by Cloud Run IAM.
+- [ ] Both roles have the exact non-secret bucket/voice configuration. Only the API has the access-code digest.
+- [ ] Cloud Tasks dispatch deadline and Cloud Run worker timeout are 1,740 seconds; fenced lease is 1,800 seconds.
+- [ ] Worker starts at 2 CPU, 4 GiB, concurrency 1, max instances 1 for the first media acceptance run.
 
-- [ ] Owner confirms an active billing account is attached to the intended project and creates a budget alert.
-- [ ] Required APIs, Firestore Native mode, Artifact Registry, Cloud Tasks queue, and three least-privilege service accounts exist.
-- [ ] Private worker deploys first; an unauthenticated request is rejected by Cloud Run IAM.
-- [ ] Public API deploys with only the access-code digest, never the plaintext code.
-- [ ] One clear request completes after a real model lookup and structured generation.
-- [ ] The completed Firestore job records `execution.evidence_origin = live_google_provider_response`.
-- [ ] The completed job contains a package with `plan_only = true`, `media_status = unrendered_plan`, a valid manifest digest, contiguous planned 24-fps timecodes, and a passing deterministic audit.
-- [ ] Download the JSON package and verify it is local-only, contains no access code, and matches the job manifest digest.
-- [ ] Capture the real project, region, immutable image digest, API and worker revision names, queue/task resource, completed job ID, configured model, and provider response ID when present.
-- [ ] Restart or redeploy the API and verify the completed job remains readable from Firestore.
-- [ ] Run at least one Firestore emulator or live smoke test for transactional admission, lease reclamation, finalization, and late-cancellation behavior; unit doubles alone are insufficient proof of Firestore semantics.
-- [ ] Exercise an ambiguous request and show `ready_for_production: false` with concise questions.
-- [ ] Exercise queued cancellation and one permitted retry; do not claim an in-flight provider call was preempted.
-- [ ] Confirm missing and incorrect access codes return the same `401`, the correct code can create a `202` job, and the browser sends only same-origin requests.
-- [ ] Confirm **Create production plan** remains disabled until a nonblank access code and creative source are present, and the blank-code guidance says the **Judge / owner access code** is provided with the submission.
-- [ ] Confirm the install button either opens the browser PWA prompt or provides the exact Edge Apps / private launcher fallback; test the installed or Edge `--app=` window separately from ordinary tabs.
+## 3. Access and boundary smoke tests
 
-## Demo recording
+- [ ] Public application root loads from a signed-out browser.
+- [ ] Missing and incorrect access codes return the same `401`; a correct code can create a `202` queued job.
+- [ ] The page sends only same-origin job/artifact requests and never receives a public bucket or signed URL.
+- [ ] The install button opens the PWA install path or the exact Edge Apps fallback; test it as a dedicated app window, not only an ordinary browser tab.
+- [ ] Raw-video attachment displays only local metadata. Network inspection confirms video bytes are not uploaded.
+- [ ] Script attachment clearly shows full text versus labeled excerpt mode and exact extracted/included counts.
 
-- [ ] Start with the product problem and the one-sentence architecture, then show the live URL.
-- [ ] Enter the owner-provided access code without exposing it in the recording, logs, source, or submission text.
-- [ ] Submit a specific creative request or use **+ Attach** to add a supported story/screenplay. Show whether full text or labeled excerpts were used, with included/extracted character counts.
-- [ ] Optionally attach a few raw-video files and state explicitly that only filename, MIME type, size, and browser-readable duration are inventoried; raw bytes remain local.
-- [ ] Show job ID, stage, progress, application attempt, and the honestly unavailable first-run ETA.
-- [ ] Show the final title, summary, generated planning illustrations or explicit pending frames, ordered detailed cards, planned in/out timecodes, framing/camera/action/audio direction, deterministic audit, both manifest digests, and live execution metadata.
-- [ ] Play the timed animatic and call it previsualization assembled from planning panels—not a rendered scene or finished video.
-- [ ] If **Narrate investor pitch** is enabled, identify the clearly labeled English Natural or Neural browser voice, play one or two cues, stop it, and download the narration TXT. If it is disabled, show the truthful natural-voice-unavailable message and download the same narration TXT. State that browser speech is not generated audio and is not embedded in an MP4/MOV/audio file.
-- [ ] Show exact-setting location grouping and download its HTML, schedule CSV, and JSON. State that similar-looking settings are not silently merged and props/wardrobe are not itemized by the current brief.
-- [ ] Show the character/synopsis dossier and download its HTML, TXT, JSON, and character-appearance CSV. State that it derives supported synopsis/appearance evidence without another model call and does not infer roles, biographies, relationships, arcs, casting, pronouns, or speaker attribution.
-- [ ] Download the package JSON, visual storyboard HTML, detailed production sheet, shot-list CSV, and source-aware rough-cut EDL CSV; demonstrate Print / Save PDF. Call them editorial planning artifacts—not a video, applied edit, footage analysis, or located source footage.
-- [ ] Show one clarification round, then cancel/retry behavior if time permits.
-- [ ] Keep claims narrow: the contest edition produces a brief, visual/detailed boards, timed animatic, narration TXT plus a browser-voice pitch preview only when a clearly labeled English Natural or Neural voice is available, exact-setting location exports, evidence-limited character/synopsis exports, continuity audit, and editorial instructions. It does not render the Local edition's final video, generate/attach an audio track, create lip sync, or apply a raw-footage edit.
-- [ ] Remove or blur unrelated account, billing, email, project, tab, and notification details from screenshots and video.
+## 4. One clear live acceptance job
 
-## Submission form
+Follow [START_HERE_TEST.md](START_HERE_TEST.md). Do not use a full television episode as the first run.
 
-- [ ] Public source URL resolves from a signed-out browser and points to the frozen revision.
-- [ ] Demo video is accessible to judges, uses permitted media, and matches the deployed revision.
-- [ ] Description names the Google services actually demonstrated and distinguishes live evidence from local tests.
-- [ ] Setup instructions, architecture diagram, test command, license, and access instructions are easy to find.
-- [ ] Judge access is delivered through an owner-controlled channel; no plaintext secret appears in the repository or form.
-- [ ] Re-open every submitted link and re-read the final text before the organizer's cutoff.
+- [ ] A specific one-minute dialogue request is accepted and has a durable job ID.
+- [ ] The first ETA says unavailable rather than inventing a time.
+- [ ] The job progresses through brief, validation, timeline compilation, audit, all-card visual generation, narration, media render, and final verification stages.
+- [ ] Completed job records `execution.evidence_origin = live_google_provider_response` plus actual provider metadata.
+- [ ] `state == succeeded` only after all media gates pass.
 
-If any live-proof item remains unchecked, describe the project as locally verified and deployment-ready—not as live-deployed or provider-proven.
+### Required visual gate
+
+- [ ] `required_panel_count` equals the number of detailed cards.
+- [ ] `generated_panel_count` equals `required_panel_count`.
+- [ ] Every visual card contains a real planning image; none says `VISUAL PENDING`, `partial`, `panel limit reached`, or equivalent.
+- [ ] Each private panel manifest has a safe artifact ID, this job's object prefix, content type, byte count, and SHA-256.
+- [ ] Visual sheet and on-screen grid preserve card order and show matching card IDs/timecodes.
+
+### Required narrated-pitch gate
+
+- [ ] Narration cue count equals card count.
+- [ ] Subtitle cue count equals card count.
+- [ ] Exact screenplay lines appear where the parser identified screenplay dialogue; prose direction is labeled as planned direction rather than falsely attributed dialogue.
+- [ ] `pitch_preview.status == complete` and its manifest hash validates.
+- [ ] FFprobe verification records 1920×1080, H.264 video, AAC audio, positive bounded duration, and complete coverage.
+- [ ] The in-app video player opens the authenticated MP4 and audio is present.
+- [ ] Downloaded MP4 plays in Windows Media Player or VLC at full-screen size.
+- [ ] Downloaded narration TXT and SRT are present and correspond to card order.
+
+### Required planning exports
+
+- [ ] Canonical package JSON and manifest hash validate.
+- [ ] Detailed production sheet contains scene-specific action, framing/camera, dialogue/audio, continuity, and source/bridge direction.
+- [ ] Visual storyboard HTML/PDF contains every visual card without excessive blank pages.
+- [ ] Character/synopsis HTML, TXT, JSON, and character-appearance CSV download successfully.
+- [ ] Exact-setting location HTML, schedule CSV, and JSON download successfully.
+- [ ] Shot-list CSV and source-aware rough-cut EDL CSV download successfully.
+- [ ] Unsupported character biographies, casting, relationships, pronouns, or speaker claims remain explicit review holds.
+- [ ] Every export says the material is plan-only/previsualization rather than finished filmed footage.
+
+## 5. Fail cases that must not be called a pass
+
+- [ ] Force or observe a visual provider failure in a non-submission test. Confirm the production-ready job fails instead of succeeding with blank/pending panels.
+- [ ] Confirm a missing TTS cue, missing subtitle, FFmpeg error, wrong codec/resolution, or hash mismatch fails finalization.
+- [ ] Confirm an arbitrary artifact ID, another job's artifact ID, missing code, or wrong code cannot download bucket bytes.
+- [ ] Confirm direct bucket/object anonymous access fails.
+- [ ] Exercise an ambiguous request and show `ready_for_production: false` with concise questions and no fake finished package.
+- [ ] Exercise queued cancellation and one bounded retry. Do not claim an in-flight external provider call was preempted.
+
+If any required panel or MP4 item fails, the release remains on hold. A historical partial test is useful debugging evidence but is not owner-review media.
+
+## 6. Demo recording
+
+- [ ] Open with the problem: independent filmmakers need affordable, consistent visual planning and pitch materials before expensive shooting.
+- [ ] State the narrow product truth: natural chat/script → structured brief → detailed + visual cards → character/synopsis/location/editorial exports → narrated storyboard pitch MP4.
+- [ ] State explicitly that it is not final filmed footage, lip sync, or applied raw-footage editing.
+- [ ] Show the installed/dedicated app window and enter the access code off camera.
+- [ ] Attach a short script or enter the START HERE prompt.
+- [ ] Show job ID, stages, progress, and honest ETA behavior.
+- [ ] Show all visuals—not three samples and not pending placeholders.
+- [ ] Open detailed cards and character/synopsis/location/shot-list/EDL exports.
+- [ ] Play the cloud-rendered MP4 with audible Chirp 3 HD narration; show that it advances through every card and includes the dialogue beats.
+- [ ] Download the MP4, TXT, SRT, visual board, detailed board, and JSON package.
+- [ ] Briefly show authenticated artifact architecture and the private-bucket controls.
+- [ ] Show live execution metadata, but do not expose codes, emails, billing, unrelated tabs, or personal notifications.
+- [ ] If demonstrating an ambiguous request or cancel/retry, keep it after the successful core path.
+
+## 7. Submission form
+
+- [ ] Public source URL resolves from a signed-out browser and points to the frozen reviewed revision.
+- [ ] Hosted demo URL resolves and owner/judge code instructions are clear.
+- [ ] Demo video is accessible to judges and matches the deployed revision.
+- [ ] Description names only Google services actually demonstrated.
+- [ ] Architecture diagram, setup procedure, test command, license, and START HERE acceptance path are easy to find.
+- [ ] The repository is public only when the owner is ready; no secret was added during the visibility change.
+- [ ] Every submitted link was reopened and the final text reread before the organizer cutoff.
+
+If live-proof items remain unchecked, describe the repository as locally verified and deployment-ready—not as live-proven. If visual or MP4 gates remain unchecked, do not describe the corrected media feature as complete.

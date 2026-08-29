@@ -57,6 +57,7 @@ def valid_config(**overrides: object) -> AllThingsConfig:
         "worker_url": "https://video-studio-worker-abc-uc.a.run.app",
         "tasks_service_account": "video-studio-tasks@video-studio-12345.iam.gserviceaccount.com",
         "admission_cooldown_seconds": 0,
+        "worker_lease_seconds": 1_800,
     }
     values.update(overrides)
     return AllThingsConfig(**values)  # type: ignore[arg-type]
@@ -825,6 +826,7 @@ class AllThingsAgenticTests(unittest.TestCase):
         self.assertEqual(receipt["provider"], "Google Cloud Tasks")
         task = client.calls[0]["task"]
         request = task["http_request"]
+        self.assertEqual(task["dispatch_deadline"], {"seconds": 1_740})
         self.assertEqual(
             task["name"],
             "projects/video-studio-12345/locations/us-central1/queues/video-studio-production-briefs/tasks/00000000-0000-0000-0000-000000000001-a1",

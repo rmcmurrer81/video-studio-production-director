@@ -27,6 +27,7 @@ STORYBOARD_PACKAGE_SCHEMA = "video-studio.storyboard-edit-package/v1"
 STORYBOARD_TIMELINE_SCHEMA = "video-studio.planned-edit-timeline/v1"
 STORYBOARD_AUDIT_SCHEMA = "video-studio.coverage-continuity-audit/v1"
 VISUAL_STORYBOARD_SCHEMA = "video-studio.visual-storyboard/v1"
+NARRATED_PITCH_SCHEMA = "video-studio.narrated-pitch/v1"
 STORYBOARD_FRAME_RATE = 24
 # Leaves headroom beneath Firestore's document limit for the separately exposed
 # creative brief, bounded request text, durable state, and provider evidence.
@@ -198,6 +199,8 @@ class AllThingsConfig:
     tasks_queue: str = "video-studio-production-briefs"
     worker_url: str = ""
     tasks_service_account: str = ""
+    artifacts_bucket: str = ""
+    tts_voice: str = "en-US-Chirp3-HD-Aoede"
     admission_cooldown_seconds: int = DEFAULT_ADMISSION_COOLDOWN_SECONDS
     admission_window_seconds: int = DEFAULT_ADMISSION_WINDOW_SECONDS
     admission_max_jobs: int = DEFAULT_ADMISSION_MAX_JOBS
@@ -218,6 +221,10 @@ class AllThingsConfig:
             tasks_queue=environment.get("KIRA_ALL_THINGS_TASKS_QUEUE", "video-studio-production-briefs").strip(),
             worker_url=environment.get("KIRA_ALL_THINGS_WORKER_URL", "").strip().rstrip("/"),
             tasks_service_account=environment.get("KIRA_ALL_THINGS_TASKS_SERVICE_ACCOUNT", "").strip(),
+            artifacts_bucket=environment.get("KIRA_ALL_THINGS_ARTIFACTS_BUCKET", "").strip(),
+            tts_voice=environment.get(
+                "KIRA_ALL_THINGS_TTS_VOICE", "en-US-Chirp3-HD-Aoede"
+            ).strip(),
             admission_cooldown_seconds=_environment_integer(
                 environment,
                 "KIRA_ALL_THINGS_ADMISSION_COOLDOWN_SECONDS",
@@ -268,6 +275,10 @@ class AllThingsConfig:
             issues.append("KIRA_ALL_THINGS_TASKS_LOCATION must be a valid region")
         if not _SAFE_ID.fullmatch(self.tasks_queue):
             issues.append("KIRA_ALL_THINGS_TASKS_QUEUE is invalid")
+        if self.artifacts_bucket and len(self.artifacts_bucket) > 222:
+            issues.append("KIRA_ALL_THINGS_ARTIFACTS_BUCKET is invalid")
+        if not re.fullmatch(r"[a-z]{2,3}-[A-Z]{2}-Chirp3-HD-[A-Za-z]+", self.tts_voice):
+            issues.append("KIRA_ALL_THINGS_TTS_VOICE must identify a Chirp 3 HD voice")
         if not 0 <= self.admission_cooldown_seconds <= 300:
             issues.append("KIRA_ALL_THINGS_ADMISSION_COOLDOWN_SECONDS must be from 0 to 300")
         if not 60 <= self.admission_window_seconds <= 86_400:
@@ -304,6 +315,8 @@ class AllThingsConfig:
             "tasks_queue": self.tasks_queue,
             "worker_url": self.worker_url,
             "tasks_service_account": self.tasks_service_account,
+            "artifacts_bucket": self.artifacts_bucket,
+            "tts_voice": self.tts_voice,
             "admission_cooldown_seconds": self.admission_cooldown_seconds,
             "admission_window_seconds": self.admission_window_seconds,
             "admission_max_jobs": self.admission_max_jobs,
@@ -1000,6 +1013,35 @@ class VisualPanelProvider(Protocol):
         ...
 
 
+class ArtifactStore(Protocol):
+    """Private job-scoped artifact storage; implementations must never publish URLs."""
+
+    def put_bytes(
+        self,
+        *,
+        job_id: str,
+        artifact_id: str,
+        data: bytes,
+        content_type: str,
+    ) -> Mapping[str, Any]:
+        ...
+
+
+class NarratedPitchRenderer(Protocol):
+    """Render the complete narrated storyboard pitch or fail closed."""
+
+    def render(
+        self,
+        *,
+        brief: "ProductionBrief",
+        timeline: Mapping[str, Any],
+        source_message: str,
+        visual_storyboard: Mapping[str, Any],
+        job_id: str,
+    ) -> Mapping[str, Any]:
+        ...
+
+
 _VISUAL_MISSING_REASONS = frozenset(
     {
         "held_for_clarification",
@@ -1123,6 +1165,44 @@ def _available_visual_panel(
     }
 
 
+def _artifact_id_for_panel(index: int, shot_id: Any) -> str:
+    safe_shot = re.sub(r"[^a-z0-9_-]+", "-", str(shot_id).casefold()).strip("-")
+    return f"storyboard-panel-{index + 1:03d}-{safe_shot or 'shot'}"
+
+
+def _external_visual_panel(
+    brief: ProductionBrief,
+    shot: Mapping[str, Any],
+    result: VisualPanelProviderResult,
+    *,
+    artifact_store: ArtifactStore,
+    artifact_id: str,
+    job_id: str,
+) -> dict[str, Any]:
+    inline = _available_visual_panel(brief, shot, result)
+    stored = dict(
+        artifact_store.put_bytes(
+            job_id=job_id,
+            artifact_id=artifact_id,
+            data=result.image_bytes,
+            content_type="image/jpeg",
+        )
+    )
+    if (
+        stored.get("artifact_id") != artifact_id
+        or stored.get("content_type") != "image/jpeg"
+        or stored.get("sha256") != inline["content_sha256"]
+        or stored.get("bytes") != inline["byte_length"]
+    ):
+        raise VisualPanelGenerationError("invalid_provider_asset")
+    inline["data_base64"] = None
+    inline["artifact_id"] = artifact_id
+    inline["object_name"] = stored.get("object_name")
+    if not isinstance(inline["object_name"], str) or not inline["object_name"]:
+        raise VisualPanelGenerationError("invalid_provider_asset")
+    return inline
+
+
 def build_visual_storyboard(
     brief: ProductionBrief,
     timeline: Mapping[str, Any],
@@ -1130,13 +1210,18 @@ def build_visual_storyboard(
     provider: VisualPanelProvider | None,
     config: AllThingsConfig,
     job_id: str,
+    artifact_store: ArtifactStore | None = None,
 ) -> dict[str, Any]:
-    """Build an optional, bounded visual sidecar without weakening the plan package."""
+    """Build every panel to private storage, or the bounded legacy inline preview."""
 
     shots = timeline.get("shots")
     if not isinstance(shots, list) or any(not isinstance(shot, Mapping) for shot in shots):
         raise BriefValidationError("visual storyboard requires the compiled shot timeline")
-    selected = _selected_visual_indices(len(shots))
+    selected = (
+        frozenset(range(len(shots)))
+        if artifact_store is not None
+        else _selected_visual_indices(len(shots))
+    )
     panels: list[dict[str, Any]] = []
     reference_image: bytes | None = None
     evidence_origin = "not_attempted"
@@ -1158,7 +1243,17 @@ def build_visual_storyboard(
                 job_id=job_id,
                 reference_image=reference_image,
             )
-            panel = _available_visual_panel(brief, shot, result)
+            if artifact_store is None:
+                panel = _available_visual_panel(brief, shot, result)
+            else:
+                panel = _external_visual_panel(
+                    brief,
+                    shot,
+                    result,
+                    artifact_store=artifact_store,
+                    artifact_id=_artifact_id_for_panel(index, shot.get("shot_id")),
+                    job_id=job_id,
+                )
             origin = result.execution.get("evidence_origin")
             if origin in {"injected_test_client", "live_google_provider_response"}:
                 evidence_origin = str(origin)
@@ -1167,7 +1262,14 @@ def build_visual_storyboard(
             panel = _missing_visual_panel(brief, shot, exc.code)
         except Exception:
             panel = _missing_visual_panel(brief, shot, "generation_failed")
+        if artifact_store is not None and "artifact_id" not in panel:
+            panel["artifact_id"] = None
+            panel["object_name"] = None
         panels.append(panel)
+    if artifact_store is not None:
+        for panel in panels:
+            panel.setdefault("artifact_id", None)
+            panel.setdefault("object_name", None)
     available = sum(panel["status"] == "available" for panel in panels)
     required = len(panels)
     if not brief.ready_for_production:
@@ -1189,7 +1291,9 @@ def build_visual_storyboard(
         "required_panel_count": required,
         "available_panel_count": available,
         "missing_panel_count": required - available,
-        "representation": "inline_base64",
+        "representation": (
+            "private_artifact_route" if artifact_store is not None else "inline_base64"
+        ),
         "renderer": {
             "provider": "Vertex AI",
             "framework": "google-genai",
@@ -1200,7 +1304,10 @@ def build_visual_storyboard(
         "panels": panels,
     }
     body["manifest_sha256"] = sha256_json(body)
-    while len(canonical_json(body).encode("utf-8")) > MAX_VISUAL_STORYBOARD_BYTES:
+    while (
+        artifact_store is None
+        and len(canonical_json(body).encode("utf-8")) > MAX_VISUAL_STORYBOARD_BYTES
+    ):
         replaced = False
         for index in range(len(panels) - 1, -1, -1):
             if panels[index]["status"] == "available":
@@ -1320,21 +1427,27 @@ def validate_visual_storyboard(
         "evidence_origin",
     } or any(not isinstance(item, str) or not item for item in renderer.values()):
         raise BriefValidationError("visual storyboard renderer evidence is invalid")
+    representation = value.get("representation")
+    if representation not in {"inline_base64", "private_artifact_route"}:
+        raise BriefValidationError("visual storyboard representation is invalid")
+    panel_fields = {
+        "shot_id",
+        "status",
+        "alt_text",
+        "prompt_sha256",
+        "mime_type",
+        "width",
+        "height",
+        "byte_length",
+        "content_sha256",
+        "data_base64",
+        "missing_reason",
+    }
+    if representation == "private_artifact_route":
+        panel_fields |= {"artifact_id", "object_name"}
     available = 0
     for shot, panel in zip(shots, panels):
-        if not isinstance(shot, Mapping) or not isinstance(panel, Mapping) or set(panel) != {
-            "shot_id",
-            "status",
-            "alt_text",
-            "prompt_sha256",
-            "mime_type",
-            "width",
-            "height",
-            "byte_length",
-            "content_sha256",
-            "data_base64",
-            "missing_reason",
-        }:
+        if not isinstance(shot, Mapping) or not isinstance(panel, Mapping) or set(panel) != panel_fields:
             raise BriefValidationError("visual storyboard panel fields are invalid")
         if (
             panel.get("shot_id") != shot.get("shot_id")
@@ -1343,20 +1456,35 @@ def validate_visual_storyboard(
         ):
             raise BriefValidationError("visual storyboard panel identity is invalid")
         if panel.get("status") == "available":
-            try:
-                image = base64.b64decode(str(panel.get("data_base64")), validate=True)
-            except Exception as exc:
-                raise BriefValidationError("visual storyboard image encoding is invalid") from exc
+            if representation == "inline_base64":
+                try:
+                    image = base64.b64decode(str(panel.get("data_base64")), validate=True)
+                except Exception as exc:
+                    raise BriefValidationError("visual storyboard image encoding is invalid") from exc
+                valid_asset = (
+                    panel.get("byte_length") == len(image)
+                    and panel.get("content_sha256") == hashlib.sha256(image).hexdigest()
+                    and image.startswith(b"\xff\xd8")
+                    and image.endswith(b"\xff\xd9")
+                )
+            else:
+                valid_asset = (
+                    panel.get("data_base64") is None
+                    and isinstance(panel.get("artifact_id"), str)
+                    and bool(_SAFE_ID.fullmatch(str(panel.get("artifact_id"))))
+                    and isinstance(panel.get("object_name"), str)
+                    and str(panel.get("object_name")).startswith("jobs/")
+                    and isinstance(panel.get("content_sha256"), str)
+                    and bool(re.fullmatch(r"[0-9a-f]{64}", str(panel.get("content_sha256"))))
+                )
             if (
                 panel.get("mime_type") != "image/jpeg"
                 or panel.get("width") != 768
                 or panel.get("height") != 432
-                or panel.get("byte_length") != len(image)
-                or not 100 <= len(image) <= MAX_VISUAL_PANEL_BYTES
-                or panel.get("content_sha256") != hashlib.sha256(image).hexdigest()
+                or not isinstance(panel.get("byte_length"), int)
+                or not 100 <= int(panel.get("byte_length")) <= MAX_VISUAL_PANEL_BYTES
                 or panel.get("missing_reason") is not None
-                or not image.startswith(b"\xff\xd8")
-                or not image.endswith(b"\xff\xd9")
+                or not valid_asset
             ):
                 raise BriefValidationError("visual storyboard image asset is invalid")
             available += 1
@@ -1370,6 +1498,7 @@ def validate_visual_storyboard(
                     "byte_length",
                     "content_sha256",
                     "data_base64",
+                    *( {"artifact_id", "object_name"} if representation == "private_artifact_route" else set() ),
                 }
             ):
                 raise BriefValidationError("visual storyboard missing-panel evidence is invalid")
@@ -1388,7 +1517,7 @@ def validate_visual_storyboard(
     if (
         value.get("schema") != VISUAL_STORYBOARD_SCHEMA
         or value.get("verification_scope") != "technical_asset_integrity_only"
-        or value.get("representation") != "inline_base64"
+        or value.get("representation") != representation
         or value.get("status") != expected_status
         or value.get("required_panel_count") != required
         or value.get("available_panel_count") != available
@@ -1529,6 +1658,7 @@ def public_job(record: Mapping[str, Any]) -> dict[str, Any]:
         "brief",
         "storyboard_package",
         "visual_storyboard",
+        "pitch_preview",
         "error",
         "dispatch",
         "execution",
@@ -1550,12 +1680,16 @@ class AllThingsJobService:
         dispatcher: JobDispatcher | None = None,
         provider: BriefProvider | None = None,
         visual_provider: VisualPanelProvider | None = None,
+        artifact_store: ArtifactStore | None = None,
+        narrated_pitch_renderer: NarratedPitchRenderer | None = None,
     ) -> None:
         self.config = config
         self.repository = repository
         self.dispatcher = dispatcher
         self.provider = provider
         self.visual_provider = visual_provider
+        self.artifact_store = artifact_store
+        self.narrated_pitch_renderer = narrated_pitch_renderer
 
     @staticmethod
     def _message(value: Any) -> str:
@@ -1607,6 +1741,7 @@ class AllThingsJobService:
             "brief": None,
             "storyboard_package": None,
             "visual_storyboard": None,
+            "pitch_preview": None,
             "error": None,
             "dispatch": None,
             "execution": None,
@@ -1669,6 +1804,7 @@ class AllThingsJobService:
                 "brief": None,
                 "storyboard_package": None,
                 "visual_storyboard": None,
+                "pitch_preview": None,
                 "error": None,
                 "dispatch": None,
                 "execution": None,
@@ -1776,7 +1912,8 @@ class AllThingsJobService:
             )
         failure_code = "brief_generation_failed"
         try:
-            result = self.provider.create_brief(str(claimed["message"]), job_id=job_id)
+            source_message = str(claimed["message"])
+            result = self.provider.create_brief(source_message, job_id=job_id)
             owned = self.repository.update_claimed(
                 job_id,
                 {
@@ -1877,7 +2014,69 @@ class AllThingsJobService:
                 provider=self.visual_provider,
                 config=self.config,
                 job_id=job_id,
+                artifact_store=self.artifact_store,
             )
+            pitch_preview: dict[str, Any] | None = None
+            if brief.ready_for_production and self.artifact_store is not None:
+                failure_code = "visual_storyboard_incomplete"
+                if visual_storyboard.get("status") != "complete":
+                    raise VisualPanelGenerationError("generation_failed")
+                if self.narrated_pitch_renderer is None:
+                    raise ConfigurationError("the worker service has no narrated pitch renderer")
+                owned = self.repository.update_claimed(
+                    job_id,
+                    {
+                        "stage": "rendering_narrated_pitch",
+                        "progress": 99,
+                        "updated_at": iso_now(),
+                        "eta": eta_payload(durations, progress=99),
+                    },
+                    attempt=attempt,
+                    lease_token=lease_token,
+                )
+                if owned.get("lease_token") != lease_token:
+                    return public_job(owned)
+                if owned.get("cancel_requested"):
+                    return public_job(
+                        self._finish_cancelled(
+                            job_id,
+                            attempt=attempt,
+                            lease_token=lease_token,
+                            started_at=claimed.get("started_at"),
+                        )
+                    )
+                failure_code = "narrated_pitch_render_failed"
+                pitch_preview = dict(
+                    self.narrated_pitch_renderer.render(
+                        brief=brief,
+                        timeline=timeline,
+                        source_message=source_message,
+                        visual_storyboard=visual_storyboard,
+                        job_id=job_id,
+                    )
+                )
+                video = pitch_preview.get("video")
+                pitch_digest = pitch_preview.get("manifest_sha256")
+                pitch_body = {
+                    key: value
+                    for key, value in pitch_preview.items()
+                    if key != "manifest_sha256"
+                }
+                if (
+                    pitch_preview.get("schema") != NARRATED_PITCH_SCHEMA
+                    or pitch_preview.get("status") != "complete"
+                    or pitch_preview.get("card_count") != len(timeline.get("shots", []))
+                    or pitch_preview.get("cue_count") != len(timeline.get("shots", []))
+                    or not isinstance(pitch_digest, str)
+                    or pitch_digest != sha256_json(pitch_body)
+                    or not isinstance(video, Mapping)
+                    or video.get("content_type") != "video/mp4"
+                    or video.get("video_codec") != "h264"
+                    or video.get("audio_codec") != "aac"
+                    or video.get("width") != 1920
+                    or video.get("height") != 1080
+                ):
+                    raise BriefValidationError("narrated pitch manifest is incomplete")
             finished_at = utc_now()
             started_at = _parse_time(claimed.get("started_at"))
             execution = {
@@ -1887,11 +2086,17 @@ class AllThingsJobService:
                         "gemini_structured_creative_plan",
                         "deterministic_storyboard_timeline_compile",
                         "deterministic_coverage_continuity_audit",
-                        "optional_gemini_visual_storyboard",
+                        "complete_gemini_visual_storyboard",
+                        "google_cloud_tts_narration",
+                        "ffmpeg_narrated_pitch_mp4",
                     ],
                     "storyboard_package_schema": STORYBOARD_PACKAGE_SCHEMA,
                     "manifest_sha256": storyboard_package["manifest_sha256"],
-                    "media_status": "unrendered_plan",
+                    "media_status": (
+                        "narrated_storyboard_pitch_mp4"
+                        if pitch_preview is not None
+                        else "unrendered_plan"
+                    ),
                     "visual_storyboard_schema": VISUAL_STORYBOARD_SCHEMA,
                     "visual_storyboard_status": visual_storyboard["status"],
                 },
@@ -1899,7 +2104,7 @@ class AllThingsJobService:
             success_patch: dict[str, Any] = {
                 "state": JobState.SUCCEEDED.value,
                 "stage": (
-                    "storyboard_package_ready"
+                    "production_plan_and_pitch_ready"
                     if brief.ready_for_production
                     else "clarification_required"
                 ),
@@ -1922,22 +2127,25 @@ class AllThingsJobService:
                 "brief": brief.to_dict(),
                 "storyboard_package": storyboard_package,
                 "visual_storyboard": visual_storyboard,
+                "pitch_preview": pitch_preview,
                 "execution": execution,
                 "error": None,
             }
-            visual_storyboard = fit_visual_storyboard_to_job_budget(
-                visual_storyboard,
-                brief=brief,
-                timeline=timeline,
-                record_without_visual={
-                    **claimed,
-                    **success_patch,
-                    "visual_storyboard": None,
-                    "lease_token": None,
-                    "lease_expires_at": None,
-                },
-            )
-            success_patch["visual_storyboard"] = visual_storyboard
+            if visual_storyboard.get("representation") == "inline_base64":
+                visual_storyboard = fit_visual_storyboard_to_job_budget(
+                    visual_storyboard,
+                    brief=brief,
+                    timeline=timeline,
+                    record_without_visual={
+                        **claimed,
+                        **success_patch,
+                        "visual_storyboard": None,
+                        "pitch_preview": None,
+                        "lease_token": None,
+                        "lease_expires_at": None,
+                    },
+                )
+                success_patch["visual_storyboard"] = visual_storyboard
             success_patch["execution"]["pipeline"]["visual_storyboard_status"] = (
                 visual_storyboard["status"]
             )
@@ -1966,6 +2174,7 @@ class AllThingsJobService:
                     "brief": None,
                     "storyboard_package": None,
                     "visual_storyboard": None,
+                    "pitch_preview": None,
                     "execution": None,
                 },
                 attempt=attempt,
@@ -2026,6 +2235,7 @@ def _cancelled_patch(*, started_at: Any, finished_at: datetime) -> dict[str, Any
         "brief": None,
         "storyboard_package": None,
         "visual_storyboard": None,
+        "pitch_preview": None,
         "execution": None,
         "error": None,
     }
