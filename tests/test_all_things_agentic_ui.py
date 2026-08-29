@@ -73,7 +73,7 @@ class AllThingsAgenticUiTests(unittest.TestCase):
             'id="timelineTrack"',
             'id="timelinePlayhead"',
             'id="timelineSelection"',
-            "Storyboard · planned edit decision list",
+            "Shot list · source-aware rough-cut EDL",
             "Planned non-drop 24 fps",
             "No footage has been selected, changed, or rendered.",
             "no source clip has been selected or mutated",
@@ -224,6 +224,73 @@ class AllThingsAgenticUiTests(unittest.TestCase):
             self.assertIn(marker, self.html)
         self.assertNotIn("localStorage", self.html)
         self.assertNotIn("sessionStorage", self.html)
+
+    def test_owner_v2_has_real_pwa_access_attachment_and_editorial_controls(self) -> None:
+        required_ids = {
+            "installApp",
+            "attachmentButton",
+            "attachmentMenu",
+            "attachStory",
+            "attachFootage",
+            "scriptFile",
+            "footageFiles",
+            "sourceSummary",
+            "animatic",
+            "animaticPlay",
+            "animaticStop",
+        }
+        self.assertTrue(required_ids.issubset(self.parser.ids))
+        for marker in (
+            "Video Studio Storyboard Artist &amp; Production Planner",
+            'rel="manifest" href="/manifest.webmanifest"',
+            "beforeinstallprompt",
+            "appinstalled",
+            "deferredInstallPrompt",
+            "await prompt.prompt()",
+            "navigator.serviceWorker.register('/sw.js')",
+            "Edge open ⋯ → Apps → Install Video Studio",
+            "OWNER-TEST-INSTRUCTIONS",
+            "if (!$('access').value.trim())",
+            "The private owner / judge access code is missing or incorrect.",
+            "PDF, TXT, Markdown, Fountain, or Final Draft XML",
+            "await import('/vendor/pdfjs/pdf.mjs')",
+            "pdf.worker.mjs",
+            "isEvalSupported: false",
+            "item.hasEOL === true",
+            "beginning_middle_end_excerpt",
+            "Included source characters:",
+            "extracted characters included",
+            "Scripts within the displayed full-text bound receive whole-source planning; oversized sources use disclosed beginning/middle/end excerpts.",
+            "MAX_SCRIPT_CHARS = 147000",
+            "MAX_COMPOSED_MESSAGE_CHARS = 159000",
+            "raw video bytes stay in this browser",
+            "no footage-content analysis occurs",
+            "function shotListCsv()",
+            "function sourceAwareEdlCsv()",
+            "source_duration_deficit_seconds",
+            "SOURCE TOO SHORT - ADD COVERAGE OR RETIME",
+            "PLAYABLE timed animatic".lower(),
+        ):
+            if marker == "playable timed animatic":
+                self.assertIn(marker, self.html.lower())
+            else:
+                self.assertIn(marker, self.html)
+        submit = self.parser.attributes["submit"]
+        self.assertIn("disabled", submit)
+        access_sensitive_exports = self.html.split("function shotListCsv()", 1)[1].split(
+            "function storyboardSheetList", 1
+        )[0]
+        self.assertNotIn("$('access')", access_sensitive_exports)
+
+    def test_contest_scope_is_visibly_truthful(self) -> None:
+        for marker in (
+            "planning illustrations and a timed animatic are previsualization",
+            "It does not render a finished video",
+            "Final rendering, lip sync, voice generation, and footage editing remain Local edition quality gates.",
+            "editorial instructions only",
+            "No final footage, dialogue performance, lip sync, or finished audio is claimed.",
+        ):
+            self.assertIn(marker, self.html)
 
     def test_clarification_followups_are_composed_in_memory_without_extra_api_fields(self) -> None:
         for marker in (

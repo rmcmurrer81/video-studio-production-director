@@ -1,8 +1,12 @@
-# Video Studio Production Director
+# Video Studio Storyboard Artist & Production Planner
 
-Video Studio Production Director is a focused All Things Agentic submission that turns a natural-language creative request into a validated creative brief, a deterministic audited storyboard/edit-decision package, and a bounded visual-storyboard review sheet. The Google Cloud design uses a public Cloud Run API, Firestore-backed job state, an OIDC-authenticated Cloud Tasks handoff, a private Cloud Run worker, and Vertex AI through the official Google Gen AI SDK.
+Video Studio Storyboard Artist & Production Planner is a focused All Things Agentic submission that turns natural chat or an attached story/screenplay into a validated creative brief, a deterministic audited scene package, and human-usable preproduction artifacts. The Google Cloud design uses a public Cloud Run API, Firestore-backed job state, an OIDC-authenticated Cloud Tasks handoff, a private Cloud Run worker, and Vertex AI through the official Google Gen AI SDK.
 
-The downloadable JSON package contains ordered storyboard cards, contiguous planned 24-fps timecodes, framing, camera, scene-specific action, dialogue/audio, continuity, and source/bridge guidance. When Gemini image generation is available, a separate cryptographically checked sidecar supplies studio-style planning illustrations; unavailable panels remain visibly marked instead of being fabricated. Separate scriptless HTML exports provide a visual board and a detailed production sheet, and the visual board can be printed or saved as PDF. The package remains explicitly marked `media_status = unrendered_plan` and `plan_only = true`: storyboard stills are planning art, not source footage, an applied edit, or a rendered movie.
+The familiar **+ Attach** menu accepts locally read PDF, TXT, Markdown, Fountain, Screenplay, and Final Draft XML story files. Ordinary screenplays are included in full up to the tested 147,000-character source allowance; larger sources use explicitly labeled beginning/middle/end excerpts with exact included and extracted character counts. PDF text extraction uses a vendored PDF.js module entirely in the browser. Scanned/image-only PDFs are rejected with an honest OCR-needed message. The same menu can inventory up to 12 selected raw-video files using browser-readable filename, size, MIME type, and duration only; raw bytes never leave the browser and no visual-content analysis is claimed.
+
+The downloadable JSON package contains ordered storyboard cards, contiguous planned 24-fps timecodes, framing, camera, scene-specific action, dialogue/audio, continuity, and source/bridge guidance. When Gemini image generation is available, a separate cryptographically checked sidecar supplies studio-style planning illustrations; unavailable panels remain visibly marked instead of being fabricated. The UI also provides a timed in-app animatic assembled from those planning panels and compiled shot durations, a shot-list CSV, a metadata-aware rough-cut EDL CSV with explicit source-duration deficits/holds, a visual storyboard, and a detailed production sheet. The HTML sheets can be printed or saved as PDF. Every artifact remains explicitly marked `media_status = unrendered_plan` and `plan_only = true`: storyboard stills and the animatic are previsualization, not source footage, an applied edit, or a rendered movie.
+
+The hosted page is installable as a standalone PWA. Use **Install desktop app** when the browser exposes its install prompt; Microsoft Edge users can also choose **⋯ → Apps → Install Video Studio Storyboard Artist & Production Planner**. The private owner-test packet includes an Edge `--app=` launcher template for a dedicated window without normal browser tabs. It contains no access code or credential.
 
 ## Evidence status
 
@@ -20,7 +24,7 @@ py -B -m py_compile kira_studio/all_things_agentic.py kira_studio/all_things_goo
 node --test tests/test_all_things_agentic_ui.js
 ```
 
-The suites cover deterministic package compilation/auditing, visual-sidecar integrity and failure fallbacks, Gemini image normalization, the brief schema and fenced job state machine, admission control, Google adapter request contracts with injected clients, Cloud Tasks OIDC binding, HTTP routes and access-code behavior, clarification follow-ups, all three downloads, print behavior, and the self-contained browser UI. They do not contact Google Cloud. The JavaScript check requires a current Node.js runtime.
+The suites cover deterministic package compilation/auditing, durable Firestore-size bounds, visual-sidecar integrity and failure fallbacks, Gemini image normalization, the brief schema and fenced job state machine, admission control, Google adapter request contracts with injected clients, Cloud Tasks OIDC binding, HTTP routes and access-code behavior, clarification follow-ups, local script coverage bounds, PWA install wiring, exports, print behavior, and the browser UI. They do not contact Google Cloud. The JavaScript check requires a current Node.js runtime.
 
 ## Container build
 
@@ -45,7 +49,9 @@ For a real deployment, copy the environment template without committing secrets 
 - `all_things_cloud_app.py` — dependency-light API/worker HTTP entry point.
 - `kira_studio/all_things_agentic.py` — strict brief contract, deterministic package compiler/auditor, fenced job lifecycle, retry/cancel rules, and evidence-aware ETA.
 - `kira_studio/all_things_google.py` — Vertex AI, Firestore, and Cloud Tasks adapters.
-- `web/all-things-agentic.html` — self-contained, same-origin production-director UI.
+- `web/all-things-agentic.html` — same-origin natural-chat, attachment, storyboard, animatic, and editorial-export UI.
+- `web/manifest.webmanifest`, `web/sw.js`, and `web/video-studio-icon-*` — standalone PWA shell with Chromium-ready PNG install icons and an SVG favicon.
+- `web/vendor/pdfjs/` — vendored browser-local PDF text extractor and its Apache 2.0 license.
 - `contest_config/` — reviewed dependency and non-secret environment templates.
 - `deploy/all_things_agentic/` — non-root Cloud Run container definition.
 - `cloudbuild.yaml` — clean remote container build and Artifact Registry push path.
@@ -56,4 +62,4 @@ For a real deployment, copy the environment template without committing secrets 
 
 ## License
 
-An MIT license draft is included in `LICENSE`. Confirm the copyright attribution before publishing the repository.
+An MIT license draft is included in `LICENSE`. Confirm the copyright attribution before publishing the repository. Vendored PDF.js is distributed under Apache License 2.0; see `web/vendor/pdfjs/LICENSE` and `THIRD_PARTY_NOTICES.md`.

@@ -4,7 +4,7 @@ This checklist separates local readiness from evidence that can exist only after
 
 ## Repository freeze
 
-- [ ] Confirm this repository contains only the focused Production Director source, UI, deployment files, documentation, and tests.
+- [ ] Confirm this repository contains only the focused Storyboard Artist & Production Planner source, UI, deployment files, documentation, and tests.
 - [ ] Review every diff and confirm no access code, credential, token, project-private identifier, or personal billing data is committed.
 - [ ] Confirm the copyright attribution in `LICENSE`.
 - [ ] Run the focused unit tests from the repository root:
@@ -25,7 +25,7 @@ This checklist separates local readiness from evidence that can exist only after
   node --test tests/test_all_things_agentic_ui.js
   ```
 
-- [ ] Confirm the three direct Google SDK versions, Pillow version, and Python base image digest match the reviewed pins.
+- [ ] Confirm the three direct Google SDK versions, Pillow version, Python base image digest, and vendored PDF.js license/notices match the reviewed pins.
 - [ ] Build the container from a clean checkout (local Docker or `cloudbuild.yaml`) and record resolved transitive package versions plus the immutable image digest.
 
 ## Live Google Cloud proof
@@ -46,16 +46,21 @@ Do not check these boxes based on mocks, configuration text, `/health`, or deplo
 - [ ] Exercise an ambiguous request and show `ready_for_production: false` with concise questions.
 - [ ] Exercise queued cancellation and one permitted retry; do not claim an in-flight provider call was preempted.
 - [ ] Confirm missing and incorrect access codes return the same `401`, the correct code can create a `202` job, and the browser sends only same-origin requests.
+- [ ] Confirm **Build scene package** remains disabled until a nonblank access code and creative source are present, and the blank-code guidance points to `OWNER-TEST-INSTRUCTIONS`.
+- [ ] Confirm the install button either opens the browser PWA prompt or provides the exact Edge Apps / private launcher fallback; test the installed or Edge `--app=` window separately from ordinary tabs.
 
 ## Demo recording
 
 - [ ] Start with the product problem and the one-sentence architecture, then show the live URL.
 - [ ] Enter the owner-provided access code without exposing it in the recording, logs, source, or submission text.
-- [ ] Submit a specific creative request and show job ID, stage, progress, application attempt, and the honestly unavailable first-run ETA.
+- [ ] Submit a specific creative request or use **+ Attach** to add a supported story/screenplay. Show whether full text or labeled excerpts were used, with included/extracted character counts.
+- [ ] Optionally attach a few raw-video files and state explicitly that only filename, MIME type, size, and browser-readable duration are inventoried; raw bytes remain local.
+- [ ] Show job ID, stage, progress, application attempt, and the honestly unavailable first-run ETA.
 - [ ] Show the final title, summary, generated planning illustrations or explicit pending frames, ordered detailed cards, planned in/out timecodes, framing/camera/action/audio direction, deterministic audit, both manifest digests, and live execution metadata.
-- [ ] Download the package JSON, visual storyboard HTML, and detailed production sheet; demonstrate Print / Save PDF. Call them planning artifacts—not a video, applied edit, or located source footage.
+- [ ] Play the timed animatic and call it previsualization assembled from planning panels—not a rendered scene or finished video.
+- [ ] Download the package JSON, visual storyboard HTML, detailed production sheet, shot-list CSV, and source-aware rough-cut EDL CSV; demonstrate Print / Save PDF. Call them editorial planning artifacts—not a video, applied edit, footage analysis, or located source footage.
 - [ ] Show one clarification round, then cancel/retry behavior if time permits.
-- [ ] Keep claims narrow: the system produces a structured production brief, not a rendered movie.
+- [ ] Keep claims narrow: the contest edition produces a brief, storyboard, animatic, continuity audit, and editorial instructions. It does not render the Local edition's final video, voice, lip sync, or applied raw-footage edit.
 - [ ] Remove or blur unrelated account, billing, email, project, tab, and notification details from screenshots and video.
 
 ## Submission form

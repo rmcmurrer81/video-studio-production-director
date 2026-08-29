@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from http.client import HTTPConnection
 from http import HTTPStatus
 from threading import Thread
 import hashlib
@@ -9,7 +10,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from all_things_cloud_app import Runtime, Server
+from all_things_cloud_app import MAX_BODY_BYTES, Runtime, Server
 from kira_studio.all_things_agentic import (
     AdmissionLimitError,
     ConfigurationError,
@@ -105,7 +106,7 @@ def request_json(
     data = None
     headers: dict[str, str] = {}
     if payload is not None:
-        data = json.dumps(payload).encode("utf-8")
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json"
     if access_code is not None:
         headers["X-Video-Studio-Access"] = access_code
@@ -121,6 +122,46 @@ def request_json(
 
 
 class AllThingsCloudAppTests(unittest.TestCase):
+    def test_http_envelope_accepts_full_unicode_script_request_and_rejects_oversize(self) -> None:
+        running = RunningServer("api")
+        try:
+            message = "😀" * 159_000
+            status, _, queued = request_json(
+                running,
+                "/v1/jobs",
+                method="POST",
+                payload={"message": message},
+            )
+            self.assertEqual(status, HTTPStatus.ACCEPTED)
+            self.assertEqual(queued["state"], "queued")
+            self.assertEqual(running.runtime.service.calls[-1], ("submit", message))
+
+            # Declare an oversized envelope without transmitting hundreds of
+            # kilobytes after the server has already rejected its length. This
+            # avoids a Windows TCP reset race while testing the same fail-fast
+            # Content-Length boundary used in production.
+            host, port = running.server.server_address
+            connection = HTTPConnection(host, port, timeout=2)
+            try:
+                connection.request(
+                    "POST",
+                    "/v1/jobs",
+                    body=b"",
+                    headers={
+                        "Content-Length": str(MAX_BODY_BYTES + 1),
+                        "Content-Type": "application/json",
+                        "X-Video-Studio-Access": ACCESS_CODE,
+                    },
+                )
+                response = connection.getresponse()
+                payload = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(response.status, HTTPStatus.BAD_REQUEST)
+                self.assertEqual(payload["error"], "request body is too large")
+            finally:
+                connection.close()
+        finally:
+            running.close()
+
     def test_worker_runtime_injects_configured_brief_and_visual_google_providers(self) -> None:
         repository = object()
         brief_provider = object()
@@ -199,7 +240,7 @@ class AllThingsCloudAppTests(unittest.TestCase):
                 html = response.read().decode("utf-8")
                 self.assertEqual(response.status, HTTPStatus.OK)
                 self.assertEqual(response.headers["Cache-Control"], "no-store")
-            self.assertIn("Video Studio Production Director", html)
+            self.assertIn("Video Studio Storyboard Artist &amp; Production Planner", html)
             self.assertIn('type="password"', html)
             self.assertIn("/v1/jobs", html)
 
@@ -239,6 +280,42 @@ class AllThingsCloudAppTests(unittest.TestCase):
             )
             self.assertEqual(status, HTTPStatus.ACCEPTED)
             self.assertEqual(retried["state"], "queued")
+        finally:
+            running.close()
+
+    def test_api_serves_installable_shell_and_local_pdf_extractor_assets(self) -> None:
+        running = RunningServer("api")
+        try:
+            expectations = {
+                "/manifest.webmanifest": ("application/manifest+json", b'"display": "standalone"'),
+                "/sw.js": ("text/javascript", b'const SHELL_CACHE = "video-studio-shell-v2"'),
+                "/icons/video-studio-icon-192.svg": ("image/svg+xml", b"<svg"),
+                "/icons/video-studio-icon-192.png": ("image/png", b"\x89PNG\r\n\x1a\n"),
+                "/icons/video-studio-icon-512.png": ("image/png", b"\x89PNG\r\n\x1a\n"),
+                "/vendor/pdfjs/pdf.mjs": ("text/javascript", b"globalThis.pdfjsLib"),
+                "/vendor/pdfjs/pdf.worker.mjs": ("text/javascript", b"pdfjsVersion"),
+                "/vendor/pdfjs/LICENSE": ("text/plain", b"Apache License"),
+            }
+            for path, (content_type, marker) in expectations.items():
+                with self.subTest(path=path):
+                    with urlopen(running.base_url + path, timeout=3) as response:
+                        body = response.read()
+                        self.assertEqual(response.status, HTTPStatus.OK)
+                        self.assertIn(content_type, response.headers["Content-Type"])
+                        self.assertIn(marker, body)
+                        self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
+            with urlopen(running.base_url + "/sw.js", timeout=3) as response:
+                self.assertEqual(response.headers["Service-Worker-Allowed"], "/")
+            with urlopen(running.base_url + "/manifest.webmanifest", timeout=3) as response:
+                manifest = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(manifest["display"], "standalone")
+                self.assertEqual(
+                    {icon["src"] for icon in manifest["icons"]},
+                    {
+                        "/icons/video-studio-icon-192.png",
+                        "/icons/video-studio-icon-512.png",
+                    },
+                )
         finally:
             running.close()
 

@@ -31,6 +31,7 @@ class FakeElement {
     this.placeholder = "";
     this.style = {left: "", width: "", setProperty() {}};
     this.value = "";
+    this.files = [];
     this.attributes = new Map();
     this._className = "";
     this._innerHTML = "";
@@ -57,6 +58,7 @@ class FakeElement {
     }
   }
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
+  removeAttribute(name) { this.attributes.delete(name); }
   scrollIntoView() {}
   click() {
     this.clickCount = (this.clickCount || 0) + 1;
@@ -121,6 +123,11 @@ test("short clarification answers compose complete one-field context across repe
     "timelineStatus", "timelineEmpty", "timelineTimecode", "timelinePlayhead",
     "timelineSelection", "timelineFirst", "timelinePrevious", "timelineNext", "timelineLast",
     "downloadPackage", "downloadVisualStoryboard", "printVisualStoryboard", "downloadDetailedSheet",
+    "downloadShotList", "downloadEdl", "accessHelp", "sourceSummary", "attachmentButton",
+    "attachmentMenu", "attachStory", "attachFootage", "scriptFile", "footageFiles",
+    "scriptStatus", "footageStatus", "animatic", "animaticPlay", "animaticStop",
+    "animaticImage", "animaticPlaceholder", "animaticOverlay", "animaticShot",
+    "animaticAction", "animaticBar", "animaticTime", "animaticTruth", "installApp",
   ];
   const elements = new Map(ids.map(id => [id, new FakeElement(id)]));
   elements.get("access").value = "private-judge-code";
@@ -216,6 +223,11 @@ test("visual and detailed HTML downloads stay separate, escaped, scriptless, and
     "timelineStatus", "timelineEmpty", "timelineTimecode", "timelinePlayhead",
     "timelineSelection", "timelineFirst", "timelinePrevious", "timelineNext", "timelineLast",
     "downloadPackage", "downloadVisualStoryboard", "printVisualStoryboard", "downloadDetailedSheet",
+    "downloadShotList", "downloadEdl", "accessHelp", "sourceSummary", "attachmentButton",
+    "attachmentMenu", "attachStory", "attachFootage", "scriptFile", "footageFiles",
+    "scriptStatus", "footageStatus", "animatic", "animaticPlay", "animaticStop",
+    "animaticImage", "animaticPlaceholder", "animaticOverlay", "animaticShot",
+    "animaticAction", "animaticBar", "animaticTime", "animaticTruth", "installApp",
   ];
   const elements = new Map(ids.map(id => [id, new FakeElement(id)]));
   elements.get("access").value = "private-judge-code";
@@ -389,22 +401,32 @@ test("visual and detailed HTML downloads stay separate, escaped, scriptless, and
     document: documentObject,
     fetch: fetchObject,
     setTimeout(callback) { Promise.resolve().then(callback); return 1; },
-    window: {open() { return printWindow; }},
+    window: {addEventListener() {}, open() { return printWindow; }},
   }, {filename: "all-things-agentic.html"});
 
   elements.get("message").value = "Build the safe storyboard sheet.";
   await elements.get("submit").listeners.get("click")();
   await settle();
+  assert.equal(elements.get("animaticPlay").disabled, false);
+  assert.equal(elements.get("animaticImage").src, "data:image/jpeg;base64,/9j/2Q==");
+  assert.match(elements.get("animaticShot").textContent, /SC01-SH01/);
+  assert.equal(elements.get("animaticTime").textContent, "00:00 / 00:12");
   elements.get("downloadDetailedSheet").click();
   elements.get("downloadVisualStoryboard").click();
   elements.get("printVisualStoryboard").click();
+  elements.get("downloadShotList").click();
+  elements.get("downloadEdl").click();
   await settle();
 
-  assert.equal(blobs.length, 2);
+  assert.equal(blobs.length, 4);
   assert.equal(blobs[0].type, "text/html;charset=utf-8");
   assert.equal(blobs[1].type, "text/html;charset=utf-8");
+  assert.equal(blobs[2].type, "text/csv;charset=utf-8");
+  assert.equal(blobs[3].type, "text/csv;charset=utf-8");
   const detailed = blobs[0].parts.join("");
   const visual = blobs[1].parts.join("");
+  const shotList = blobs[2].parts.join("");
+  const edl = blobs[3].parts.join("");
   assert.match(detailed, /^<!doctype html>/);
   assert.match(detailed, /Content-Security-Policy/);
   assert.match(detailed, /default-src 'none'/);
@@ -430,17 +452,167 @@ test("visual and detailed HTML downloads stay separate, escaped, scriptless, and
   assert.match(visual, /provider blocked/);
   assert.match(visual, /Page 1 of 1/);
   assert.doesNotMatch(visual, /<script\b/i);
-  assert.doesNotMatch(detailed + visual, /private-judge-code|package-secret|top-level-secret|nested-secret|visual-secret/);
+  assert.match(shotList, /EDITORIAL INSTRUCTION ONLY - NO FOOTAGE SELECTED CHANGED OR RENDERED/);
+  assert.match(shotList, /SC01-SH01/);
+  assert.match(edl, /ROUGH-CUT INSTRUCTION ONLY - NOT AN APPLIED EDIT OR RENDERED VIDEO/);
+  assert.match(edl, /no local source selected; planned editorial event only/);
+  assert.match(edl, /source_duration_deficit_seconds/);
+  assert.match(edl, /NO SOURCE ASSIGNED/);
+  assert.doesNotMatch(detailed + visual + shotList + edl, /private-judge-code|package-secret|top-level-secret|nested-secret|visual-secret/);
   assert.doesNotMatch(detailed + visual, /https?:\/\//i);
-  assert.equal(appended.length, 2);
+  assert.equal(appended.length, 4);
   assert.equal(appended[0].download, "a-director-friend-detailed-production-sheet.html");
   assert.equal(appended[1].download, "a-director-friend-visual-storyboard.html");
+  assert.equal(appended[2].download, "a-director-friend-shot-list.csv");
+  assert.equal(appended[3].download, "a-director-friend-source-aware-rough-cut-edl.csv");
   assert.equal(appended[0].clickCount, 1);
   assert.equal(appended[1].clickCount, 1);
+  assert.equal(appended[2].clickCount, 1);
+  assert.equal(appended[3].clickCount, 1);
   assert.equal(appended[0].removed, true);
   assert.equal(appended[1].removed, true);
-  assert.deepEqual(revoked, ["blob:storyboard-1", "blob:storyboard-2"]);
+  assert.equal(appended[2].removed, true);
+  assert.equal(appended[3].removed, true);
+  assert.deepEqual(revoked, ["blob:storyboard-1", "blob:storyboard-2", "blob:storyboard-3", "blob:storyboard-4"]);
   assert.equal(printWindow.opener, null);
   assert.equal(printCount, 1);
   assert.equal(printedSheet, visual);
+});
+
+
+test("owner v2 blocks blank access, imports whole or bounded scripts locally, and wires desktop install", async () => {
+  const ids = [
+    "access", "message", "submit", "cancel", "retry", "error", "state", "stage",
+    "progress", "progressBar", "bar", "eta", "job", "brief", "monitor",
+    "conversationFeed", "conversationContext", "timelineTrack", "timelineRuler",
+    "timelineStatus", "timelineEmpty", "timelineTimecode", "timelinePlayhead",
+    "timelineSelection", "timelineFirst", "timelinePrevious", "timelineNext", "timelineLast",
+    "downloadPackage", "downloadVisualStoryboard", "printVisualStoryboard", "downloadDetailedSheet",
+    "downloadShotList", "downloadEdl", "accessHelp", "sourceSummary", "attachmentButton",
+    "attachmentMenu", "attachStory", "attachFootage", "scriptFile", "footageFiles",
+    "scriptStatus", "footageStatus", "animatic", "animaticPlay", "animaticStop",
+    "animaticImage", "animaticPlaceholder", "animaticOverlay", "animaticShot",
+    "animaticAction", "animaticBar", "animaticTime", "animaticTruth", "installApp",
+  ];
+  const elements = new Map(ids.map(id => [id, new FakeElement(id)]));
+  class FakeVideo extends FakeElement {
+    constructor() { super(); this.duration = 9.375; }
+    set src(value) {
+      this._src = value;
+      Promise.resolve().then(() => this.onloadedmetadata?.());
+    }
+    get src() { return this._src; }
+  }
+  const documentObject = {
+    getElementById(id) { return elements.get(id); },
+    createElement(tagName) { return tagName === "video" ? new FakeVideo() : new FakeElement(); },
+    querySelectorAll() { return []; },
+  };
+  const windowListeners = new Map();
+  const windowObject = {
+    addEventListener(type, callback) { windowListeners.set(type, callback); },
+  };
+  const serviceWorkerRegistrations = [];
+  const fetchCalls = [];
+  const revokedLocalUrls = [];
+  const urlObject = {
+    createObjectURL() { return "blob:local-footage-metadata"; },
+    revokeObjectURL(value) { revokedLocalUrls.push(value); },
+  };
+  async function fetchObject(url, options = {}) {
+    fetchCalls.push({url, options});
+    return {ok: true, status: 202, async json() { return job("owner-v2-job"); }};
+  }
+
+  const html = fs.readFileSync(path.join(__dirname, "..", "web", "all-things-agentic.html"), "utf8");
+  const script = html.match(/<script>\s*([\s\S]*?)\s*<\/script>/)[1];
+  const sandbox = {
+    clearTimeout() {},
+    console,
+    document: documentObject,
+    fetch: fetchObject,
+    navigator: {serviceWorker: {async register(pathValue) { serviceWorkerRegistrations.push(pathValue); }}},
+    setTimeout() { return 1; },
+    URL: urlObject,
+    window: windowObject,
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(script, sandbox, {filename: "all-things-agentic.html"});
+
+  assert.deepEqual(serviceWorkerRegistrations, ["/sw.js"]);
+  assert.equal(elements.get("submit").disabled, true);
+  elements.get("message").value = "Plan a complete short scene.";
+  elements.get("message").listeners.get("input")();
+  assert.equal(elements.get("submit").disabled, true);
+  await elements.get("submit").listeners.get("click")();
+  assert.equal(fetchCalls.length, 0);
+  assert.match(elements.get("error").textContent, /OWNER-TEST-INSTRUCTIONS/);
+  assert.match(elements.get("error").textContent, /before building/);
+
+  await elements.get("installApp").listeners.get("click")();
+  assert.match(elements.get("error").textContent, /Microsoft Edge/);
+  assert.match(elements.get("error").textContent, /app-window launcher/);
+  let prevented = 0;
+  let prompted = 0;
+  const installEvent = {
+    preventDefault() { prevented += 1; },
+    async prompt() { prompted += 1; },
+    userChoice: Promise.resolve({outcome: "accepted"}),
+  };
+  windowListeners.get("beforeinstallprompt")(installEvent);
+  assert.equal(prevented, 1);
+  await elements.get("installApp").listeners.get("click")();
+  assert.equal(prompted, 1);
+  windowListeners.get("appinstalled")();
+  assert.equal(elements.get("installApp").disabled, true);
+  assert.equal(elements.get("installApp").textContent, "Desktop app installed");
+
+  const fullText = "INT. REPAIR SHOP - NIGHT\n\nALEX\nWe should leave before dawn.";
+  await elements.get("scriptFile").listeners.get("change")({
+    target: {files: [{name: "complete.fountain", size: fullText.length, async text() { return fullText; }}]},
+  });
+  assert.match(elements.get("scriptStatus").textContent, /full text/);
+  assert.match(elements.get("sourceSummary").innerHTML, /FULL TEXT/);
+  assert.match(elements.get("sourceSummary").innerHTML, new RegExp(`${fullText.length} of ${fullText.length}`));
+
+  const longText = "😀".repeat(100000);
+  await elements.get("scriptFile").listeners.get("change")({
+    target: {files: [{name: "feature.screenplay", size: longText.length, async text() { return longText; }}]},
+  });
+  assert.match(elements.get("scriptStatus").textContent, /146,736 of 200,000/);
+  assert.match(elements.get("scriptStatus").textContent, /beginning\/middle\/end excerpts/);
+  assert.match(elements.get("sourceSummary").innerHTML, /BEGINNING \/ MIDDLE \/ END EXCERPTS/);
+
+  await elements.get("footageFiles").listeners.get("change")({
+    target: {files: [{
+      name: "repair-shop-wide.mov",
+      size: 123456,
+      type: "video/quicktime",
+      bytesThatMustStayLocal: "RAW-VIDEO-SECRET-BYTES",
+    }]},
+  });
+  await settle();
+  assert.match(elements.get("footageStatus").textContent, /1 file ready · metadata only · no upload/);
+  assert.deepEqual(revokedLocalUrls, ["blob:local-footage-metadata"]);
+
+  elements.get("access").value = "private-code-never-in-body";
+  elements.get("access").listeners.get("input")();
+  assert.equal(elements.get("submit").disabled, false);
+  await elements.get("submit").listeners.get("click")();
+  const posts = fetchCalls.filter(call => call.url === "/v1/jobs");
+  assert.equal(posts.length, 1);
+  const posted = JSON.parse(posts[0].options.body).message;
+  assert.match(posted, /CLIENT-IMPORTED SCRIPT SOURCE/);
+  assert.match(posted, /coverage: beginning_middle_end_excerpt/);
+  assert.match(posted, /Included source characters: 146736 of 200000/);
+  assert.match(posted, /\[BEGINNING EXCERPT/);
+  assert.match(posted, /\[MIDDLE EXCERPT/);
+  assert.match(posted, /\[ENDING EXCERPT/);
+  assert.match(posted, /repair-shop-wide\.mov \| video\/quicktime \| 123456 bytes \| browser-readable duration 9\.375s/);
+  assert.match(posted, /source assignments as recommendations based only on filenames\/metadata/);
+  assert.doesNotMatch(posted, /RAW-VIDEO-SECRET-BYTES/);
+  assert.doesNotMatch(posted, /private-code-never-in-body/);
+  assert.equal(Buffer.from(posted, "utf8").toString("utf8"), posted);
+  assert.equal(posts[0].options.headers["X-Video-Studio-Access"], "private-code-never-in-body");
+  assert.equal(Object.keys(JSON.parse(posts[0].options.body)).join(","), "message");
 });

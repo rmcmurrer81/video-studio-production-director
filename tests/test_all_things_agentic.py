@@ -10,6 +10,7 @@ import unittest
 from kira_studio.all_things_agentic import (
     AdmissionLimitError,
     AllThingsConfig,
+    AllThingsError,
     AllThingsJobService,
     BriefProviderResult,
     BriefValidationError,
@@ -18,6 +19,9 @@ from kira_studio.all_things_agentic import (
     JobNotFoundError,
     JobState,
     JobTransitionError,
+    MAX_DURABLE_JOB_BYTES,
+    MAX_MESSAGE_BYTES,
+    MAX_MESSAGE_CHARS,
     PRODUCTION_BRIEF_RESPONSE_SCHEMA,
     ProductionBrief,
     STORYBOARD_FRAME_RATE,
@@ -29,6 +33,7 @@ from kira_studio.all_things_agentic import (
     build_visual_storyboard,
     compile_storyboard_timeline,
     eta_payload,
+    fit_visual_storyboard_to_job_budget,
     validate_storyboard_package,
     validate_visual_storyboard,
 )
@@ -647,6 +652,70 @@ class AllThingsAgenticTests(unittest.TestCase):
             completed["execution"]["pipeline"]["manifest_sha256"],
             completed["storyboard_package"]["manifest_sha256"],
         )
+        durable = repository.get(str(queued["job_id"]))
+        self.assertIsNone(durable["message"])
+        self.assertEqual(durable["input_retention"], "discarded_after_provider_use")
+        self.assertLessEqual(
+            len(json.dumps(durable, sort_keys=True, separators=(",", ":")).encode("utf-8")),
+            MAX_DURABLE_JOB_BYTES,
+        )
+
+    def test_screenplay_message_bound_accepts_ordinary_full_scripts_and_fails_closed(self) -> None:
+        repository = MemoryRepository()
+        service = AllThingsJobService(
+            config=valid_config(),
+            repository=repository,
+            dispatcher=RecordingDispatcher(),
+        )
+        full_script = "A" * MAX_MESSAGE_CHARS
+        queued = service.submit(full_script)
+        self.assertEqual(len(repository.get(str(queued["job_id"]))["message"]), MAX_MESSAGE_CHARS)
+        full_unicode_script = "😀" * MAX_MESSAGE_CHARS
+        self.assertEqual(len(full_unicode_script.encode("utf-8")), MAX_MESSAGE_BYTES)
+        unicode_queued = service.submit(full_unicode_script)
+        self.assertEqual(
+            len(repository.get(str(unicode_queued["job_id"]))["message"]),
+            MAX_MESSAGE_CHARS,
+        )
+        with self.assertRaises(AllThingsError):
+            service.submit("A" * (MAX_MESSAGE_CHARS + 1))
+        with self.assertRaises(AllThingsError):
+            service.submit("\ud800")
+
+    def test_visual_sidecar_sheds_optional_panels_before_durable_job_limit(self) -> None:
+        brief = ProductionBrief.from_mapping(brief_mapping())
+        timeline = compile_storyboard_timeline(brief)
+        provider = StaticVisualProvider()
+        provider.image = b"\xff\xd8" + (b"x" * 44_996) + b"\xff\xd9"
+        visual = build_visual_storyboard(
+            brief,
+            timeline,
+            provider=provider,
+            config=valid_config(),
+            job_id="00000000-0000-0000-0000-000000000001",
+        )
+        self.assertEqual(visual["available_panel_count"], 3)
+        base = {"bounded_non_visual_record": "r" * 750_000}
+        fitted = fit_visual_storyboard_to_job_budget(
+            visual,
+            brief=brief,
+            timeline=timeline,
+            record_without_visual=base,
+        )
+        self.assertLess(fitted["available_panel_count"], 3)
+        self.assertTrue(
+            any(panel.get("missing_reason") == "inline_budget_exhausted" for panel in fitted["panels"])
+        )
+        self.assertLessEqual(
+            len(
+                json.dumps(
+                    {**base, "visual_storyboard": fitted},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ),
+            MAX_DURABLE_JOB_BYTES,
+        )
 
     def test_cancelled_job_never_promotes_provider_result(self) -> None:
         repository = MemoryRepository()
@@ -719,6 +788,14 @@ class AllThingsAgenticTests(unittest.TestCase):
             "minItems", json.dumps(VERTEX_PRODUCTION_BRIEF_RESPONSE_SCHEMA)
         )
         self.assertNotIn("response_schema", config)
+        system_instruction = config["system_instruction"]
+        self.assertIn("CLIENT-IMPORTED SCRIPT SOURCE", system_instruction)
+        self.assertIn("chronological", system_instruction)
+        self.assertIn("cover the included source from its beginning through its ending", system_instruction)
+        self.assertRegex(system_instruction, r"If coverage says\s+full_text")
+        self.assertIn("If coverage says excerpts", system_instruction)
+        self.assertIn("never", system_instruction)
+        self.assertIn("omitted sections", system_instruction)
         self.assertEqual(result.execution["evidence_origin"], "injected_test_client")
         provider.create_brief("Make another scene.", job_id="job-2")
         self.assertEqual(client.models.get_calls, ["gemini-3.5-flash"])

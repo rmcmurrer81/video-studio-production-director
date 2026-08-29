@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 192 192" role="img" aria-label="Video Studio VS icon">
+  <defs>
+    <linearGradient id="g" x1="20" y1="14" x2="170" y2="181" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f6b574"/>
+      <stop offset=".52" stop-color="#8d80ff"/>
+      <stop offset="1" stop-color="#77ded3"/>
+    </linearGradient>
+  </defs>
+  <rect width="192" height="192" rx="42" fill="#0b0d13"/>
+  <rect x="11" y="11" width="170" height="170" rx="34" fill="none" stroke="url(#g)" stroke-width="6"/>
+  <path d="M47 56h24l25 74 25-74h24l-39 101H86L47 56Z" fill="url(#g)"/>
+  <path d="M133 91c13 0 23 8 23 20 0 13-10 21-25 21h-13v-16h13c4 0 7-2 7-5 0-3-3-5-7-5h-5c-15 0-25-8-25-21 0-12 10-20 24-20h24v16h-24c-4 0-7 2-7 5s3 5 7 5h8Z" fill="#f6f4ef" opacity=".94"/>
+</svg>

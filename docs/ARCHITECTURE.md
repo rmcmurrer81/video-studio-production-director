@@ -1,10 +1,12 @@
 # Architecture
 
-Video Studio Production Director separates the public job-control surface from private model execution. The API and worker run the same pinned container image with different service-role configuration. A deterministic local compiler transforms the validated creative brief into an audited, downloadable plan-only package. An optional Gemini image stage adds bounded planning illustrations as a separately validated sidecar; it does not render or modify source media.
+Video Studio Storyboard Artist & Production Planner separates the public job-control surface from private model execution. The API and worker run the same pinned container image with different service-role configuration. A deterministic local compiler transforms the validated creative brief into an audited, downloadable plan-only package. An optional Gemini image stage adds bounded planning illustrations as a separately validated sidecar; it does not render or modify source media.
 
 ```mermaid
 flowchart LR
-    User[Judge or creator] -->|HTTPS| UI[Self-contained browser UI]
+    User[Judge or creator] -->|HTTPS / installed PWA| UI[Same-origin standalone-capable UI]
+    User -->|Local + Attach| LocalSources[PDF or text story<br/>raw-video metadata]
+    LocalSources -->|Extracted text + bounded inventory<br/>raw bytes stay local| UI
     UI -->|Same-origin job routes<br/>access code header| API[Public Cloud Run API<br/>role = api]
     API -->|Create/read/update job| DB[(Cloud Firestore)]
     API -->|Enqueue job ID| Queue[Google Cloud Tasks]
@@ -16,14 +18,17 @@ flowchart LR
     Worker -->|Validated creative brief| Compiler[Deterministic storyboard<br/>timeline compiler + auditor]
     Compiler -->|Plan-only JSON package<br/>manifest digest| Worker
     UI -->|Poll status| API
-    UI -->|Local downloads| Package[JSON plan + visual HTML<br/>+ detailed HTML / printable PDF]
+    UI -->|Local downloads| Package[JSON + visual/detailed HTML<br/>shot-list CSV + rough-cut EDL CSV]
+    UI -->|Compiled durations + panels| Animatic[Timed in-app animatic<br/>previsualization only]
 ```
 
 ## Responsibilities
 
 | Component | Responsibility |
 | --- | --- |
-| Browser UI | Collect one natural-language request, display durable status, compose clarification context in tab memory, render visual and detailed boards, download both scriptless sheets plus JSON, and open the visual sheet for Print / Save PDF. |
+| Browser UI | Collect natural chat; locally extract supported story files; inventory raw-video metadata without uploading bytes; display durable status; compose clarification context in window memory; render visual/detailed boards and a timed animatic; export JSON, HTML, shot-list CSV, and source-aware rough-cut EDL CSV; and open the visual sheet for Print / Save PDF. |
+| PWA shell | Provide a same-origin manifest, static shell service worker, install prompt integration, and standalone display. API/job routes are never cached. |
+| Local source boundary | Read PDF/text story content and raw-video metadata in the browser. Script text is sent only as creative source inside the same-origin job request; selected video bytes are never sent. No footage-content analysis is claimed. |
 | Visual sidecar | Keep one ordered record per planned shot, validate hashes/base64/JPEG dimensions and byte limits, show missing panels explicitly, and never weaken or rewrite the deterministic JSON plan. |
 | Public API | Validate the access code and exact request body, enforce shared Firestore admission limits, create/read/cancel/retry jobs, and enqueue work. |
 | Firestore | Persist admission state, the lease-fenced job state machine, cancellation intent, attempts, structured result, execution metadata, and measured durations. |
@@ -41,6 +46,8 @@ flowchart LR
 - Worker leases fence stale deliveries. Expired work can be reclaimed; a late worker cannot publish after losing its lease, and cancellation wins when it reaches transactional finalization first.
 - The API, worker, and task caller use separate least-privilege service accounts.
 - User text is creative input. The model system instruction requires the exact JSON contract and treats text inside the request as content rather than authority to change that contract.
+- The plaintext access code remains only in the password input for the current window. It is never put in a URL, localStorage, sessionStorage, durable job body, download, or log. Only the same-origin authentication header carries it to protected job routes.
+- Successful jobs discard the raw submitted message after provider use. The durable result is additionally bounded below the Firestore document limit; optional visual panels are shed before the audited plan if necessary.
 
 ## Durable job lifecycle
 

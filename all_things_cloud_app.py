@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import re
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 from kira_studio.all_things_agentic import (
     AdmissionLimitError,
@@ -35,13 +36,63 @@ from kira_studio.all_things_google import (
 )
 
 
-MAX_BODY_BYTES = 64 * 1024
+# Holds the 160k-character screenplay envelope plus bounded clarification and
+# source metadata while rejecting unexpectedly large request bodies.
+MAX_BODY_BYTES = 700 * 1024
 _JOB_PATH = re.compile(r"^/v1/jobs/(?P<job_id>[0-9a-f-]{36})$")
 _CANCEL_PATH = re.compile(r"^/v1/jobs/(?P<job_id>[0-9a-f-]{36}):cancel$")
 _RETRY_PATH = re.compile(r"^/v1/jobs/(?P<job_id>[0-9a-f-]{36}):retry$")
 _RUN_PATH = re.compile(r"^/internal/v1/jobs/(?P<job_id>[0-9a-f-]{36}):run$")
 _ACCESS_HASH = re.compile(r"^[0-9a-f]{64}$")
 _DEMO_PATH = Path(__file__).resolve().parent / "web" / "all-things-agentic.html"
+_WEB_PATH = _DEMO_PATH.parent
+_PUBLIC_ASSETS: dict[str, tuple[Path, str, str]] = {
+    "/manifest.webmanifest": (
+        _WEB_PATH / "manifest.webmanifest",
+        "application/manifest+json; charset=utf-8",
+        "public, max-age=300",
+    ),
+    "/sw.js": (
+        _WEB_PATH / "sw.js",
+        "text/javascript; charset=utf-8",
+        "no-cache",
+    ),
+    "/icons/video-studio-icon-192.svg": (
+        _WEB_PATH / "video-studio-icon-192.svg",
+        "image/svg+xml; charset=utf-8",
+        "public, max-age=86400, immutable",
+    ),
+    "/icons/video-studio-icon-512.svg": (
+        _WEB_PATH / "video-studio-icon-512.svg",
+        "image/svg+xml; charset=utf-8",
+        "public, max-age=86400, immutable",
+    ),
+    "/icons/video-studio-icon-192.png": (
+        _WEB_PATH / "video-studio-icon-192.png",
+        "image/png",
+        "public, max-age=86400, immutable",
+    ),
+    "/icons/video-studio-icon-512.png": (
+        _WEB_PATH / "video-studio-icon-512.png",
+        "image/png",
+        "public, max-age=86400, immutable",
+    ),
+    "/vendor/pdfjs/pdf.mjs": (
+        _WEB_PATH / "vendor" / "pdfjs" / "pdf.mjs",
+        "text/javascript; charset=utf-8",
+        "public, max-age=86400, immutable",
+    ),
+    "/vendor/pdfjs/pdf.worker.mjs": (
+        _WEB_PATH / "vendor" / "pdfjs" / "pdf.worker.mjs",
+        "text/javascript; charset=utf-8",
+        "public, max-age=86400, immutable",
+    ),
+    "/vendor/pdfjs/LICENSE": (
+        _WEB_PATH / "vendor" / "pdfjs" / "LICENSE",
+        "text/plain; charset=utf-8",
+        "public, max-age=86400, immutable",
+    ),
+}
 
 
 class Runtime:
@@ -118,10 +169,29 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+        self.send_header("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _asset(
+        self,
+        status: HTTPStatus | int,
+        body: bytes,
+        *,
+        content_type: str,
+        cache_control: str,
+        service_worker: bool = False,
+    ) -> None:
+        self.send_response(int(status))
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", cache_control)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if service_worker:
+            self.send_header("Service-Worker-Allowed", "/")
         self.end_headers()
         self.wfile.write(body)
 
@@ -195,13 +265,25 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         try:
-            if self.path == "/health":
+            request_path = urlsplit(self.path).path
+            if request_path == "/health":
                 self._json(HTTPStatus.OK, self.runtime.health())
                 return
-            if self.path == "/" and self.runtime.role == "api":
+            if request_path == "/" and self.runtime.role == "api":
                 self._html(HTTPStatus.OK, _DEMO_PATH.read_bytes())
                 return
-            match = _JOB_PATH.fullmatch(self.path)
+            asset = _PUBLIC_ASSETS.get(request_path)
+            if asset and self.runtime.role == "api":
+                asset_path, content_type, cache_control = asset
+                self._asset(
+                    HTTPStatus.OK,
+                    asset_path.read_bytes(),
+                    content_type=content_type,
+                    cache_control=cache_control,
+                    service_worker=request_path == "/sw.js",
+                )
+                return
+            match = _JOB_PATH.fullmatch(request_path)
             if match and self.runtime.role == "api":
                 if not self._require_demo_access():
                     return

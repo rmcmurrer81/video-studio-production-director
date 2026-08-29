@@ -10,7 +10,7 @@ COPY contest_config/all_things_agentic.requirements.txt /tmp/requirements.txt
 RUN python -m pip install --no-cache-dir --requirement /tmp/requirements.txt
 
 COPY kira_studio /app/kira_studio
-COPY web/all-things-agentic.html /app/web/all-things-agentic.html
+COPY web /app/web
 COPY all_things_cloud_app.py /app/all_things_cloud_app.py
 
 RUN addgroup --system app && adduser --system --ingroup app app \

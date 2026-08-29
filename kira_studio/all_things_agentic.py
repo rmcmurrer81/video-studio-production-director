@@ -36,7 +36,18 @@ MAX_VISUAL_PANEL_BYTES = 45_000
 MAX_VISUAL_PANEL_COUNT = 6
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image"
-MAX_MESSAGE_CHARS = 20_000
+# One ordinary feature screenplay can be sent end-to-end.  The separate UTF-8
+# byte ceiling prevents a 160k-code-point non-ASCII request from consuming a
+# disproportionate Firestore document or HTTP request.  Successful jobs discard
+# the source request after provider use; deterministic outputs and hashes remain.
+MAX_MESSAGE_CHARS = 160_000
+# UTF-8 has at most four bytes per Unicode code point, so the byte limit keeps
+# the complete 160k-character envelope available to non-English screenplays too.
+MAX_MESSAGE_BYTES = 640_000
+# Canonical JSON is kept substantially beneath Firestore's 1 MiB document
+# ceiling.  The 148,576-byte reserve covers Firestore field/index overhead and
+# keeps the bound conservative rather than relying on the service's hard error.
+MAX_DURABLE_JOB_BYTES = 900_000
 MAX_ATTEMPTS = 3
 DEFAULT_ADMISSION_COOLDOWN_SECONDS = 3
 DEFAULT_ADMISSION_WINDOW_SECONDS = 3_600
@@ -1216,6 +1227,62 @@ def build_visual_storyboard(
     return body
 
 
+def fit_visual_storyboard_to_job_budget(
+    visual_storyboard: Mapping[str, Any],
+    *,
+    brief: ProductionBrief,
+    timeline: Mapping[str, Any],
+    record_without_visual: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Fit optional inline panels inside the conservative durable-job budget.
+
+    Request text is discarded on successful completion, but a complex plan and
+    six inline planning images can still approach Firestore's document ceiling.
+    This function removes the last optional image first and records an explicit
+    ``inline_budget_exhausted`` placeholder; it never truncates the audited plan.
+    """
+
+    body = dict(visual_storyboard)
+    panels = [dict(panel) for panel in body.get("panels", [])]
+    shots = timeline.get("shots")
+    if not isinstance(shots, list) or len(shots) != len(panels):
+        raise BriefValidationError("visual storyboard cannot be fitted without its timeline")
+
+    while True:
+        projected = {**dict(record_without_visual), "visual_storyboard": body}
+        if len(canonical_json(projected).encode("utf-8")) <= MAX_DURABLE_JOB_BYTES:
+            validate_visual_storyboard(body, brief=brief, timeline=timeline)
+            return body
+        replacement_index = next(
+            (
+                index
+                for index in range(len(panels) - 1, -1, -1)
+                if panels[index].get("status") == "available"
+            ),
+            None,
+        )
+        if replacement_index is None:
+            raise BriefValidationError("completed job exceeds the durable document size budget")
+        panels[replacement_index] = _missing_visual_panel(
+            brief,
+            shots[replacement_index],
+            "inline_budget_exhausted",
+        )
+        available = sum(panel.get("status") == "available" for panel in panels)
+        required = len(panels)
+        body.update(
+            {
+                "status": "partial" if available else "unavailable",
+                "available_panel_count": available,
+                "missing_panel_count": required - available,
+                "panels": panels,
+            }
+        )
+        body["manifest_sha256"] = sha256_json(
+            {key: value for key, value in body.items() if key != "manifest_sha256"}
+        )
+
+
 def validate_visual_storyboard(
     value: Any,
     *,
@@ -1495,8 +1562,15 @@ class AllThingsJobService:
         if not isinstance(value, str):
             raise AllThingsError("message must be text")
         cleaned = value.strip()
-        if not cleaned or len(cleaned) > MAX_MESSAGE_CHARS:
-            raise AllThingsError(f"message must contain 1-{MAX_MESSAGE_CHARS} characters")
+        try:
+            encoded_length = len(cleaned.encode("utf-8"))
+        except UnicodeEncodeError as exc:
+            raise AllThingsError("message must contain valid Unicode text") from exc
+        if not cleaned or len(cleaned) > MAX_MESSAGE_CHARS or encoded_length > MAX_MESSAGE_BYTES:
+            raise AllThingsError(
+                f"message must contain 1-{MAX_MESSAGE_CHARS} characters and no more "
+                f"than {MAX_MESSAGE_BYTES} UTF-8 bytes"
+            )
         return cleaned
 
     def submit(self, message: str) -> dict[str, Any]:
@@ -1804,6 +1878,73 @@ class AllThingsJobService:
                 config=self.config,
                 job_id=job_id,
             )
+            finished_at = utc_now()
+            started_at = _parse_time(claimed.get("started_at"))
+            execution = {
+                **dict(result.execution),
+                "pipeline": {
+                    "steps": [
+                        "gemini_structured_creative_plan",
+                        "deterministic_storyboard_timeline_compile",
+                        "deterministic_coverage_continuity_audit",
+                        "optional_gemini_visual_storyboard",
+                    ],
+                    "storyboard_package_schema": STORYBOARD_PACKAGE_SCHEMA,
+                    "manifest_sha256": storyboard_package["manifest_sha256"],
+                    "media_status": "unrendered_plan",
+                    "visual_storyboard_schema": VISUAL_STORYBOARD_SCHEMA,
+                    "visual_storyboard_status": visual_storyboard["status"],
+                },
+            }
+            success_patch: dict[str, Any] = {
+                "state": JobState.SUCCEEDED.value,
+                "stage": (
+                    "storyboard_package_ready"
+                    if brief.ready_for_production
+                    else "clarification_required"
+                ),
+                "progress": 100,
+                "updated_at": finished_at.isoformat(),
+                "completed_at": finished_at.isoformat(),
+                "duration_seconds": _elapsed(started_at, finished_at),
+                "eta": {
+                    "available": True,
+                    "low_seconds": 0,
+                    "high_seconds": 0,
+                    "sample_count": len(durations),
+                    "basis": "complete",
+                },
+                # The source screenplay has already served its one provider
+                # call.  Removing it protects privacy and creates deterministic
+                # Firestore headroom for the reviewed outputs.
+                "message": None,
+                "input_retention": "discarded_after_provider_use",
+                "brief": brief.to_dict(),
+                "storyboard_package": storyboard_package,
+                "visual_storyboard": visual_storyboard,
+                "execution": execution,
+                "error": None,
+            }
+            visual_storyboard = fit_visual_storyboard_to_job_budget(
+                visual_storyboard,
+                brief=brief,
+                timeline=timeline,
+                record_without_visual={
+                    **claimed,
+                    **success_patch,
+                    "visual_storyboard": None,
+                    "lease_token": None,
+                    "lease_expires_at": None,
+                },
+            )
+            success_patch["visual_storyboard"] = visual_storyboard
+            success_patch["execution"]["pipeline"]["visual_storyboard_status"] = (
+                visual_storyboard["status"]
+            )
+            if len(
+                canonical_json({**claimed, **success_patch}).encode("utf-8")
+            ) > MAX_DURABLE_JOB_BYTES:
+                raise BriefValidationError("completed job exceeds the durable document size budget")
         except Exception as exc:
             finished_at = utc_now()
             started_at = _parse_time(claimed.get("started_at"))
@@ -1835,49 +1976,9 @@ class AllThingsJobService:
                 ),
             )
             return public_job(failed)
-        finished_at = utc_now()
-        started_at = _parse_time(claimed.get("started_at"))
         succeeded = self.repository.finalize(
             job_id,
-            {
-                "state": JobState.SUCCEEDED.value,
-                "stage": (
-                    "storyboard_package_ready"
-                    if brief.ready_for_production
-                    else "clarification_required"
-                ),
-                "progress": 100,
-                "updated_at": finished_at.isoformat(),
-                "completed_at": finished_at.isoformat(),
-                "duration_seconds": _elapsed(started_at, finished_at),
-                "eta": {
-                    "available": True,
-                    "low_seconds": 0,
-                    "high_seconds": 0,
-                    "sample_count": len(durations),
-                    "basis": "complete",
-                },
-                "brief": brief.to_dict(),
-                "storyboard_package": storyboard_package,
-                "visual_storyboard": visual_storyboard,
-                "execution": {
-                    **dict(result.execution),
-                    "pipeline": {
-                        "steps": [
-                            "gemini_structured_creative_plan",
-                            "deterministic_storyboard_timeline_compile",
-                            "deterministic_coverage_continuity_audit",
-                            "optional_gemini_visual_storyboard",
-                        ],
-                        "storyboard_package_schema": STORYBOARD_PACKAGE_SCHEMA,
-                        "manifest_sha256": storyboard_package["manifest_sha256"],
-                        "media_status": "unrendered_plan",
-                        "visual_storyboard_schema": VISUAL_STORYBOARD_SCHEMA,
-                        "visual_storyboard_status": visual_storyboard["status"],
-                    },
-                },
-                "error": None,
-            },
+            success_patch,
             attempt=attempt,
             lease_token=lease_token,
             cancelled_patch=_cancelled_patch(
@@ -1959,6 +2060,9 @@ __all__ = [
     "BRIEF_SCHEMA",
     "STORYBOARD_AUDIT_SCHEMA",
     "STORYBOARD_FRAME_RATE",
+    "MAX_DURABLE_JOB_BYTES",
+    "MAX_MESSAGE_BYTES",
+    "MAX_MESSAGE_CHARS",
     "MAX_STORYBOARD_PACKAGE_BYTES",
     "MAX_VISUAL_PANEL_BYTES",
     "MAX_VISUAL_PANEL_COUNT",
@@ -1982,6 +2086,7 @@ __all__ = [
     "VisualPanelProviderResult",
     "audit_storyboard_package",
     "build_visual_storyboard",
+    "fit_visual_storyboard_to_job_budget",
     "build_storyboard_package",
     "compile_storyboard_timeline",
     "public_job",

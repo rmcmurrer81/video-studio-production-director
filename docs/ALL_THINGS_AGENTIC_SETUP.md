@@ -1,4 +1,4 @@
-# Video Studio — All Things Agentic deployment and demo
+# Video Studio Storyboard Artist & Production Planner — All Things Agentic deployment and demo
 
 ## Submission clock
 
@@ -12,19 +12,19 @@ Official event sources: [event home](https://allthingsagentichackathon.devpost.c
 
 The contest path is intentionally small and testable:
 
-1. A user types a normal creative request into the chat page.
+1. A user types a normal creative request or uses the single **+ Attach** menu to add a PDF/text screenplay and optional local raw-video inventory. Supported ordinary scripts within the displayed 147,000-character source allowance use full extracted text. Larger books or PDFs use clearly labeled beginning/middle/end excerpts; the UI always shows exact included and extracted character counts. PDF.js extracts text locally and preserves PDF line endings when available. Scanned/image-only PDFs require OCR or a text export.
 2. The public Cloud Run API validates the request, stores a durable Firestore job, and enqueues an authenticated Cloud Task.
 3. Cloud Tasks calls a private Cloud Run worker with an OIDC token.
 4. The worker verifies that the configured model is reachable, then uses the official `google-genai` SDK and Vertex AI v1 with `gemini-3.5-flash` to produce an exact creative-plan schema.
 5. Local deterministic code expands every ordered scene into establishing, primary-coverage, and continuity-bridge storyboard cards; allocates a contiguous 24-fps planned timeline; then independently audits ordering, duration, coverage, continuity, source-footage guidance, and dialogue/audio coverage.
 6. For a production-ready brief, the worker asks Gemini 3.1 Flash Image for at most six representative studio-style panels, normalizes each to a bounded 768×432 JPEG, and records a truthful missing reason for any panel that cannot be retained.
-7. The browser polls the durable job, presents the visual board plus every detailed card and audit check, and can download the canonical JSON, visual HTML, and detailed HTML without publishing them to a separate URL. Print / Save PDF uses the browser's print dialog.
+7. The browser polls the durable job, presents the visual board plus every detailed card and audit check, plays a timed previsualization animatic, and can download the canonical JSON, visual HTML, detailed HTML, shot-list CSV, and metadata-aware rough-cut EDL CSV without publishing them to a separate URL. Print / Save PDF uses the browser's print dialog.
 
 The first ETA is deliberately **unavailable**. An estimate appears only after successful jobs provide measured durations. Cancellation before the worker starts is final. Cancellation during a model call records the request and discards the result when the call returns; it does not claim that an in-flight provider request was preempted. Final success/failure and cancellation serialize in one Firestore transaction, so a cancellation that wins that transaction cannot be overwritten by a late provider result.
 
 Each task is deterministically named from the job ID and application attempt. The body carries both values, so a delayed task from an older retry is acknowledged without running the newer attempt. The deployed worker claim has a 960-second lease—slightly longer than its 900-second request timeout—and a random fencing token. Active duplicate deliveries receive a retryable non-2xx response; an expired `running`/`cancelling` lease can be reclaimed, while every stage and terminal write must still own the exact attempt and fencing token.
 
-This path produces a structured creative brief plus a deterministic storyboard/edit-decision **plan** and optional generated planning stills. Each package says `media_status = unrendered_plan` and `plan_only = true`: the illustrations are not source clips or finished frames, and the system does not claim that media was mutated, an edit was applied, or a movie was rendered. A visual status of `complete` verifies technical asset integrity only; every sheet still requires human visual review. It does not claim a live model call, Cloud deployment, or contest receipt until a completed Firestore job contains matching live provider evidence.
+This path produces a structured creative brief plus a deterministic storyboard/edit-decision **plan**, optional generated planning stills, and a timed animatic assembled from those stills and compiled durations. Each package says `media_status = unrendered_plan` and `plan_only = true`: the illustrations and animatic are previsualization, not source clips or finished frames, and the system does not claim that media was watched, mutated, edited, or rendered. Raw-video selection records browser-readable metadata only; its bytes stay in the browser. A visual status of `complete` verifies technical asset integrity only; every sheet still requires human visual review. It does not claim a live model call, Cloud deployment, or contest receipt until a completed Firestore job contains matching live provider evidence.
 
 ## Architecture
 
@@ -52,7 +52,9 @@ The API and worker use the same container image but different `KIRA_ALL_THINGS_S
 - `kira_studio/all_things_agentic.py`: strict creative-plan contract, deterministic storyboard compiler/auditor, and durable job state machine.
 - `kira_studio/all_things_google.py`: official Google Gen AI, Firestore, and Cloud Tasks adapters.
 - `all_things_cloud_app.py`: dependency-light Cloud Run HTTP entry point.
-- `web/all-things-agentic.html`: natural-chat demo and job controls.
+- `web/all-things-agentic.html`: natural chat, one + attachment menu, job controls, visual storyboard, timed animatic, and editorial exports.
+- `web/manifest.webmanifest` and `web/sw.js`: installable standalone PWA shell; job/API routes are never cached.
+- `web/vendor/pdfjs/`: vendored Apache-2.0 PDF.js text extraction assets for local PDF reading.
 - `contest_config/all_things_agentic.env.example`: non-secret configuration template.
 - `contest_config/all_things_agentic.requirements.txt`: Cloud image dependencies.
 - `deploy/all_things_agentic/Dockerfile`: non-root Cloud Run container.
@@ -179,12 +181,13 @@ For a local container smoke test, provide Application Default Credentials and al
 
 ## Judge demo path
 
-1. Open the public API service root URL. The server returns the chat page. Enter the owner-provided judge access code; the page keeps it only in the password field for this tab and sends it only to same-origin job routes.
-2. Enter: `Make a one-minute science-fiction dialogue scene in an orbital repair shop. Two old friends must decide whether to leave Earth. Keep the machinery quiet enough that every line is clear.`
-3. Select **Build storyboard package**. Point out the durable job ID, queued/running stage, progress, application attempt, and honest initially-unavailable ETA.
-4. Let the page poll through `calling_gemini`, `validating_creative_plan`, `compiling_storyboard_timeline`, `auditing_coverage_and_continuity`, and `generating_visual_storyboard`. Show the studio-style panel grid, explicit pending frames if any, scene-specific cards with planned 24-fps in/out timecodes, framing/camera/action/audio direction, continuity and source/bridge guidance, deterministic audit, the three downloads, Print / Save PDF, and live Vertex execution metadata.
-5. Submit a deliberately ambiguous request such as `Make me a show.` Show that Gemini returns concise questions and `ready_for_production: false` instead of pretending it understood.
-6. Demonstrate cancel on a queued job and retry on that cancelled job. A retry is capped at three attempts.
+1. Open the public API service root URL. The server returns the Storyboard Artist & Production Planner. Enter the owner-provided judge access code; **Build scene package** remains disabled until it is nonblank. The page keeps it only in the password field for this window and sends it only to same-origin job routes.
+2. Either enter `Make a one-minute science-fiction dialogue scene in an orbital repair shop. Two old friends must decide whether to leave Earth. Keep the machinery quiet enough that every line is clear.` or use **+ Attach** to select a supported story/screenplay. For an ordinary script, point out **FULL TEXT** and the included/extracted counts. For an oversized source, say explicitly that the app uses labeled beginning/middle/end excerpts rather than complete coverage.
+3. Optionally use the same **+ Attach** menu for raw video. Point out that only filename, type, size, and browser-readable duration are inventoried; the app does not upload or inspect the footage bytes.
+4. Select **Build scene package**. Point out the durable job ID, queued/running stage, progress, application attempt, and honest initially-unavailable ETA.
+5. Let the page poll through `calling_gemini`, `validating_creative_plan`, `compiling_storyboard_timeline`, `auditing_coverage_and_continuity`, and `generating_visual_storyboard`. Show the studio-style panel grid, explicit pending frames if any, scene-specific cards with planned 24-fps in/out timecodes, framing/camera/action/audio direction, continuity and source/bridge guidance, deterministic audit, the timed animatic, all five downloads, Print / Save PDF, and live Vertex execution metadata.
+6. Submit a deliberately ambiguous request such as `Make me a show.` Show that Gemini returns concise questions and `ready_for_production: false` instead of pretending it understood.
+7. Demonstrate cancel on a queued job and retry on that cancelled job. A retry is capped at three attempts.
 
 Before recording the demo, confirm `/health` names the intended project/model but explain that health is configuration evidence only. Then inspect the completed job itself for live-provider evidence. Do not rename it to a path ending in `z`; Cloud Run reserves some such paths.
 
