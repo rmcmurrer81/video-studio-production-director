@@ -1,0 +1,5 @@
+# Direct Google SDK dependencies are pinned to the exact versions verified by
+# the focused contract suite and used by the submission container build.
+google-genai==2.20.0
+google-cloud-firestore==2.29.0
+google-cloud-tasks==2.24.0

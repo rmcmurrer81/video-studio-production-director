@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.coverage
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+build/
+dist/
+.venv/
+venv/
+
+# Secrets and local cloud state
+.env
+.env.*
+!*.env.example
+credentials*.json
+service-account*.json
+*service_account*.json
+application_default_credentials.json
+.gcloud/
+
+# Runtime output
+outputs/
+state/
+*.log
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

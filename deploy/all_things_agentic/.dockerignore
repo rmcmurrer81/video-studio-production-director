@@ -1,0 +1,13 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.py[cod]
+*.log
+*.mp3
+*.mp4
+*.mkv
+*.wav
+outputs
+state
+tests

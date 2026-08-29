@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Video Studio Production Director</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Inter, "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+      --canvas:#07080c; --panel:rgba(17,20,27,.93); --raised:#171b24;
+      --line:#2a303c; --line-soft:rgba(255,255,255,.075);
+      --text:#f4f1ec; --muted:#929aaa; --faint:#626a79;
+      --amber:#f0aa68; --amber-bright:#ffc284; --aqua:#77ded3;
+      --danger:#ff958e; --shadow:0 24px 70px rgba(0,0,0,.38);
+    }
+    *{box-sizing:border-box}html{background:var(--canvas)}
+    body{margin:0;min-height:100vh;overflow-x:hidden;color:var(--text);background:radial-gradient(circle at 13% -8%,rgba(122,95,211,.17),transparent 33rem),radial-gradient(circle at 88% 7%,rgba(240,170,104,.1),transparent 29rem),linear-gradient(180deg,#0a0b10 0,var(--canvas) 48rem)}
+    body:before{position:fixed;inset:0;z-index:-1;content:"";opacity:.23;pointer-events:none;background-image:repeating-linear-gradient(90deg,transparent 0 119px,rgba(255,255,255,.018) 120px)}
+    button,input,textarea{font:inherit}button{cursor:pointer}
+    button:focus-visible,input:focus-visible,textarea:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--amber-bright);outline-offset:3px}
+    .app-shell{width:min(1460px,calc(100% - 40px));margin:0 auto;padding-bottom:36px}
+    .topbar{min-height:78px;display:flex;align-items:center;justify-content:space-between;gap:24px;border-bottom:1px solid var(--line-soft)}
+    .brand{display:flex;align-items:center;gap:12px;min-width:0}.brand-mark{width:40px;height:40px;flex:none;display:grid;place-items:center;border:1px solid rgba(240,170,104,.45);border-radius:12px;background:linear-gradient(145deg,rgba(240,170,104,.21),rgba(141,128,255,.14));color:var(--amber-bright);font-weight:850;letter-spacing:-.08em;box-shadow:inset 0 1px rgba(255,255,255,.08),0 9px 24px rgba(0,0,0,.24)}
+    .brand-copy strong,.brand-copy small{display:block}.brand-copy strong{font-size:14px;letter-spacing:.08em;text-transform:uppercase}.brand-copy small{margin-top:3px;color:var(--muted);font-size:11px;letter-spacing:.04em}
+    .system-state{display:flex;align-items:center;gap:9px;color:#b8bfca;font-size:11px}.system-state:before{width:7px;height:7px;content:"";border-radius:50%;background:var(--aqua);box-shadow:0 0 14px rgba(119,222,211,.66)}
+    main{padding-top:36px}.hero{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:32px;padding:10px 2px 31px}
+    .kicker,.eyebrow{margin:0;color:var(--amber);font-size:10px;font-weight:760;letter-spacing:.18em;text-transform:uppercase}
+    h1{max-width:850px;margin:10px 0 12px;font-size:clamp(36px,5.2vw,72px);font-weight:620;letter-spacing:-.055em;line-height:.98}
+    .hero-lede{max-width:680px;margin:0;color:#a9b0bc;font-size:15px;line-height:1.65}.hero-note{max-width:310px;margin:0 0 4px;padding-left:18px;border-left:1px solid rgba(240,170,104,.45);color:#848c9a;font-size:11px;line-height:1.6}
+    .workspace{display:grid;grid-template-columns:minmax(0,1.42fr) minmax(330px,.58fr);gap:16px;align-items:stretch}
+    .panel{overflow:hidden;border:1px solid var(--line);border-radius:18px;background:var(--panel);box-shadow:var(--shadow);backdrop-filter:blur(18px)}
+    .panel-head{min-height:58px;display:flex;align-items:center;justify-content:space-between;gap:20px;padding:0 18px;border-bottom:1px solid var(--line-soft);background:rgba(255,255,255,.018)}
+    .panel-head h2{margin:0;font-size:13px;font-weight:700;letter-spacing:.02em}.panel-head p{margin:3px 0 0;color:var(--faint);font-size:10px}
+    .director-badge{display:inline-flex;align-items:center;gap:7px;color:#aab1bd;font-size:10px;white-space:nowrap}.director-badge:before{width:6px;height:6px;content:"";border-radius:50%;background:var(--aqua)}
+    .conversation-panel{min-height:520px;display:flex;flex-direction:column}.conversation-feed{flex:1;min-height:210px;padding:23px 22px 12px;overflow-y:auto}
+    .message-row{max-width:88%;display:flex;gap:10px;margin-bottom:16px}.message-row.user{margin-left:auto;flex-direction:row-reverse}
+    .message-avatar{width:29px;height:29px;flex:none;display:grid;place-items:center;border:1px solid #393f4b;border-radius:9px;background:#20252f;color:var(--amber-bright);font-size:9px;font-weight:800}.message-row.user .message-avatar{color:var(--aqua)}
+    .message-body b{color:#c6cbd3;font-size:10px;letter-spacing:.04em;text-transform:uppercase}.message-body p{margin:5px 0 0;padding:12px 14px;border:1px solid #282f3a;border-radius:4px 13px 13px;background:#151922;color:#d9dce2;font-size:13px;line-height:1.55;white-space:pre-wrap}.message-row.user .message-body p{border-color:rgba(141,128,255,.3);border-radius:13px 4px 13px 13px;background:linear-gradient(135deg,rgba(141,128,255,.19),rgba(76,69,145,.17))}
+    .composer-shell{margin:12px;border:1px solid #353c49;border-radius:15px;background:#0c0f15;box-shadow:0 16px 34px rgba(0,0,0,.24)}
+    .access-row{display:grid;grid-template-columns:auto minmax(150px,260px);align-items:center;gap:12px;padding:10px 12px;border-bottom:1px solid var(--line-soft)}.access-label{display:flex;align-items:center;gap:8px;color:#858e9c;font-size:10px}.access-label:before{content:"◇";color:var(--amber)}
+    input[type="password"]{width:100%;min-width:0;border:1px solid #303746;border-radius:8px;background:#131720;color:#f6f4ef;padding:8px 10px;font-size:11px}
+    .message-label{display:block;padding:11px 13px 0;color:var(--muted);font-size:10px}textarea{width:100%;min-height:118px;resize:vertical;border:0;background:transparent;color:#f5f3ef;padding:9px 13px 11px;font-size:14px;line-height:1.55;outline:none}textarea::placeholder{color:#636b79}textarea:focus-visible{outline:0}
+    .composer-footer{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:9px;border-top:1px solid var(--line-soft)}.composer-hint{margin:0 0 0 4px;color:#687180;font-size:9px;line-height:1.35}.actions{display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end}
+    button{border:1px solid #363e4b;border-radius:9px;background:#1a1f29;color:#d8dce4;padding:9px 12px;font-size:11px;font-weight:700}button:hover:not(:disabled){border-color:#596476;background:#222833}button.primary{border-color:rgba(255,194,132,.62);background:linear-gradient(135deg,#efaa68,#d88a51);color:#1a1009;box-shadow:0 8px 22px rgba(221,139,78,.2)}button.primary:hover:not(:disabled){border-color:#ffd2a5;background:linear-gradient(135deg,#ffc083,#e69a5d)}button:disabled{cursor:not-allowed;opacity:.34}
+    .error{margin:0 18px 14px;color:var(--danger);font-size:11px;white-space:pre-wrap}.monitor-panel{min-height:520px;display:flex;flex-direction:column}
+    .monitor-frame{position:relative;min-height:260px;margin:14px;overflow:hidden;display:grid;place-items:center;border:1px solid #292f39;border-radius:13px;background:linear-gradient(115deg,transparent 25%,rgba(141,128,255,.08),transparent 70%),radial-gradient(circle at 50% 43%,#1a1e29,#0a0c11 70%)}
+    .monitor-frame:before,.monitor-frame:after{position:absolute;content:"";pointer-events:none}.monitor-frame:before{width:72%;aspect-ratio:16/9;border:1px solid rgba(255,255,255,.07);border-radius:5px;box-shadow:0 0 0 999px rgba(0,0,0,.08)}.monitor-frame:after{inset:0;background:linear-gradient(transparent 49.7%,rgba(255,255,255,.02) 50%,transparent 50.3%);background-size:100% 4px;opacity:.35}
+    .frame-copy{position:relative;z-index:1;max-width:210px;text-align:center}.frame-copy span{display:block;color:var(--amber);font-size:22px;font-weight:320}.frame-copy strong{display:block;margin-top:9px;font-size:11px;letter-spacing:.09em;text-transform:uppercase}.frame-copy small{display:block;margin-top:6px;color:#6d7582;font-size:9px;line-height:1.5}
+    .status-block{padding:3px 18px 18px}.status-line{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.state{font-size:13px;font-weight:750;text-transform:capitalize}.stage{margin-top:4px;color:#7c8593;font-size:10px}.progress-number{color:var(--aqua);font:750 12px/1.4 Consolas,monospace}
+    .bar{height:3px;overflow:hidden;border-radius:999px;background:#2a3039;margin:14px 0 12px}.bar>span{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--amber),var(--aqua));transition:width .25s ease}.small{color:#7f8794;font-size:10px;line-height:1.55}.job-id{margin-top:8px;color:#59616f;font-family:Consolas,monospace;overflow-wrap:anywhere}
+    .brief{margin-top:16px;padding:24px}.brief-top{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;padding-bottom:18px;border-bottom:1px solid var(--line-soft)}.brief h2{margin:7px 0 5px;font-size:clamp(22px,3vw,34px);letter-spacing:-.035em}.brief h3{margin:21px 0 8px;color:var(--amber);font-size:9px;letter-spacing:.16em;text-transform:uppercase}.brief p,.brief li{color:#c0c5ce;font-size:12px;line-height:1.6}.brief-actions{display:flex;align-items:flex-end;flex-direction:column;gap:8px}.brief-status{flex:none;padding:6px 9px;border:1px solid rgba(119,222,211,.26);border-radius:999px;color:var(--aqua);font-size:9px;text-transform:uppercase;letter-spacing:.08em}.brief-status.needs-direction{border-color:rgba(240,170,104,.35);color:var(--amber-bright)}.audit-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px}.audit-check{padding:10px;border:1px solid var(--line-soft);border-radius:9px;background:#0d1016}.audit-check b{display:block;color:var(--aqua);font-size:9px;letter-spacing:.08em;text-transform:uppercase}.audit-check.fail b{color:var(--danger)}.audit-check span{display:block;margin-top:5px;color:#858e9c;font-size:10px;line-height:1.45}
+    .brief-direction{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.brief-direction p{margin:0;padding:13px;border:1px solid var(--line-soft);border-radius:10px;background:rgba(255,255,255,.018)}.scenes{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:9px}.scene{border:1px solid #2b323e;border-radius:10px;padding:12px;background:#0d1016}.scene strong{display:block;margin-bottom:5px;color:var(--amber-bright);font-size:10px;text-transform:uppercase;letter-spacing:.09em}
+    .timeline-panel{margin-top:16px;padding:15px 16px 13px;background:#101218}.timeline-head{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:10px}.timeline-head h2{margin:0;font-size:12px;letter-spacing:.12em;text-transform:uppercase}.timeline-head p{margin:4px 0 0;color:#717987;font-size:10px}.timeline-transport{display:flex;align-items:center;gap:5px}.timeline-transport button{width:30px;height:28px;padding:0;border-radius:7px;font-size:9px}.timeline-transport output{min-width:82px;margin-left:5px;padding:6px 8px;border:1px solid #2b313d;border-radius:7px;background:#090b0f;color:var(--aqua);font:750 10px/1.4 Consolas,monospace;text-align:center}
+    .timeline-viewport{position:relative;min-height:132px;overflow-x:auto;overflow-y:hidden;border:1px solid #292e38;border-radius:10px;background:linear-gradient(#151821 0 29px,#0a0c11 29px);scrollbar-color:#3c4350 #13161c}.timeline-ruler{position:absolute;top:0;left:12px;right:12px;z-index:1;height:29px;display:flex;justify-content:space-between;align-items:center;color:#5c6472;font:9px/1 Consolas,monospace;pointer-events:none}.timeline-ruler span:before{margin-right:5px;content:"·";color:#39404c}.timeline-track{position:relative;display:flex;width:max-content;min-width:100%;gap:5px;padding:37px 12px 11px}
+    .timeline-clip{position:relative;width:148px;height:79px;flex:none;overflow:hidden;padding:0;border:2px solid #313846;border-radius:8px;background:radial-gradient(circle at 72% 28%,hsla(var(--scene-hue),76%,67%,.28),transparent 32%),linear-gradient(145deg,hsl(var(--scene-hue),29%,25%),#121720 68%);text-align:left}.timeline-clip:before{position:absolute;inset:0;content:"";background:linear-gradient(transparent 24%,rgba(5,7,11,.94))}.timeline-clip:hover{border-color:#697589;transform:translateY(-1px)}.timeline-clip.is-selected{border-color:var(--amber-bright);box-shadow:0 0 0 2px rgba(240,170,104,.15)}.clip-number{position:absolute;top:7px;left:8px;color:rgba(255,255,255,.65);font:750 9px/1 Consolas,monospace}.clip-copy{position:absolute;left:8px;right:8px;bottom:7px;z-index:1}.clip-copy b,.clip-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.clip-copy b{color:#f0f1f4;font-size:10px}.clip-copy small{margin-top:2px;color:#818a98;font:8px/1.3 Consolas,monospace}
+    .timeline-playhead{position:absolute;top:0;bottom:7px;z-index:4;width:2px;background:#ff6f83;box-shadow:0 0 10px rgba(255,111,131,.28);pointer-events:none;transition:left .16s ease}.timeline-playhead:before{position:absolute;top:0;left:-4px;content:"";border-left:5px solid transparent;border-right:5px solid transparent;border-top:7px solid #ff6f83}.timeline-empty{width:100%;min-width:min(680px,80vw);display:grid;place-items:center;margin:0;color:#555e6c;font-size:10px}.timeline-selection{margin:9px 2px 0;color:#737c8a;font-size:10px}.footer{display:flex;justify-content:space-between;gap:20px;padding:18px 3px 0;color:#4e5663;font-size:9px;letter-spacing:.05em;text-transform:uppercase}.hidden{display:none!important}
+    @media(max-width:980px){.hero{grid-template-columns:1fr}.hero-note{display:none}.workspace{grid-template-columns:1fr}.monitor-panel{min-height:0}.monitor-frame{min-height:220px}}
+    @media(max-width:660px){.app-shell{width:min(100% - 22px,1460px)}.topbar{min-height:68px}.brand-copy small,.system-state span{display:none}main{padding-top:23px}.hero{padding-bottom:22px}h1{font-size:clamp(34px,12vw,52px)}.conversation-feed{min-height:180px;padding:18px 15px 8px}.message-row{max-width:96%}.access-row{grid-template-columns:1fr;gap:7px}.composer-footer,.brief-top,.timeline-head,.footer{align-items:flex-start;flex-direction:column}.composer-hint{display:none}.actions{width:100%}.actions button{flex:1}.brief{padding:18px}.brief-direction{grid-template-columns:1fr}.timeline-transport{width:100%;overflow-x:auto}.timeline-transport output{margin-left:auto}}
+    @media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;transition:none!important}}
+  </style>
+</head>
+<body>
+<div class="app-shell">
+  <header class="topbar">
+    <div class="brand"><div class="brand-mark" aria-hidden="true">VS</div><div class="brand-copy"><strong>Video Studio</strong><small>All Things · Production Director edition</small></div></div>
+    <div class="system-state"><span>Google Cloud production workflow</span></div>
+  </header>
+  <main>
+    <section class="hero" aria-labelledby="pageTitle">
+      <div><p class="kicker">Natural chat · structured direction</p><h1 id="pageTitle">Tell Video Studio what you want to make.</h1><p class="hero-lede">Describe the story in ordinary language. Your production director creates a structured brief, compiles it into an ordered storyboard/edit-decision plan, and audits coverage and continuity.</p></div>
+      <p class="hero-note">Start with one sentence or a complete script. If something important is unclear, the brief will ask before production moves forward.</p>
+    </section>
+    <section class="workspace" aria-label="Production director workspace">
+      <article class="panel conversation-panel" aria-labelledby="conversationTitle">
+        <div class="panel-head"><div><h2 id="conversationTitle">Conversation</h2><p>No special prompt format required</p></div><span class="director-badge">Director ready</span></div>
+        <div id="conversationFeed" class="conversation-feed" aria-live="polite">
+          <div class="message-row"><div class="message-avatar" aria-hidden="true">VS</div><div class="message-body"><b>Production Director</b><p>What would you like to make? Tell me the story, mood, people, length, or only the first idea. I will turn it into a production brief.</p></div></div>
+        </div>
+        <div class="composer-shell">
+          <div class="access-row"><label for="access" class="access-label">Judge access code</label><input id="access" type="password" autocomplete="off" maxlength="256" placeholder="Provided by the project owner"></div>
+          <label for="message" class="message-label">Message Video Studio</label>
+          <textarea id="message" placeholder="Make a one-minute dialogue scene in a quiet repair shop. Two old friends disagree about whether to leave Earth, with subtle room tone and a hopeful ending."></textarea>
+          <div class="composer-footer"><p id="conversationContext" class="composer-hint">Ctrl + Enter to send · follow-up context stays only in this open page</p><div class="actions"><button id="cancel" type="button" disabled>Cancel</button><button id="retry" type="button" disabled>Retry</button><button id="submit" class="primary" type="button">Build storyboard package</button></div></div>
+          <p id="error" class="error hidden" role="alert"></p>
+        </div>
+      </article>
+      <aside id="monitor" class="panel monitor-panel" aria-labelledby="monitorTitle">
+        <div class="panel-head"><div><h2 id="monitorTitle">Production monitor</h2><p>One truthful state at a time</p></div><span class="eyebrow">Live job</span></div>
+        <div class="monitor-frame" aria-hidden="true"><div class="frame-copy"><span>＋</span><strong>Storyboard package</strong><small>The creative plan, planned shot cards, timecodes, and deterministic audit appear after the job completes.</small></div></div>
+        <div class="status-block" aria-live="polite"><div class="status-line"><div><div id="state" class="state">Ready</div><div id="stage" class="stage">No job submitted</div></div><div id="progress" class="progress-number">0%</div></div><div id="progressBar" class="bar" role="progressbar" aria-label="Production job progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="bar"></span></div><div id="eta" class="small">ETA appears after real completed-job timing exists.</div><div id="job" class="small job-id"></div></div>
+      </aside>
+    </section>
+    <section id="brief" class="panel brief hidden" aria-live="polite"></section>
+    <section id="timelineDock" class="panel timeline-panel" aria-labelledby="timelineTitle">
+      <div class="timeline-head"><div><h2 id="timelineTitle">Storyboard · planned edit decision list</h2><p id="timelineStatus">Build a package and its ordered shot cards will appear here.</p></div><div class="timeline-transport" aria-label="Storyboard card navigation"><button id="timelineFirst" type="button" title="First card" aria-label="First card" disabled>|◀</button><button id="timelinePrevious" type="button" title="Previous card" aria-label="Previous card" disabled>◀</button><button id="timelineNext" type="button" title="Next card" aria-label="Next card" disabled>▶</button><button id="timelineLast" type="button" title="Last card" aria-label="Last card" disabled>▶|</button><output id="timelineTimecode" aria-label="Selected planned timecode">--:--:--:--</output></div></div>
+      <div id="timelineViewport" class="timeline-viewport" tabindex="0" aria-label="Scrollable ordered storyboard-card filmstrip"><div id="timelineRuler" class="timeline-ruler" aria-hidden="true"><span>00:00:00:00</span><span>Planned non-drop 24 fps</span><span>Unrendered plan</span></div><div id="timelineTrack" class="timeline-track"><p id="timelineEmpty" class="timeline-empty">No storyboard package yet.</p></div><div id="timelinePlayhead" class="timeline-playhead hidden" aria-hidden="true"></div></div>
+      <p id="timelineSelection" class="timeline-selection">Planned timecodes and cards are editorial instructions only. No footage has been selected, changed, or rendered.</p>
+    </section>
+  </main>
+  <footer class="footer"><span>Production Director</span><span>Gemini 3.5 · Firestore · Cloud Tasks · Cloud Run</span></footer>
+</div>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  let currentJob = null;
+  let pollTimer = null;
+  let plannedShots = [];
+  let selectedSceneIndex = -1;
+  let currentStoryboardPackage = null;
+  let lastBriefMessageJobId = null;
+  let clarificationSession = null;
+  let activeSubmission = null;
+  const terminal = new Set(['succeeded', 'failed', 'cancelled']);
+
+  function esc(value) {
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+  }
+  function showError(message) { $('error').textContent = message; $('error').classList.toggle('hidden', !message); }
+  function etaText(eta) {
+    if (!eta || !eta.available) return 'ETA unavailable until a real completed-job timing sample exists.';
+    if (eta.high_seconds === 0) return 'Complete.';
+    return `Estimated ${eta.low_seconds}–${eta.high_seconds} seconds remaining (${eta.sample_count} live sample${eta.sample_count === 1 ? '' : 's'}).`;
+  }
+  function addConversationMessage(role, message) {
+    const row = document.createElement('div');
+    row.className = `message-row${role === 'user' ? ' user' : ''}`;
+    const avatar = document.createElement('div');
+    avatar.className = 'message-avatar'; avatar.setAttribute('aria-hidden', 'true'); avatar.textContent = role === 'user' ? 'YOU' : 'VS';
+    const body = document.createElement('div'); body.className = 'message-body';
+    const label = document.createElement('b'); label.textContent = role === 'user' ? 'You' : 'Production Director';
+    const copy = document.createElement('p'); copy.textContent = message;
+    body.append(label, copy); row.append(avatar, body); $('conversationFeed').append(row); row.scrollIntoView({block:'nearest'});
+  }
+  function numberedQuestions(questions) {
+    return questions.map((question, index) => `${index + 1}. ${question}`).join('\n');
+  }
+  function composeClarificationSubmission(shortAnswer) {
+    if (!clarificationSession) return shortAnswer;
+    const history = clarificationSession.answeredRounds.map((round, index) => [
+      `Clarification round ${index + 1} questions:`,
+      numberedQuestions(round.questions),
+      `User answer for round ${index + 1}:`,
+      round.answer,
+    ].join('\n')).join('\n\n');
+    return [
+      'Continue the same production brief using the complete client-provided clarification context below.',
+      'Original user request:',
+      clarificationSession.initialRequest,
+      history ? `Earlier answered clarification rounds:\n${history}` : '',
+      'Current clarification questions:',
+      numberedQuestions(clarificationSession.pendingQuestions),
+      'User\'s current short answer:',
+      shortAnswer,
+      'Return a complete revised production brief. Do not treat this context wrapper as story content.',
+    ].filter(Boolean).join('\n\n');
+  }
+  function submissionContextFor(shortAnswer) {
+    if (!clarificationSession) {
+      return {initialRequest: shortAnswer, answeredRounds: []};
+    }
+    return {
+      initialRequest: clarificationSession.initialRequest,
+      answeredRounds: [
+        ...clarificationSession.answeredRounds,
+        {questions: [...clarificationSession.pendingQuestions], answer: shortAnswer},
+      ],
+    };
+  }
+  function updateClarificationSession(brief, jobId) {
+    const questions = Array.isArray(brief.clarifying_questions)
+      ? brief.clarifying_questions.map(question => String(question))
+      : [];
+    const submission = activeSubmission && (!jobId || activeSubmission.jobId === jobId)
+      ? activeSubmission
+      : null;
+    if (questions.length && submission) {
+      clarificationSession = {
+        initialRequest: submission.initialRequest,
+        answeredRounds: submission.answeredRounds,
+        pendingQuestions: questions,
+      };
+      $('conversationContext').textContent = 'Clarification context is composed only in this open page · no server-side chat memory';
+      $('message').placeholder = questions.length === 1
+        ? 'Answer the director’s question naturally…'
+        : 'Answer the director’s questions naturally…';
+      return;
+    }
+    if (brief.ready_for_production === true) {
+      clarificationSession = null;
+      activeSubmission = null;
+      $('conversationContext').textContent = 'Ctrl + Enter to send · follow-up context stays only in this open page';
+      $('message').placeholder = 'Describe another project or request a new complete production brief.';
+    }
+  }
+  function render(job) {
+    currentJob = job;
+    const state = job.state || 'unknown';
+    const progress = Math.max(0, Math.min(100, job.progress ?? 0));
+    $('monitor').dataset.state = state;
+    $('state').textContent = state;
+    $('stage').textContent = String(job.stage || '').replaceAll('_', ' ');
+    $('progress').textContent = `${progress}%`;
+    $('progressBar').setAttribute('aria-valuenow', String(progress));
+    $('bar').style.width = `${progress}%`;
+    $('eta').textContent = etaText(job.eta);
+    $('job').textContent = job.job_id ? `Job ${job.job_id} · attempt ${job.attempt}/${job.max_attempts}` : '';
+    $('cancel').disabled = !['queued','running','cancelling'].includes(job.state);
+    $('retry').disabled = !['failed','cancelled'].includes(job.state) || job.attempt >= job.max_attempts;
+    $('submit').disabled = !terminal.has(job.state) && job.state !== undefined;
+    if (job.error) showError(`${job.error.code || 'Job failed'} (${job.error.type || 'error'})`);
+    if (job.brief) renderBrief(job.brief, job.storyboard_package || null, job.job_id);
+    else if (!job.storyboard_package) renderStoryboardPackage(null);
+    if (terminal.has(job.state) && pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+  }
+  function renderBrief(brief, storyboardPackage, jobId) {
+    const questions = (brief.clarifying_questions || []).map(q => `<li>${esc(q)}</li>`).join('');
+    const scenes = (brief.scenes || []).map(scene => `<div class="scene"><strong>Scene ${esc(scene.number)} · ${esc(scene.setting)}</strong>${esc(scene.purpose)}${scene.dialogue_required ? ' · dialogue' : ''}</div>`).join('');
+    const statusClass = questions ? ' needs-direction' : '';
+    const audit = storyboardPackage?.audit;
+    const auditChecks = (audit?.checks || []).map(check => `<div class="audit-check${check.status === 'pass' ? '' : ' fail'}"><b>${esc(check.status)} · ${esc(check.id).replaceAll('_', ' ')}</b><span>${esc(check.evidence)}</span></div>`).join('');
+    $('brief').innerHTML = `<div class="brief-top"><div><div class="eyebrow">Creative plan + deterministic editorial package</div><h2>${esc(brief.title)}</h2><p>${esc(brief.summary)}</p></div><div class="brief-actions"><span class="brief-status${statusClass}">${questions ? 'Direction required' : 'Package ready'}</span><button id="downloadPackage" type="button"${storyboardPackage ? '' : ' disabled'}>Download package JSON</button></div></div><h3>Direction</h3><div class="brief-direction"><p>${esc(brief.format)} · ${esc(brief.genre)} · ${esc(brief.duration_seconds)}s<br>${esc(brief.visual_direction)}</p><p>${esc(brief.audio_direction)}</p></div><h3>Scenes from Gemini creative plan</h3><div class="scenes">${scenes}</div>${questions ? `<h3>Questions before production</h3><ul>${questions}</ul>` : ''}${auditChecks ? `<h3>Deterministic coverage + continuity audit</h3><div class="audit-summary">${auditChecks}</div>` : ''}`;
+    $('brief').classList.remove('hidden');
+    $('downloadPackage').addEventListener('click', downloadStoryboardPackage);
+    renderStoryboardPackage(storyboardPackage);
+    updateClarificationSession(brief, jobId);
+    if (jobId && lastBriefMessageJobId !== jobId) {
+      addConversationMessage('assistant', questions ? `I need ${brief.clarifying_questions.length === 1 ? 'one detail' : 'a few details'} before the package is ready:\n${numberedQuestions(brief.clarifying_questions)}\n\nAnswer naturally below. This page will include the earlier request and questions in the next one-field job.` : `The plan-only storyboard/edit-decision package for “${brief.title}” is ready. Review the ordered shot cards and audit below, or download the deterministic JSON manifest.`);
+      lastBriefMessageJobId = jobId;
+    }
+  }
+  function renderStoryboardPackage(storyboardPackage) {
+    currentStoryboardPackage = storyboardPackage && typeof storyboardPackage === 'object' ? storyboardPackage : null;
+    const timeline = currentStoryboardPackage?.timeline;
+    plannedShots = Array.isArray(timeline?.shots) ? timeline.shots : [];
+    selectedSceneIndex = -1;
+    const track = $('timelineTrack'); track.textContent = '';
+    $('timelineStatus').textContent = plannedShots.length ? `${plannedShots.length} planned shot card${plannedShots.length === 1 ? '' : 's'} · ${timeline.timecode_basis} · audit ${currentStoryboardPackage.audit?.structurally_valid ? 'valid' : 'held'}` : 'No compiled storyboard timeline is available yet.';
+    if (!plannedShots.length) {
+      const empty = document.createElement('p'); empty.id = 'timelineEmpty'; empty.className = 'timeline-empty'; empty.textContent = 'No storyboard package yet.'; track.append(empty);
+      $('timelineTimecode').textContent = '--:--:--:--'; $('timelineSelection').textContent = 'Planned timecodes and cards are editorial instructions only. No footage has been selected, changed, or rendered.'; $('timelinePlayhead').classList.add('hidden'); setTimelineControls(false); return;
+    }
+    plannedShots.forEach((shot, index) => {
+      const clip = document.createElement('button');
+      const card = shot.storyboard_card || {};
+      clip.type = 'button'; clip.className = 'timeline-clip'; clip.dataset.sceneNumber = String(shot.scene_number); clip.dataset.shotId = String(shot.shot_id); clip.style.setProperty('--scene-hue', String((224 + index * 31) % 360));
+      clip.setAttribute('aria-label', `${shot.shot_id}: ${card.framing}. ${card.action}. Planned ${shot.planned_in_timecode} to ${shot.planned_out_timecode}.`);
+      const number = document.createElement('span'); number.className = 'clip-number'; number.textContent = String(shot.shot_id);
+      const copy = document.createElement('span'); copy.className = 'clip-copy';
+      const title = document.createElement('b'); title.textContent = String(shot.role || 'planned shot').replaceAll('_', ' ');
+      const detail = document.createElement('small'); detail.textContent = `${shot.planned_in_timecode}–${shot.planned_out_timecode} · plan only`;
+      copy.append(title, detail); clip.append(number, copy); clip.addEventListener('click', () => selectScene(index)); track.append(clip);
+    });
+    setTimelineControls(true); selectScene(0, false);
+  }
+  function setTimelineControls(enabled) {
+    for (const id of ['timelineFirst','timelinePrevious','timelineNext','timelineLast']) $(id).disabled = !enabled;
+  }
+  function selectScene(index, focus = true) {
+    if (!plannedShots.length) return;
+    selectedSceneIndex = Math.max(0, Math.min(plannedShots.length - 1, index));
+    const shot = plannedShots[selectedSceneIndex];
+    const card = shot.storyboard_card || {};
+    const clips = [...document.querySelectorAll('.timeline-clip')];
+    clips.forEach((clip, clipIndex) => clip.classList.toggle('is-selected', clipIndex === selectedSceneIndex));
+    const selected = clips[selectedSceneIndex];
+    $('timelineTimecode').textContent = shot.planned_in_timecode || '--:--:--:--';
+    $('timelineSelection').textContent = `${shot.shot_id} · ${card.framing} · ${card.camera} ${card.action} Planned ${shot.planned_in_timecode}–${shot.planned_out_timecode}; no source clip has been selected or mutated.`;
+    const playhead = $('timelinePlayhead'); playhead.style.left = `${selected.offsetLeft + 1}px`; playhead.classList.remove('hidden');
+    if (focus) selected.scrollIntoView({behavior:'smooth',block:'nearest',inline:'center'});
+  }
+  function packageFilename() {
+    const title = currentStoryboardPackage?.production_brief?.title || 'video-studio';
+    const safe = String(title).normalize('NFKD').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 80).toLowerCase() || 'video-studio';
+    return `${safe}-storyboard-edl.json`;
+  }
+  function downloadStoryboardPackage() {
+    if (!currentStoryboardPackage) return;
+    const blob = new Blob([JSON.stringify(currentStoryboardPackage, null, 2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a'); link.href = url; link.download = packageFilename(); link.hidden = true;
+    document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+  function responseError(payload, status) {
+    const detail = payload && payload.error;
+    if (typeof detail === 'string') return detail;
+    if (detail && typeof detail === 'object') return `${detail.code || 'Job failed'} (${detail.type || `HTTP ${status}`})`;
+    return `HTTP ${status}`;
+  }
+  async function request(path, options = {}) {
+    const response = await fetch(path, {headers:{'Content-Type':'application/json','X-Video-Studio-Access':$('access').value}, ...options});
+    const payload = await response.json();
+    if (!response.ok) {
+      const error = new Error(responseError(payload, response.status));
+      if (payload && payload.job_id) error.job = payload;
+      throw error;
+    }
+    return payload;
+  }
+  async function poll() {
+    if (!currentJob?.job_id || terminal.has(currentJob.state)) return;
+    try { render(await request(`/v1/jobs/${currentJob.job_id}`)); }
+    catch (error) { showError(error.message); }
+    if (!terminal.has(currentJob?.state)) pollTimer = setTimeout(poll, 1200);
+  }
+  async function submitBrief() {
+    if ($('submit').disabled) return;
+    showError(''); $('brief').classList.add('hidden'); renderStoryboardPackage(null); $('submit').disabled = true;
+    const visibleMessage = $('message').value;
+    const message = composeClarificationSubmission(visibleMessage);
+    const submissionContext = submissionContextFor(visibleMessage);
+    activeSubmission = {...submissionContext, jobId: null};
+    if (visibleMessage.trim()) addConversationMessage('user', visibleMessage);
+    try {
+      const job = await request('/v1/jobs', {method:'POST', body:JSON.stringify({message})});
+      activeSubmission.jobId = job.job_id;
+      $('message').value = '';
+      render(job);
+      poll();
+    }
+    catch (error) {
+      if (error.job) { activeSubmission.jobId = error.job.job_id; $('message').value = ''; render(error.job); }
+      else { activeSubmission = null; $('submit').disabled = false; }
+      showError(error.message);
+    }
+  }
+  $('submit').addEventListener('click', submitBrief);
+  $('message').addEventListener('keydown', event => { if (event.key === 'Enter' && event.ctrlKey && !$('submit').disabled) { event.preventDefault(); submitBrief(); } });
+  $('cancel').addEventListener('click', async () => { try { render(await request(`/v1/jobs/${currentJob.job_id}:cancel`, {method:'POST', body:'{}'})); } catch (error) { if (error.job) render(error.job); showError(error.message); } });
+  $('retry').addEventListener('click', async () => { showError(''); $('brief').classList.add('hidden'); try { render(await request(`/v1/jobs/${currentJob.job_id}:retry`, {method:'POST', body:'{}'})); poll(); } catch (error) { if (error.job) render(error.job); showError(error.message); } });
+  $('timelineFirst').addEventListener('click', () => selectScene(0));
+  $('timelinePrevious').addEventListener('click', () => selectScene(selectedSceneIndex - 1));
+  $('timelineNext').addEventListener('click', () => selectScene(selectedSceneIndex + 1));
+  $('timelineLast').addEventListener('click', () => selectScene(plannedShots.length - 1));
+})();
+</script>
+</body>
+</html>

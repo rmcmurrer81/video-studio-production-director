@@ -1,0 +1,15 @@
+steps:
+  - id: build-submission-image
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --file
+      - deploy/all_things_agentic/Dockerfile
+      - --tag
+      - ${_IMAGE}
+      - .
+
+images:
+  - ${_IMAGE}
+
+timeout: 1200s
