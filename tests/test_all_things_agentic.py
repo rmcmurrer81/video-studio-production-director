@@ -40,6 +40,7 @@ from kira_studio.all_things_agentic import (
 from kira_studio.all_things_google import (
     CloudTasksDispatcher,
     GoogleGenAIBriefProvider,
+    SYSTEM_INSTRUCTION,
     VERTEX_PRODUCTION_BRIEF_RESPONSE_SCHEMA,
 )
 
@@ -799,6 +800,21 @@ class AllThingsAgenticTests(unittest.TestCase):
         self.assertEqual(result.execution["evidence_origin"], "injected_test_client")
         provider.create_brief("Make another scene.", job_id="job-2")
         self.assertEqual(client.models.get_calls, ["gemini-3.5-flash"])
+
+    def test_imported_script_instruction_preserves_exact_canon_identifiers(self) -> None:
+        instruction = re.sub(r"\s+", " ", SYSTEM_INSTRUCTION.casefold())
+        for required_contract in (
+            "exact named props",
+            "alphanumeric and lettered designations",
+            "quoted labels",
+            "recurring canon terms",
+            "carry them consistently",
+            "never generalize, rename, renumber, or merge",
+            "lettered or alphanumeric equipment designation",
+            "unqualified generic item",
+        ):
+            with self.subTest(required_contract=required_contract):
+                self.assertIn(required_contract, instruction)
 
     def test_cloud_tasks_dispatch_is_oidc_bound_to_private_worker(self) -> None:
         client = FakeTasksClient()

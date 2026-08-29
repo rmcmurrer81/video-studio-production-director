@@ -125,7 +125,7 @@ test("short clarification answers compose complete one-field context across repe
     "downloadPackage", "downloadVisualStoryboard", "printVisualStoryboard", "downloadDetailedSheet",
     "downloadLocationPlan", "downloadLocationCsv", "downloadLocationJson", "downloadCharacterHtml", "downloadCharacterText", "downloadCharacterJson", "downloadCharacterCsv", "downloadShotList", "downloadEdl", "accessHelp", "sourceSummary", "attachmentButton",
     "attachmentMenu", "attachStory", "attachFootage", "scriptFile", "footageFiles",
-    "scriptStatus", "footageStatus", "animatic", "animaticPlay", "animaticStop", "pitchPlay", "pitchStop", "downloadPitchScript",
+    "scriptStatus", "footageStatus", "animatic", "animaticPlay", "animaticStop", "pitchPlay", "pitchStop", "pitchVoiceStatus", "downloadPitchScript",
     "animaticImage", "animaticPlaceholder", "animaticOverlay", "animaticShot",
     "animaticAction", "animaticBar", "animaticTime", "animaticTruth", "installApp",
   ];
@@ -225,7 +225,7 @@ test("visual and detailed HTML downloads stay separate, escaped, scriptless, and
     "downloadPackage", "downloadVisualStoryboard", "printVisualStoryboard", "downloadDetailedSheet",
     "downloadLocationPlan", "downloadLocationCsv", "downloadLocationJson", "downloadCharacterHtml", "downloadCharacterText", "downloadCharacterJson", "downloadCharacterCsv", "downloadShotList", "downloadEdl", "accessHelp", "sourceSummary", "attachmentButton",
     "attachmentMenu", "attachStory", "attachFootage", "scriptFile", "footageFiles",
-    "scriptStatus", "footageStatus", "animatic", "animaticPlay", "animaticStop", "pitchPlay", "pitchStop", "downloadPitchScript",
+    "scriptStatus", "footageStatus", "animatic", "animaticPlay", "animaticStop", "pitchPlay", "pitchStop", "pitchVoiceStatus", "downloadPitchScript",
     "animaticImage", "animaticPlaceholder", "animaticOverlay", "animaticShot",
     "animaticAction", "animaticBar", "animaticTime", "animaticTruth", "installApp",
   ];
@@ -405,10 +405,21 @@ test("visual and detailed HTML downloads stay separate, escaped, scriptless, and
   };
   const spoken = [];
   let speechCancels = 0;
+  const voiceListeners = new Map();
+  const naturalVoice = {name: "Microsoft Aria Online (Natural) - English (United States)", lang: "en-US"};
+  let currentVoices = [
+    {name: "Microsoft David Desktop", lang: "en-US", default: true},
+    {name: "Microsoft Sonia Premium", lang: "en-GB"},
+    {name: "Microsoft Mark Online", lang: "en-US"},
+    {name: "Microsoft Katja Online (Natural)", lang: "de-DE"},
+    naturalVoice,
+  ];
   class FakeUtterance {
     constructor(textValue) { this.text = textValue; this.onend = null; this.onerror = null; }
   }
   const speechSynthesis = {
+    getVoices() { return currentVoices; },
+    addEventListener(type, callback) { voiceListeners.set(type, callback); },
     speak(utterance) { spoken.push(utterance); },
     cancel() { speechCancels += 1; },
   };
@@ -432,12 +443,15 @@ test("visual and detailed HTML downloads stay separate, escaped, scriptless, and
   assert.equal(elements.get("animaticPlay").disabled, false);
   assert.equal(elements.get("pitchPlay").disabled, false);
   assert.equal(elements.get("downloadPitchScript").disabled, false);
+  assert.match(elements.get("pitchVoiceStatus").textContent, /Natural pitch voice ready: Microsoft Aria Online \(Natural\)/);
   assert.equal(elements.get("animaticImage").src, "data:image/jpeg;base64,/9j/2Q==");
   assert.match(elements.get("animaticShot").textContent, /SC01-SH01/);
   assert.equal(elements.get("animaticTime").textContent, "00:00 / 00:12");
   elements.get("pitchPlay").click();
   assert.equal(spoken.length, 1);
   assert.match(spoken[0].text, /^Card 1, primary coverage\./);
+  assert.equal(spoken[0].voice, naturalVoice, "only the highest-ranked clearly labeled English natural voice is assigned");
+  assert.equal(spoken[0].lang, "en-US");
   spoken[0].onend();
   await settle();
   assert.equal(spoken.length, 2);
@@ -447,6 +461,16 @@ test("visual and detailed HTML downloads stay separate, escaped, scriptless, and
   await settle();
   assert.equal(spoken.length, 2, "stale speech callbacks cannot advance after Stop");
   assert.ok(speechCancels >= 1);
+  currentVoices = [
+    {name: "Microsoft David Desktop", lang: "en-US", default: true},
+    {name: "Microsoft Sonia Premium", lang: "en-GB"},
+    {name: "Microsoft Mark Online", lang: "en-US"},
+  ];
+  voiceListeners.get("voiceschanged")();
+  assert.equal(elements.get("pitchPlay").disabled, true, "robotic/default-only voice inventory cannot enable narration");
+  assert.equal(elements.get("pitchPlay").textContent, "Natural voice unavailable");
+  assert.equal(elements.get("downloadPitchScript").disabled, false, "the narration script remains available without a qualified voice");
+  assert.match(elements.get("pitchVoiceStatus").textContent, /Natural pitch voice unavailable.*download the pitch narration script instead/);
   elements.get("downloadDetailedSheet").click();
   elements.get("downloadVisualStoryboard").click();
   elements.get("downloadLocationPlan").click();
@@ -620,7 +644,7 @@ test("owner v2 blocks blank access, imports whole or bounded scripts locally, an
     "downloadPackage", "downloadVisualStoryboard", "printVisualStoryboard", "downloadDetailedSheet",
     "downloadLocationPlan", "downloadLocationCsv", "downloadLocationJson", "downloadCharacterHtml", "downloadCharacterText", "downloadCharacterJson", "downloadCharacterCsv", "downloadShotList", "downloadEdl", "accessHelp", "sourceSummary", "attachmentButton",
     "attachmentMenu", "attachStory", "attachFootage", "scriptFile", "footageFiles",
-    "scriptStatus", "footageStatus", "animatic", "animaticPlay", "animaticStop", "pitchPlay", "pitchStop", "downloadPitchScript",
+    "scriptStatus", "footageStatus", "animatic", "animaticPlay", "animaticStop", "pitchPlay", "pitchStop", "pitchVoiceStatus", "downloadPitchScript",
     "animaticImage", "animaticPlaceholder", "animaticOverlay", "animaticShot",
     "animaticAction", "animaticBar", "animaticTime", "animaticTruth", "installApp",
   ];

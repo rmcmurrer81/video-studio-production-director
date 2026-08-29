@@ -89,7 +89,7 @@
     <div class="capability-nav" aria-label="Included Video Studio planning capabilities">
       <span class="capability-label">Includes</span><span class="capability-chip">Natural chat + brief</span><span class="capability-chip">Script breakdown</span><span class="capability-chip">Visual storyboard</span><span class="capability-chip">Characters + synopsis</span><span class="capability-chip">Pitch preview</span><span class="capability-chip">Location plan</span><span class="capability-chip">Shot list + EDL</span><span class="capability-chip">Continuity audit</span><span class="capability-chip">Raw-footage inventory + exports</span>
     </div>
-    <p class="scope-note"><strong>Contest scope:</strong> planning illustrations and a timed animatic are previsualization—not final generated footage. It does not render a finished video or inspect/edit raw-video pixels; raw bytes stay in this browser. Final rendering, lip sync, voice generation, and footage editing remain Local edition quality gates. Pitch narration is a device-voice preview, not a generated or embedded production track.</p>
+    <p class="scope-note"><strong>Contest scope:</strong> planning illustrations and a timed animatic are previsualization—not final generated footage. It does not render a finished video or inspect/edit raw-video pixels; raw bytes stay in this browser. Final rendering, lip sync, voice generation, and footage editing remain Local edition quality gates. Pitch playback requires a clearly labeled English Natural or Neural browser voice and is not a generated or embedded production track; its narration script remains downloadable.</p>
     <section class="workspace" aria-label="Production director workspace">
       <article class="panel conversation-panel" aria-labelledby="conversationTitle">
         <div class="panel-head"><div><h2 id="conversationTitle">Conversation</h2><p>No special prompt format required</p></div><span class="director-badge">Director ready</span></div>
@@ -118,7 +118,7 @@
     </section>
     <section id="brief" class="panel brief hidden" aria-live="polite"></section>
     <section id="animatic" class="panel animatic hidden" aria-labelledby="animaticTitle">
-      <div class="animatic-head"><div><h2 id="animaticTitle">Playable timed animatic + investor pitch preview</h2><p>Plays planning illustrations or explicit placeholders for each compiled shot. No final footage, dialogue performance, lip sync, or finished audio is claimed.</p><p class="pitch-disclosure">Narrated pitch preview uses this device's browser voice and is not embedded in a video file. Dialogue/audio text is identified as planning direction unless explicit lines are shown.</p></div><div class="animatic-controls"><button id="animaticPlay" type="button" disabled>Play timed animatic</button><button id="animaticStop" type="button" disabled>Stop timing</button><button id="pitchPlay" type="button" disabled>Narrate investor pitch</button><button id="pitchStop" type="button" disabled>Stop voice</button><button id="downloadPitchScript" type="button" disabled>Pitch narration script</button></div></div>
+      <div class="animatic-head"><div><h2 id="animaticTitle">Playable timed animatic + investor pitch preview</h2><p>Plays planning illustrations or explicit placeholders for each compiled shot. No final footage, dialogue performance, lip sync, or finished audio is claimed.</p><p id="pitchVoiceStatus" class="pitch-disclosure" aria-live="polite">Natural pitch voice unavailable on this device. Narration playback stays disabled; download the pitch narration script instead. Dialogue/audio text is planning direction unless explicit lines are shown.</p></div><div class="animatic-controls"><button id="animaticPlay" type="button" disabled>Play timed animatic</button><button id="animaticStop" type="button" disabled>Stop timing</button><button id="pitchPlay" type="button" disabled>Natural voice unavailable</button><button id="pitchStop" type="button" disabled>Stop voice</button><button id="downloadPitchScript" type="button" disabled>Pitch narration script</button></div></div>
       <div id="animaticStage" class="animatic-stage"><div id="animaticPlaceholder" class="animatic-placeholder">Create a production plan to assemble the timed animatic.</div><img id="animaticImage" class="hidden" alt=""><div id="animaticOverlay" class="animatic-overlay hidden"><strong id="animaticShot">No shot</strong><span id="animaticAction">No planned action.</span></div></div>
       <div class="animatic-progress" aria-hidden="true"><span id="animaticBar"></span></div><div class="animatic-status"><span id="animaticTime">00:00 / 00:00</span><span id="animaticTruth">PREVISUALIZATION · PLANNING ART · NO RENDERED VIDEO</span></div>
     </section>
@@ -152,6 +152,7 @@
   let animaticElapsedSeconds = 0;
   let pitchGeneration = 0;
   let pitchPlaying = false;
+  let selectedPitchVoice = null;
   const terminal = new Set(['succeeded', 'failed', 'cancelled']);
   const MAX_SCRIPT_BYTES = 16 * 1024 * 1024;
   const MAX_SCRIPT_CHARS = 147000;
@@ -861,8 +862,33 @@
     const cleaned = String(value ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, ' ').replace(/\s+/g, ' ').trim();
     return (cleaned || fallback).slice(0, 1200);
   }
+  function naturalPitchVoiceScore(voice) {
+    const name = String(voice?.name || '');
+    const language = String(voice?.lang || '').replace('_', '-').toLowerCase();
+    if (!language.startsWith('en-') && language !== 'en') return -1;
+    if (!/\b(?:natural|neural)\b/i.test(name)) return -1;
+    let score = 0;
+    if (/\b(?:natural|neural)\b/i.test(name)) score += 200;
+    if (/\bpremium\b/i.test(name)) score += 100;
+    if (/\bonline\b/i.test(name)) score += 50;
+    if (language === 'en-us') score += 80;
+    else if (language.startsWith('en-us-')) score += 70;
+    return score;
+  }
+  function selectNaturalPitchVoice() {
+    if (typeof window === 'undefined' || typeof window.SpeechSynthesisUtterance !== 'function' || typeof window.speechSynthesis?.speak !== 'function' || typeof window.speechSynthesis?.getVoices !== 'function') return null;
+    return [...(window.speechSynthesis.getVoices() || [])]
+      .filter(voice => naturalPitchVoiceScore(voice) >= 0)
+      .sort((left, right) => naturalPitchVoiceScore(right) - naturalPitchVoiceScore(left) || String(left.name || '').localeCompare(String(right.name || '')))[0] || null;
+  }
   function pitchNarrationAvailable() {
-    return typeof window !== 'undefined' && typeof window.SpeechSynthesisUtterance === 'function' && typeof window.speechSynthesis?.speak === 'function';
+    return Boolean(selectedPitchVoice) && typeof window !== 'undefined' && typeof window.SpeechSynthesisUtterance === 'function' && typeof window.speechSynthesis?.speak === 'function';
+  }
+  function refreshPitchVoiceSelection() {
+    const previousVoice = selectedPitchVoice;
+    selectedPitchVoice = selectNaturalPitchVoice();
+    if (pitchPlaying && previousVoice !== selectedPitchVoice) stopNarratedPitch();
+    updatePitchControls();
   }
   function buildPitchCues() {
     if (!plannedShots.length) throw new Error('A validated storyboard timeline is required.');
@@ -916,10 +942,15 @@
   }
   function updatePitchControls() {
     const hasPlan = plannedShots.length > 0;
-    $('pitchPlay').disabled = !hasPlan || !pitchNarrationAvailable() || pitchPlaying;
+    const naturalVoiceReady = pitchNarrationAvailable();
+    $('pitchPlay').disabled = !hasPlan || !naturalVoiceReady || pitchPlaying;
     $('pitchStop').disabled = !pitchPlaying;
     $('downloadPitchScript').disabled = !hasPlan;
-    $('pitchPlay').textContent = pitchPlaying ? 'Narrating…' : 'Narrate investor pitch';
+    $('pitchPlay').textContent = pitchPlaying ? 'Narrating…' : naturalVoiceReady ? 'Narrate investor pitch' : 'Natural voice unavailable';
+    $('pitchPlay').title = naturalVoiceReady ? `Uses ${selectedPitchVoice.name} (${selectedPitchVoice.lang})` : 'No clearly labeled English Natural or Neural browser voice is available.';
+    $('pitchVoiceStatus').textContent = naturalVoiceReady
+      ? `Natural pitch voice ready: ${selectedPitchVoice.name} (${selectedPitchVoice.lang}). This browser preview is not embedded in a video file. Dialogue/audio text is planning direction unless explicit lines are shown.`
+      : 'Natural pitch voice unavailable on this device. Narration playback stays disabled; download the pitch narration script instead. Dialogue/audio text is planning direction unless explicit lines are shown.';
   }
   function stopNarratedPitch({announce = false} = {}) {
     pitchGeneration += 1;
@@ -930,6 +961,7 @@
   }
   function playNarratedPitch() {
     if (!pitchNarrationAvailable() || !plannedShots.length) return;
+    const pitchVoice = selectedPitchVoice;
     let cues;
     try { cues = buildPitchCues(); }
     catch (error) { showError(String(error?.message || error)); return; }
@@ -950,6 +982,8 @@
       animaticElapsedSeconds = plannedShots.slice(0, index).reduce((total, shot) => total + Math.max(0.1, Number(shot.planned_duration_seconds) || 0), 0);
       showAnimaticFrame(index);
       const utterance = new window.SpeechSynthesisUtterance(cues[index].narration);
+      utterance.voice = pitchVoice;
+      utterance.lang = pitchVoice.lang;
       utterance.rate = 0.96;
       utterance.pitch = 1;
       utterance.volume = 1;
@@ -1482,6 +1516,7 @@
   $('timelineNext').addEventListener('click', () => selectScene(selectedSceneIndex + 1));
   $('timelineLast').addEventListener('click', () => selectScene(plannedShots.length - 1));
   if (typeof window !== 'undefined') {
+    window.speechSynthesis?.addEventListener?.('voiceschanged', refreshPitchVoiceSelection);
     window.addEventListener('beforeinstallprompt', event => {
       event.preventDefault();
       deferredInstallPrompt = event;
@@ -1511,6 +1546,7 @@
     });
   }
   renderSourceSummary();
+  refreshPitchVoiceSelection();
   updateSubmitState();
 })();
 </script>

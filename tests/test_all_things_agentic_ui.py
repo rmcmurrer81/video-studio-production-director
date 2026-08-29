@@ -315,6 +315,25 @@ class AllThingsAgenticUiTests(unittest.TestCase):
         ):
             self.assertIn(marker, self.html)
 
+    def test_investor_pitch_requires_a_clearly_labeled_natural_english_voice(self) -> None:
+        for marker in (
+            'id="pitchVoiceStatus" class="pitch-disclosure" aria-live="polite"',
+            "Natural pitch voice unavailable on this device.",
+            "download the pitch narration script instead",
+            "function naturalPitchVoiceScore(voice)",
+            "/\\b(?:natural|neural)\\b/i.test(name)",
+            "if (!language.startsWith('en-') && language !== 'en') return -1",
+            "function selectNaturalPitchVoice()",
+            "utterance.voice = pitchVoice",
+            "utterance.lang = pitchVoice.lang",
+            "window.speechSynthesis?.addEventListener?.('voiceschanged', refreshPitchVoiceSelection)",
+        ):
+            self.assertIn(marker, self.html)
+        self.assertIn("$('pitchPlay').disabled = !hasPlan || !naturalVoiceReady || pitchPlaying", self.html)
+        self.assertIn("$('downloadPitchScript').disabled = !hasPlan", self.html)
+        self.assertNotIn("return typeof window !== 'undefined' && typeof window.SpeechSynthesisUtterance", self.html)
+        self.assertNotIn("(?:natural|neural|online|premium)", self.html)
+
     def test_clarification_followups_are_composed_in_memory_without_extra_api_fields(self) -> None:
         for marker in (
             'id="conversationContext"',

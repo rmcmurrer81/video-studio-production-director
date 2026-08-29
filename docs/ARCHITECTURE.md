@@ -21,7 +21,7 @@ flowchart LR
     UI -->|Local deterministic derivation| Handoffs[Exact-setting location plan<br/>character + synopsis dossier]
     UI -->|Local downloads| Package[Package JSON + visual/detailed HTML<br/>location HTML/CSV/JSON<br/>character HTML/TXT/JSON/CSV<br/>shot-list CSV + rough-cut EDL CSV]
     UI -->|Compiled durations + panels| Animatic[Timed in-app animatic<br/>previsualization only]
-    UI -->|Bounded cue text| Pitch[Browser/device speech preview<br/>narration TXT only]
+    UI -->|Bounded cue text| Pitch[Qualified English Natural/Neural browser speech when available<br/>narration TXT always]
 ```
 
 ## Responsibilities
