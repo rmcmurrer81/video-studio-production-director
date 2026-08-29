@@ -656,7 +656,9 @@ test("owner v2 blocks blank access, imports whole or bounded scripts locally, an
 
   const html = fs.readFileSync(path.join(__dirname, "..", "web", "all-things-agentic.html"), "utf8");
   assert.match(html, /aria-label="Production planning workflow"/);
-  assert.match(html, /aria-label="Jump to a Video Studio capability"/);
+  assert.match(html, /aria-label="Included Video Studio planning capabilities"/);
+  assert.match(html, /class="capability-chip"/);
+  assert.doesNotMatch(html, /aria-label="Jump to a Video Studio capability"/);
   assert.match(html, /Judge \/ owner access code — provided with submission/);
   assert.match(html, /id="submit" class="primary" type="button" disabled>Create production plan<\/button>/);
   const script = html.match(/<script>\s*([\s\S]*?)\s*<\/script>/)[1];

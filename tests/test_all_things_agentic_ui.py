@@ -282,7 +282,7 @@ class AllThingsAgenticUiTests(unittest.TestCase):
         )[0]
         self.assertNotIn("$('access')", access_sensitive_exports)
 
-    def test_deadline_ui_polish_is_compact_navigational_and_accessible(self) -> None:
+    def test_deadline_ui_polish_is_compact_clear_and_accessible(self) -> None:
         for marker in (
             'class="workflow-strip" aria-label="Production planning workflow"',
             '<span aria-hidden="true">1</span>Describe',
@@ -290,10 +290,10 @@ class AllThingsAgenticUiTests(unittest.TestCase):
             '<span aria-hidden="true">3</span>Plan',
             '<span aria-hidden="true">4</span>Storyboard',
             '<span aria-hidden="true">5</span>Review / Export',
-            'class="capability-nav" aria-label="Jump to a Video Studio capability"',
-            '<span class="capability-label">Jump to</span>',
-            ".capability-nav a:hover,.capability-nav a:focus-visible",
-            ".capability-nav a:active",
+            'class="capability-nav" aria-label="Included Video Studio planning capabilities"',
+            '<span class="capability-label">Includes</span>',
+            'class="capability-chip"',
+            "textarea:focus-visible{outline:2px solid var(--amber-bright)",
             'Judge / owner access code — provided with submission',
             'id="submit" class="primary" type="button" disabled>Create production plan</button>',
             "main{padding-top:24px}.hero{padding:4px 2px 18px}",
@@ -301,6 +301,9 @@ class AllThingsAgenticUiTests(unittest.TestCase):
             self.assertIn(marker, self.html)
         self.assertNotIn("hero-note", self.html)
         self.assertNotIn("Build scene package", self.html)
+        self.assertNotIn("before the scene package is ready", self.html)
+        self.assertNotIn("The scene package for", self.html)
+        self.assertNotIn('class="capability-nav" aria-label="Jump to', self.html)
 
     def test_contest_scope_is_visibly_truthful(self) -> None:
         for marker in (

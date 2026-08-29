@@ -181,7 +181,7 @@ For a local container smoke test, provide Application Default Credentials and al
 
 ## Judge demo path
 
-1. Open the public API service root URL. The server returns the Storyboard Artist & Production Planner. Enter the **Judge / owner access code — provided with submission**; **Create production plan** remains disabled until it is nonblank. The page keeps it only in the password field for this window and sends it only to same-origin job routes.
+1. Open the public API service root URL. The server returns the Storyboard Artist & Production Planner. Enter the **Judge / owner access code — provided with submission**; **Create production plan** remains disabled until both the code and a creative source (a message or attached script/story) are present. The page keeps the code only in the password field for this window and sends it only to same-origin job routes.
 2. Either enter `Make a one-minute science-fiction dialogue scene in an orbital repair shop. Two old friends must decide whether to leave Earth. Keep the machinery quiet enough that every line is clear.` or use **+ Attach** to select a supported story/screenplay. For an ordinary script, point out **FULL TEXT** and the included/extracted counts. For an oversized source, say explicitly that the app uses labeled beginning/middle/end excerpts rather than complete coverage.
 3. Optionally use the same **+ Attach** menu for raw video. Point out that only filename, type, size, and browser-readable duration are inventoried; the app does not upload or inspect the footage bytes.
 4. Select **Create production plan**. Point out the durable job ID, queued/running stage, progress, application attempt, and honest initially-unavailable ETA.
