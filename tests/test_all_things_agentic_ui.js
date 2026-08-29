@@ -655,6 +655,10 @@ test("owner v2 blocks blank access, imports whole or bounded scripts locally, an
   }
 
   const html = fs.readFileSync(path.join(__dirname, "..", "web", "all-things-agentic.html"), "utf8");
+  assert.match(html, /aria-label="Production planning workflow"/);
+  assert.match(html, /aria-label="Jump to a Video Studio capability"/);
+  assert.match(html, /Judge \/ owner access code — provided with submission/);
+  assert.match(html, /id="submit" class="primary" type="button" disabled>Create production plan<\/button>/);
   const script = html.match(/<script>\s*([\s\S]*?)\s*<\/script>/)[1];
   const sandbox = {
     clearTimeout() {},
@@ -676,8 +680,9 @@ test("owner v2 blocks blank access, imports whole or bounded scripts locally, an
   assert.equal(elements.get("submit").disabled, true);
   await elements.get("submit").listeners.get("click")();
   assert.equal(fetchCalls.length, 0);
-  assert.match(elements.get("error").textContent, /separately supplied/);
-  assert.match(elements.get("error").textContent, /before building/);
+  assert.match(elements.get("error").textContent, /provided with the submission/);
+  assert.match(elements.get("error").textContent, /before creating a production plan/);
+  assert.match(elements.get("accessHelp").textContent, /Provided with the submission/);
 
   await elements.get("installApp").listeners.get("click")();
   assert.match(elements.get("error").textContent, /Microsoft Edge/);
@@ -728,6 +733,8 @@ test("owner v2 blocks blank access, imports whole or bounded scripts locally, an
   elements.get("access").value = "private-code-never-in-body";
   elements.get("access").listeners.get("input")();
   assert.equal(elements.get("submit").disabled, false);
+  assert.match(elements.get("accessHelp").textContent, /window only/);
+  assert.match(elements.get("accessHelp").textContent, /never included in exports/);
   await elements.get("submit").listeners.get("click")();
   const posts = fetchCalls.filter(call => call.url === "/v1/jobs");
   assert.equal(posts.length, 1);

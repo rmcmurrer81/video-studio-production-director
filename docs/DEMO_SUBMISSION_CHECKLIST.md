@@ -46,7 +46,7 @@ Do not check these boxes based on mocks, configuration text, `/health`, or deplo
 - [ ] Exercise an ambiguous request and show `ready_for_production: false` with concise questions.
 - [ ] Exercise queued cancellation and one permitted retry; do not claim an in-flight provider call was preempted.
 - [ ] Confirm missing and incorrect access codes return the same `401`, the correct code can create a `202` job, and the browser sends only same-origin requests.
-- [ ] Confirm **Build scene package** remains disabled until a nonblank access code and creative source are present, and the blank-code guidance points to `OWNER-TEST-INSTRUCTIONS`.
+- [ ] Confirm **Create production plan** remains disabled until a nonblank access code and creative source are present, and the blank-code guidance says the **Judge / owner access code** is provided with the submission.
 - [ ] Confirm the install button either opens the browser PWA prompt or provides the exact Edge Apps / private launcher fallback; test the installed or Edge `--app=` window separately from ordinary tabs.
 
 ## Demo recording

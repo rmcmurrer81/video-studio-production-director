@@ -249,9 +249,9 @@ class AllThingsAgenticUiTests(unittest.TestCase):
             "await prompt.prompt()",
             "navigator.serviceWorker.register('/sw.js')",
             "Edge open ⋯ → Apps → Install Video Studio",
-            "supplied separately",
+            "Provided with the submission",
             "if (!$('access').value.trim())",
-            "The private owner / judge access code is missing or incorrect.",
+            "The private judge / owner access code is missing or incorrect.",
             "PDF, TXT, Markdown, Fountain, or Final Draft XML",
             "await import('/vendor/pdfjs/pdf.mjs')",
             "pdf.worker.mjs",
@@ -260,10 +260,10 @@ class AllThingsAgenticUiTests(unittest.TestCase):
             "beginning_middle_end_excerpt",
             "Included source characters:",
             "extracted characters included",
-            "Scripts within the displayed full-text bound receive whole-source planning; oversized sources use disclosed beginning/middle/end excerpts.",
+            "Sources within the displayed bound use full text; oversized sources use disclosed beginning/middle/end excerpts.",
             "MAX_SCRIPT_CHARS = 147000",
             "MAX_COMPOSED_MESSAGE_CHARS = 159000",
-            "raw video bytes stay in this browser",
+            "raw bytes stay in this browser",
             "no footage-content analysis occurs",
             "function shotListCsv()",
             "function sourceAwareEdlCsv()",
@@ -281,6 +281,26 @@ class AllThingsAgenticUiTests(unittest.TestCase):
             "function storyboardSheetList", 1
         )[0]
         self.assertNotIn("$('access')", access_sensitive_exports)
+
+    def test_deadline_ui_polish_is_compact_navigational_and_accessible(self) -> None:
+        for marker in (
+            'class="workflow-strip" aria-label="Production planning workflow"',
+            '<span aria-hidden="true">1</span>Describe',
+            '<span aria-hidden="true">2</span>Brief',
+            '<span aria-hidden="true">3</span>Plan',
+            '<span aria-hidden="true">4</span>Storyboard',
+            '<span aria-hidden="true">5</span>Review / Export',
+            'class="capability-nav" aria-label="Jump to a Video Studio capability"',
+            '<span class="capability-label">Jump to</span>',
+            ".capability-nav a:hover,.capability-nav a:focus-visible",
+            ".capability-nav a:active",
+            'Judge / owner access code — provided with submission',
+            'id="submit" class="primary" type="button" disabled>Create production plan</button>',
+            "main{padding-top:24px}.hero{padding:4px 2px 18px}",
+        ):
+            self.assertIn(marker, self.html)
+        self.assertNotIn("hero-note", self.html)
+        self.assertNotIn("Build scene package", self.html)
 
     def test_contest_scope_is_visibly_truthful(self) -> None:
         for marker in (
