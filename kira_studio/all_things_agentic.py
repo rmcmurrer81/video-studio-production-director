@@ -55,6 +55,41 @@ DEFAULT_ADMISSION_WINDOW_SECONDS = 3_600
 DEFAULT_ADMISSION_MAX_JOBS = 24
 DEFAULT_WORKER_LEASE_SECONDS = 360
 
+# Canonical, non-sensitive failure codes emitted by NarratedPitchRenderError in
+# all_things_cloud_media.py.  Never persist the exception message as a fallback:
+# FFmpeg, provider, and source details can contain private paths or screenplay text.
+NARRATED_PITCH_RENDER_DIAGNOSTIC_CODES = frozenset(
+    {
+        "card_render_failed",
+        "incomplete_card_render",
+        "incomplete_subtitle_coverage",
+        "incomplete_visual_coverage",
+        "invalid_artifact_manifest",
+        "invalid_narration_cue",
+        "invalid_narration_input",
+        "invalid_pitch_brief",
+        "invalid_pitch_timeline",
+        "invalid_rendered_video",
+        "invalid_source_message",
+        "invalid_tts_audio",
+        "invalid_visual_asset",
+        "invalid_visual_storyboard",
+        "pitch_duration_exceeded",
+        "pitch_duration_mismatch",
+        "pitch_probe_failed",
+        "pitch_probe_mismatch",
+        "pitch_render_failed",
+        "tts_synthesis_failed",
+        "unresolved_visual_asset",
+        "unsafe_concat_input",
+        "unsafe_media_command",
+        "visual_asset_integrity_failed",
+        "visual_asset_job_mismatch",
+        "visual_asset_load_failed",
+        "visual_cue_identity_mismatch",
+    }
+)
+
 _PROJECT_ID = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
 _LOCATION = re.compile(r"^(?:global|[a-z]+-[a-z0-9]+[0-9])$")
 _REGION = re.compile(r"^[a-z]+-[a-z0-9]+[0-9]$")
@@ -1669,6 +1704,25 @@ def public_job(record: Mapping[str, Any]) -> dict[str, Any]:
     return {key: record.get(key) for key in sorted(allowed) if key in record}
 
 
+def _narrated_pitch_render_diagnostic_code(exc: Exception) -> str | None:
+    """Return only a canonical code from the typed cloud-media render error."""
+
+    # The lazy import keeps this orchestration module independent of the concrete
+    # renderer on successful and non-media paths.
+    from .all_things_cloud_media import NarratedPitchRenderError
+
+    if type(exc) is not NarratedPitchRenderError or type(exc.code) is not str:
+        return None
+    return next(
+        (
+            allowed_code
+            for allowed_code in NARRATED_PITCH_RENDER_DIAGNOSTIC_CODES
+            if exc.code == allowed_code
+        ),
+        None,
+    )
+
+
 class AllThingsJobService:
     """Idempotent natural-chat to structured-brief job orchestration."""
 
@@ -2156,6 +2210,16 @@ class AllThingsJobService:
         except Exception as exc:
             finished_at = utc_now()
             started_at = _parse_time(claimed.get("started_at"))
+            error: dict[str, Any] = {
+                "code": failure_code,
+                "type": type(exc).__name__,
+                "retryable": int(claimed.get("attempt", 1))
+                < int(claimed.get("max_attempts", MAX_ATTEMPTS)),
+            }
+            if failure_code == "narrated_pitch_render_failed":
+                diagnostic_code = _narrated_pitch_render_diagnostic_code(exc)
+                if diagnostic_code is not None:
+                    error["diagnostic_code"] = diagnostic_code
             failed = self.repository.finalize(
                 job_id,
                 {
@@ -2165,12 +2229,7 @@ class AllThingsJobService:
                     "completed_at": finished_at.isoformat(),
                     "duration_seconds": _elapsed(started_at, finished_at),
                     "eta": eta_payload(durations, progress=100),
-                    "error": {
-                        "code": failure_code,
-                        "type": type(exc).__name__,
-                        "retryable": int(claimed.get("attempt", 1))
-                        < int(claimed.get("max_attempts", MAX_ATTEMPTS)),
-                    },
+                    "error": error,
                     "brief": None,
                     "storyboard_package": None,
                     "visual_storyboard": None,
@@ -2277,6 +2336,7 @@ __all__ = [
     "MAX_VISUAL_PANEL_BYTES",
     "MAX_VISUAL_PANEL_COUNT",
     "MAX_VISUAL_STORYBOARD_BYTES",
+    "NARRATED_PITCH_RENDER_DIAGNOSTIC_CODES",
     "STORYBOARD_PACKAGE_SCHEMA",
     "STORYBOARD_TIMELINE_SCHEMA",
     "VISUAL_STORYBOARD_SCHEMA",

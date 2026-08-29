@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -37,6 +38,7 @@ from kira_studio.all_things_agentic import (
     validate_storyboard_package,
     validate_visual_storyboard,
 )
+from kira_studio.all_things_cloud_media import NarratedPitchRenderError
 from kira_studio.all_things_google import (
     CloudTasksDispatcher,
     GoogleGenAIBriefProvider,
@@ -359,6 +361,32 @@ class StaticVisualProvider:
         )
 
 
+class StaticArtifactStore:
+    def put_bytes(
+        self,
+        *,
+        job_id: str,
+        artifact_id: str,
+        data: bytes,
+        content_type: str,
+    ) -> dict[str, object]:
+        return {
+            "artifact_id": artifact_id,
+            "object_name": f"jobs/{job_id}/{artifact_id}",
+            "content_type": content_type,
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "bytes": len(data),
+        }
+
+
+class FailingNarratedPitchRenderer:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def render(self, **_kwargs: object) -> dict[str, object]:
+        raise self.error
+
+
 class FakeModels:
     def __init__(self) -> None:
         self.get_calls: list[str] = []
@@ -396,6 +424,55 @@ class FakeTasksClient:
 
 
 class AllThingsAgenticTests(unittest.TestCase):
+    def _execute_pitch_render_failure(
+        self,
+        error: Exception,
+        *,
+        source_message: str = "Make a short scene.",
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        repository = MemoryRepository()
+        service = AllThingsJobService(
+            config=valid_config(),
+            repository=repository,
+            dispatcher=RecordingDispatcher(),
+            provider=StaticProvider(),
+            visual_provider=StaticVisualProvider(),
+            artifact_store=StaticArtifactStore(),
+            narrated_pitch_renderer=FailingNarratedPitchRenderer(error),
+        )
+        queued = service.submit(source_message)
+        failed = dict(service.execute(str(queued["job_id"]), attempt=1))
+        return failed, repository.get(str(queued["job_id"]))
+
+    def test_narrated_pitch_failure_records_allowlisted_diagnostic_code(self) -> None:
+        failed, durable = self._execute_pitch_render_failure(
+            NarratedPitchRenderError("pitch_probe_failed")
+        )
+
+        self.assertEqual(failed["state"], JobState.FAILED.value)
+        self.assertEqual(failed["error"]["code"], "narrated_pitch_render_failed")
+        self.assertEqual(failed["error"]["diagnostic_code"], "pitch_probe_failed")
+        self.assertEqual(durable["error"]["diagnostic_code"], "pitch_probe_failed")
+
+    def test_narrated_pitch_failure_redacts_arbitrary_exception_and_source_text(self) -> None:
+        source_text = "PRIVATE SCREENPLAY: the launch phrase is violet-seven."
+        exception_text = f"ffprobe stderr echoed {source_text} from C:\\private\\source.mov"
+        for error in (
+            NarratedPitchRenderError(exception_text),
+            RuntimeError(exception_text),
+        ):
+            with self.subTest(error_type=type(error).__name__):
+                failed, durable = self._execute_pitch_render_failure(
+                    error,
+                    source_message=source_text,
+                )
+
+                self.assertNotIn("diagnostic_code", failed["error"])
+                self.assertNotIn("diagnostic_code", durable["error"])
+                self.assertNotIn(exception_text, json.dumps(failed))
+                self.assertNotIn(source_text, json.dumps(failed))
+                self.assertNotIn(exception_text, json.dumps(durable["error"]))
+
     def test_configuration_requires_verified_contest_model_family_and_real_targets(self) -> None:
         self.assertEqual(valid_config().issues(), ())
         with self.assertRaises(ConfigurationError):
