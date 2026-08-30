@@ -13,7 +13,6 @@ from datetime import datetime, timezone
 import io
 import json
 import math
-import random
 import re
 import threading
 import time
@@ -94,9 +93,8 @@ _VISUAL_PANEL_HEIGHT = 432
 _MAX_VISUAL_PANEL_BYTES = 45_000
 _MAX_PROVIDER_IMAGE_BYTES = 12 * 1024 * 1024
 _MAX_PROVIDER_IMAGE_PIXELS = 24_000_000
-_MAX_VISUAL_ATTEMPTS = 3
-_VISUAL_RETRY_BASE_SECONDS = 0.5
-_VISUAL_RETRY_MAX_SECONDS = 2.0
+_VISUAL_RETRY_DELAYS_SECONDS = (5, 10, 20, 30)
+_MAX_VISUAL_ATTEMPTS = len(_VISUAL_RETRY_DELAYS_SECONDS) + 1
 _SAFE_EVIDENCE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/=-]{0,159}")
 _SAFE_SHOT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 _SAFE_JOB_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
@@ -434,7 +432,7 @@ class GoogleGenAIVisualPanelProvider:
         )
         client = self._client_or_create()
         response: Any | None = None
-        final_rate_limited = False
+        failure_code = "generation_failed"
         for attempt in range(_MAX_VISUAL_ATTEMPTS):
             try:
                 response = client.models.generate_content(
@@ -445,20 +443,14 @@ class GoogleGenAIVisualPanelProvider:
                 break
             except Exception as exc:
                 retryable, rate_limited = _retryable_visual_error(exc)
-                final_rate_limited = rate_limited
-                if not retryable or attempt + 1 >= _MAX_VISUAL_ATTEMPTS:
-                    raise VisualPanelGenerationError(
-                        "quota_or_rate_limited" if rate_limited else "generation_failed"
-                    ) from None
-                base = min(
-                    _VISUAL_RETRY_MAX_SECONDS,
-                    _VISUAL_RETRY_BASE_SECONDS * (2**attempt),
+                failure_code = (
+                    "quota_or_rate_limited" if rate_limited else "generation_failed"
                 )
-                time.sleep(base + random.uniform(0.0, base * 0.25))
+                if not retryable or attempt + 1 >= _MAX_VISUAL_ATTEMPTS:
+                    break
+                time.sleep(_VISUAL_RETRY_DELAYS_SECONDS[attempt])
         if response is None:
-            raise VisualPanelGenerationError(
-                "quota_or_rate_limited" if final_rate_limited else "generation_failed"
-            )
+            raise VisualPanelGenerationError(failure_code) from None
 
         encoded = _normalise_visual_panel(_extract_provider_image(response))
         execution = {

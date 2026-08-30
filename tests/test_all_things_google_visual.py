@@ -192,27 +192,33 @@ class GoogleVisualPanelProviderTests(unittest.TestCase):
         client = FakeClient(
             StatusError(429, "private key-like text"),
             StatusError(503, "private upstream text"),
+            StatusError(500, "private internal text"),
+            StatusError(429, "private quota text"),
             image_response(source),
         )
         provider = GoogleGenAIVisualPanelProvider(valid_config(), client=client)
-        with patch("kira_studio.all_things_google.random.uniform", return_value=0.0), patch(
-            "kira_studio.all_things_google.time.sleep"
-        ) as sleep:
+        with patch("kira_studio.all_things_google.time.sleep") as sleep:
             provider.create_panel(
                 "Retry a transient image request.",
                 shot_id="SC01-SH01",
                 job_id="job-3",
             )
-        self.assertEqual(len(client.models.calls), 3)
-        self.assertEqual([call.args[0] for call in sleep.call_args_list], [0.5, 1.0])
+        self.assertEqual(len(client.models.calls), 5)
+        self.assertEqual(
+            [call.args[0] for call in sleep.call_args_list],
+            [5, 10, 20, 30],
+        )
+        self.assertEqual(sum(call.args[0] for call in sleep.call_args_list), 65)
 
     def test_exhausted_rate_limit_and_5xx_return_only_allowlisted_codes(self) -> None:
         rate_client = FakeClient(
             StatusError(429, "secret one"),
             StatusError(429, "secret two"),
             StatusError(429, "secret three"),
+            StatusError(429, "secret four"),
+            StatusError(429, "secret five"),
         )
-        with patch("kira_studio.all_things_google.time.sleep"):
+        with patch("kira_studio.all_things_google.time.sleep") as rate_sleep:
             with self.assertRaises(VisualPanelGenerationError) as caught:
                 GoogleGenAIVisualPanelProvider(
                     valid_config(), client=rate_client
@@ -224,13 +230,21 @@ class GoogleVisualPanelProviderTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "quota_or_rate_limited")
         self.assertNotIn("secret", str(caught.exception))
         self.assertIsNone(caught.exception.__cause__)
+        self.assertIsNone(caught.exception.__context__)
+        self.assertEqual(len(rate_client.models.calls), 5)
+        self.assertEqual(
+            [call.args[0] for call in rate_sleep.call_args_list],
+            [5, 10, 20, 30],
+        )
 
         server_client = FakeClient(
             StatusError(503, "secret one"),
             StatusError(503, "secret two"),
             StatusError(503, "secret three"),
+            StatusError(503, "secret four"),
+            StatusError(503, "secret five"),
         )
-        with patch("kira_studio.all_things_google.time.sleep"):
+        with patch("kira_studio.all_things_google.time.sleep") as server_sleep:
             with self.assertRaises(VisualPanelGenerationError) as caught:
                 GoogleGenAIVisualPanelProvider(
                     valid_config(), client=server_client
@@ -242,18 +256,39 @@ class GoogleVisualPanelProviderTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "generation_failed")
         self.assertNotIn("secret", str(caught.exception))
         self.assertIsNone(caught.exception.__cause__)
+        self.assertIsNone(caught.exception.__context__)
+        self.assertEqual(len(server_client.models.calls), 5)
+        self.assertEqual(
+            [call.args[0] for call in server_sleep.call_args_list],
+            [5, 10, 20, 30],
+        )
 
     def test_nonretryable_provider_error_is_not_retried(self) -> None:
         client = FakeClient(StatusError(400, "private rejected prompt detail"))
-        with self.assertRaises(VisualPanelGenerationError) as caught:
-            GoogleGenAIVisualPanelProvider(valid_config(), client=client).create_panel(
-                "Rejected panel.",
-                shot_id="SC01-SH01",
-                job_id="job-6",
-            )
+        with patch("kira_studio.all_things_google.time.sleep") as sleep:
+            with self.assertRaises(VisualPanelGenerationError) as caught:
+                GoogleGenAIVisualPanelProvider(valid_config(), client=client).create_panel(
+                    "Rejected panel.",
+                    shot_id="SC01-SH01",
+                    job_id="job-6",
+                )
         self.assertEqual(caught.exception.code, "generation_failed")
         self.assertEqual(len(client.models.calls), 1)
         self.assertNotIn("private", str(caught.exception))
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertIsNone(caught.exception.__context__)
+        sleep.assert_not_called()
+
+    def test_success_does_not_sleep_or_retry(self) -> None:
+        client = FakeClient(image_response(still_image_bytes()))
+        with patch("kira_studio.all_things_google.time.sleep") as sleep:
+            GoogleGenAIVisualPanelProvider(valid_config(), client=client).create_panel(
+                "Successful panel.",
+                shot_id="SC01-SH01",
+                job_id="job-6",
+            )
+        self.assertEqual(len(client.models.calls), 1)
+        sleep.assert_not_called()
 
     def test_blocked_missing_or_unsafe_provider_assets_are_rejected(self) -> None:
         cases = (
