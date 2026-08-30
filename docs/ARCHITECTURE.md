@@ -1,5 +1,9 @@
 # Architecture
 
+The submission-ready rendered diagram is [all-things-agentic-architecture.png](all-things-agentic-architecture.png); its editable vector source is [all-things-agentic-architecture.svg](all-things-agentic-architecture.svg). It describes the reviewed repository source at commit `17d50fb`; the hosted public page matched the reviewed HTML byte-for-byte. Live short-job technical acceptance passed on August 30, 2026: job `a3449ab3-952c-4f1b-9a42-09a0ee2db2b8` completed 6/6 visual panels and narration cues and produced a locally decoded 235.084-second 1920×1080 H.264/AAC MP4. The diagram therefore says `LIVE SHORT PASS · OWNER REVIEW PENDING`; automated integrity gates do not replace human review of illustration, story, continuity, or voice quality.
+
+![Video Studio All Things Agentic Google Cloud architecture](all-things-agentic-architecture.png)
+
 Video Studio Storyboard Artist & Production Planner separates public job control from private model and media execution. The API and worker run the same pinned container with different service-role configuration. Every successful production-ready job includes the deterministic plan, all-card private visual coverage, and a verified narrated pitch MP4.
 
 ```mermaid

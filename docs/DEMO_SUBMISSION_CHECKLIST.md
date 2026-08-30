@@ -125,7 +125,7 @@ If any required panel or MP4 item fails, the release remains on hold. A historic
 - [ ] Hosted demo URL resolves and owner/judge code instructions are clear.
 - [ ] Demo video is accessible to judges and matches the deployed revision.
 - [ ] Description names only Google services actually demonstrated.
-- [ ] Architecture diagram, setup procedure, test command, license, and START HERE acceptance path are easy to find.
+- [ ] Upload `docs/all-things-agentic-architecture.png` as the architecture diagram; confirm its `LIVE SHORT PASS · OWNER REVIEW PENDING` label matches the verified short-job receipt and does not imply subjective owner approval. Keep its SVG source, setup procedure, test command, license, and START HERE acceptance path easy to find.
 - [ ] The repository is public only when the owner is ready; no secret was added during the visibility change.
 - [ ] Every submitted link was reopened and the final text reread before the organizer cutoff.
 

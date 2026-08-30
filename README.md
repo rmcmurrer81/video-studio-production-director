@@ -54,7 +54,7 @@ The first ETA is intentionally unavailable. Later estimates can use measured com
 
 Repository tests, injected clients, generated fixtures, and `/health` verify contracts or configuration only. They do **not** prove that a live Vertex image request, Chirp synthesis, Cloud Storage write, Cloud Tasks delivery, Cloud Run revision, or MP4 render succeeded.
 
-Call the system live-proven only after a real billing-enabled run produces a completed Firestore job with `execution.evidence_origin = live_google_provider_response`, full visual coverage, a complete narrated-pitch manifest, verified media metadata, and successful authenticated downloads. Record the real job ID, provider metadata, Cloud Run revisions, immutable container digest, and hashes only after that run. Never invent or pre-fill evidence.
+Live short-job technical acceptance passed on August 30, 2026. Job `a3449ab3-952c-4f1b-9a42-09a0ee2db2b8` recorded `execution.evidence_origin = live_google_provider_response`, 6/6 visual panels and narration cues, verified authenticated downloads, and a locally decoded 235.084-second 1920×1080 H.264/AAC MP4. This proves the deployed short workflow and media gates; it does not prove the held full-screenplay retry or replace owner review of illustration, story, continuity, and voice quality. Repeat this evidence standard for every future release and never invent or pre-fill evidence.
 
 ## Run the local contract checks
 
@@ -81,6 +81,7 @@ Python 3.12 is the container target. The production container installs FFmpeg an
 - `contest_config/` — pinned dependencies and a non-secret environment template.
 - `deploy/all_things_agentic/` — non-root Cloud Run container with FFmpeg.
 - `docs/ARCHITECTURE.md` — trust boundaries and end-to-end component diagram.
+- `docs/all-things-agentic-architecture.svg` and `.png` — upload-ready 3:2 architecture diagram source and rendered submission asset.
 - `docs/ALL_THINGS_AGENTIC_SETUP.md` — exact Cloud Storage, API, IAM, build, and deploy procedure.
 - `docs/DEMO_SUBMISSION_CHECKLIST.md` — fail-closed live-proof and recording checklist.
 - `docs/START_HERE_TEST.md` — the single owner/judge acceptance path.
@@ -97,4 +98,4 @@ Python 3.12 is the container target. The production container installs FFmpeg an
 
 ## License
 
-An MIT license draft is included in `LICENSE`. Confirm the copyright attribution before publishing the repository. Vendored PDF.js is distributed under Apache License 2.0; see `web/vendor/pdfjs/LICENSE` and `THIRD_PARTY_NOTICES.md`.
+The repository is distributed under the completed MIT License in `LICENSE`, copyright (c) 2026 Robert McMurrer. Vendored PDF.js is distributed under Apache License 2.0; see `web/vendor/pdfjs/LICENSE` and `THIRD_PARTY_NOTICES.md`.

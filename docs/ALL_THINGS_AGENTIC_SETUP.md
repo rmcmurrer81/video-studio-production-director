@@ -255,7 +255,7 @@ The API additionally requires the access-code digest and Cloud Tasks dispatch va
 - successful authenticated panel and MP4 retrieval; and
 - truthful plan-only labels in the UI and exports.
 
-Only after that run should the operator capture real job IDs, provider metadata, revision names, container digest, hashes, timing, and cost. Never replace missing proof with a fabricated receipt.
+The August 30 short acceptance captured a real live-provider job ID, verified artifact hashes, timing, and decoded media evidence. Before the final release freeze, also capture the deployed revision names, immutable container digest, and cost evidence that are available to the operator. Do not extend the short-job proof to held full-screenplay or subjective owner-review claims, and never replace missing proof with a fabricated receipt.
 
 ## Primary Google references
 
