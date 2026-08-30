@@ -1573,7 +1573,8 @@ _VISUAL_DETAIL_FRAMING_PATTERN = re.compile(
 )
 _VISUAL_HAND_ACTION_PATTERN = re.compile(
     r"\b(?:hand|hands|finger|fingers|thumb|wrist|forearm|arm|arms|"
-    r"holding|grip|grips|gripping|grasp|grasps|grasping|"
+    r"holds|holding|grip|grips|gripping|grasp|grasps|grasping|"
+    r"grab|grabs|grabbing|clutch|clutches|clutching|"
     r"press|presses|pressing|push|pushes|pushing|touch|touches|touching|"
     r"reach|reaches|reaching|pick up|picks up|picking up)\b",
     re.IGNORECASE,
@@ -1598,49 +1599,108 @@ def storyboard_panel_prompt(
     if not isinstance(card, Mapping):
         raise BriefValidationError("visual storyboard shot is missing its card")
     role = shot.get("role")
+    characters = ", ".join(scene.characters) if scene.characters else "none"
+    character_count = len(scene.characters)
+    if scene.characters:
+        cast_contract = (
+            f"CAST CONTRACT: the complete allowed human cast contains exactly "
+            f"{character_count} named character{'s' if character_count != 1 else ''}: "
+            f"{characters}. Only those identities may appear, and each visible character "
+            "may appear at most once. Never add extras, background people, bystanders, crowds, "
+            "human silhouettes, partial background bodies, reflected people, faces on screens "
+            "or posters, mannequins, or duplicate copies of a named character. Do not place an "
+            "unexplained third person at a rear console, doorway, corridor, or other background "
+            "position."
+        )
+        full_cast_direction = (
+            f"Show all {character_count} named characters exactly once and no other human figure."
+        )
+        bridge_cast_direction = (
+            "Default to no people. If a reaction face is the most story-specific bridge, show "
+            "exactly one named character exactly once, cropped above the shoulders, with no other "
+            "person or human-like figure anywhere."
+        )
+    else:
+        cast_contract = (
+            "CAST CONTRACT: this scene has no named characters. Show no people, human silhouettes, "
+            "partial bodies, faces, mannequins, reflections, or human-like background figures."
+        )
+        full_cast_direction = "Show no human figures."
+        bridge_cast_direction = "Show no human figures."
+    explicit_hand_action = bool(
+        _VISUAL_HAND_ACTION_PATTERN.search(
+            f"{scene.purpose} {card.get('action') or ''}"
+        )
+    )
+    if explicit_hand_action:
+        bridge_hand_direction = (
+            "The stated source action explicitly requires hand interaction. If that contact must "
+            "appear, show at most one natural-scale hand connected to its visible wrist and forearm, "
+            "kept away from the foreground; do not use a hand as the focal object or framing device."
+        )
+    else:
+        bridge_hand_direction = (
+            "HANDS-OUT-OF-FRAME DEFAULT: show no hands, fingers, wrists, forearms, or arms anywhere "
+            "in this frame. Do not use any foreground body part as a framing device. Prefer a "
+            "non-anatomical prop or environmental state; a reaction face must be cropped above the "
+            "shoulders. For a generic final detail or confirmation beat, choose a story-specific "
+            "non-anatomical confirmation prop or environmental change, never a body part. Never "
+            "show a pointing hand entering the frame or multiple hands crowding a console, display, "
+            "control, or prop."
+        )
+    if role == "continuity_bridge" and not explicit_hand_action:
+        hand_anatomy_contract = (
+            "Keep any visible face anatomically plausible and naturally proportioned. This detail "
+            "frame must contain no visible hands, fingers, wrists, forearms, arms, or foreground "
+            "body parts."
+        )
+    else:
+        hand_anatomy_contract = (
+            "Keep human anatomy plausible and naturally proportioned. Never depict a detached, "
+            "disembodied, duplicated, giant, or oversized hand. Every visible hand must connect "
+            "to a visible, anatomically plausible wrist and forearm, with natural joints and five "
+            "fingers. Do not place a hand or handheld prop in extreme foreground or make it larger "
+            "than a character's head unless the stated action explicitly requires that scale. For "
+            "a detail or insert, prefer the prop or environmental detail alone; when human contact "
+            "is essential, keep the proportionate hand, wrist, and forearm together in the frame."
+        )
     role_directions = {
         "establishing": (
             "COMPOSITION CONTRACT — ESTABLISHING: create a genuinely wide environmental "
             "master. Show the room or location geography clearly, with the named characters "
             "as natural full figures inside that environment. Keep enough surrounding space "
             "to explain entrances, exits, and their spatial relationship. Do not use a medium, "
-            "over-the-shoulder, waist-up, reaction close-up, or prop insert composition."
+            "over-the-shoulder, waist-up, reaction close-up, or prop insert composition. "
+            f"{full_cast_direction}"
         ),
         "primary_coverage": (
             "COMPOSITION CONTRACT — PRIMARY COVERAGE: make this materially different from "
             "the establishing master. Use a medium two-shot, over-the-shoulder, or waist-up "
             "character composition that makes faces, eyelines, and the central interaction "
             "dominant. Do not repeat the wide environmental view or stage both characters as "
-            "small full-body figures."
+            f"small full-body figures. {full_cast_direction}"
         ),
         "continuity_bridge": (
             "COMPOSITION CONTRACT — CONTINUITY BRIDGE: use a tight close reaction, prop-only "
             "insert, or environmental detail that supplies a specific editorial bridge. Crop "
             "tightly around one face, one safe prop, or one environmental detail. Never reuse "
             "the establishing wide or two-full-body composition, and never pose both characters "
-            "as full figures. If a prop is involved, prefer the prop alone without a hand."
+            f"as full figures. {bridge_cast_direction} {bridge_hand_direction}"
         ),
     }
     if role not in role_directions:
         raise BriefValidationError("visual storyboard shot has an invalid coverage role")
-    characters = ", ".join(scene.characters) if scene.characters else "no named characters"
     continuity = " ".join(str(item) for item in card.get("continuity_requirements", []))
     return (
         "Create one black-and-white professional film storyboard drawing in clean pencil-and-ink "
         "line art, 16:9 landscape. This is a previsualization panel, not a photorealistic frame. "
         "Do not include captions, lettering, timecodes, logos, watermarks, borders, or split panels. "
-        "Keep human anatomy plausible and naturally proportioned. Never depict a detached, "
-        "disembodied, duplicated, giant, or oversized hand. Every visible hand must connect to a "
-        "visible, anatomically plausible wrist and forearm, with natural joints and five fingers. "
-        "Do not place a hand or handheld prop in extreme foreground or make it larger than a "
-        "character's head unless the stated action explicitly requires that scale. For a detail "
-        "or insert, prefer the prop or environmental detail alone; when human contact is essential, "
-        "keep the proportionate hand, wrist, and forearm together in the frame. Every card in "
+        f"{hand_anatomy_contract} Every card in "
         "the sequence must have a materially distinct composition: do not reuse another card's "
         "camera distance, blocking, focal subject, or generic two-character pose. If a reference "
         "image is supplied, use it only for character, costume, prop, and line-art continuity. "
         "Do not copy the reference image's camera angle, crop, blocking, pose, background layout, "
-        "or composition. "
+        f"or composition. {cast_contract} "
         f"{role_directions[role]} "
         f"Project: {brief.title}. Overall visual direction: {brief.visual_direction}. "
         f"Scene {scene.number} setting: {scene.setting}. Characters: {characters}. "

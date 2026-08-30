@@ -66,11 +66,22 @@ _BRIDGE_ACTION = re.compile(
     re.IGNORECASE,
 )
 _BRIEF_AUDIO = re.compile(r"\bBrief audio direction:\s*(.+)$", re.IGNORECASE)
+_PRODUCTION_DIRECTIVE = re.compile(
+    r"\b(?:introduc(?:e|es|ed|ing)|establish(?:es|ed|ing)?|stag(?:e|es|ed|ing)|"
+    r"deliver(?:s|ed|ing)?|resolve\s+(?:the\s+)?(?:scene|story|beat)|"
+    r"show\s+(?:the\s+)?resolution|hold\s+(?:a\s+)?reaction)\b",
+    re.IGNORECASE,
+)
+_PRODUCTION_META = re.compile(
+    r"\b(?:primary[ _-]+coverage|continuity[ _-]+bridge|scene beat|"
+    r"production purpose|storyboard card|camera coverage|brief audio direction)\b",
+    re.IGNORECASE,
+)
 
 _ESTABLISH_OPENINGS = (
     "{characters} enter {setting}.",
     "In {setting}, {characters} face the next turn.",
-    "{characters} reach {setting} for the final choice.",
+    "{characters} choose their path in {setting}.",
 )
 _PRIMARY_OPENINGS = (
     "{characters} act.",
@@ -78,7 +89,7 @@ _PRIMARY_OPENINGS = (
     "{characters} decide.",
 )
 _BRIDGE_OPENINGS = (
-    "A close detail reveals the danger.",
+    "A detail reveals danger.",
     "A reaction carries the tension forward.",
     "A final detail confirms their choice.",
 )
@@ -130,30 +141,134 @@ def _spoken_characters(value: Any) -> str:
     return f"{', '.join(names[:-1])}, and {names[-1]}"
 
 
-def _story_purpose(value: Any) -> str:
-    purpose = _spoken_story_text(value)
+def _finite_story_clause(value: Any, *, characters: str) -> str:
+    """Turn one subordinate planning clause into declarative story prose."""
+
+    clause = _clean(value, maximum=1_200).strip(" ,;:-")
+    if not clause:
+        return ""
+    subject = characters or "The characters"
+    clause = re.sub(
+        r"^(?:them|they|the pair|the friends|the characters)\b",
+        subject,
+        clause,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    gerunds = {
+        "choosing": "choose",
+        "working": "work",
+        "preparing": "prepare",
+        "facing": "face",
+        "trying": "try",
+        "waiting": "wait",
+        "moving": "move",
+        "holding": "hold",
+        "standing": "stand",
+        "arguing": "argue",
+    }
+    for gerund, finite in gerunds.items():
+        rewritten = re.sub(
+            rf"^{re.escape(subject)}\s+{gerund}\b",
+            f"{subject} {finite}",
+            clause,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        if rewritten != clause:
+            clause = rewritten
+            break
+    if clause and clause[0].islower():
+        clause = clause[0].upper() + clause[1:]
+    return clause
+
+
+def _safe_story_sentence(value: Any, *, fallback: str) -> str:
+    """Fail closed when planner instructions survive a natural-language rewrite."""
+
+    sentence = _sentence(value)
+    if (
+        not sentence
+        or _PRODUCTION_DIRECTIVE.search(sentence)
+        or _PRODUCTION_META.search(sentence)
+    ):
+        sentence = _sentence(fallback)
+    if _PRODUCTION_DIRECTIVE.search(sentence) or _PRODUCTION_META.search(sentence):
+        raise ValueError("audience narration retained production-direction language")
+    return sentence
+
+
+def _natural_story_purpose(
+    value: Any,
+    *,
+    characters: str,
+    setting: str,
+    fallback: str,
+) -> str:
+    """Rewrite model-authored production purposes as concise story narration."""
+
+    raw = _clean(value, maximum=1_800).strip()
+    subject = characters or "The characters"
+
     match = re.match(
-        r"^(?:Establish|Introduce) the setting of\s+.+?\s+and introduce\s+(.+)$",
-        purpose,
+        r"^Deliver\s+(?:the\s+)?(?:core\s+)?(?:dramatic\s+)?(?:conflict|turn|beat)\s+"
+        r"(?:as|where|with)\s+(.+)$",
+        raw,
         flags=re.IGNORECASE,
     )
     if match:
-        purpose = f"We find {match.group(1)}"
-    else:
-        for pattern in (
-            r"^Deliver (?:the )?core dramatic conflict as\s+",
-            r"^Show the resolution where\s+",
-            r"^Establish\s+",
-            r"^Show\s+",
-            r"^Reveal\s+",
-        ):
-            rewritten = re.sub(pattern, "", purpose, count=1, flags=re.IGNORECASE)
-            if rewritten != purpose:
-                purpose = rewritten
-                break
-    if purpose and purpose[0].islower():
-        purpose = purpose[0].upper() + purpose[1:]
-    return _sentence(purpose)
+        story = _finite_story_clause(match.group(1), characters=subject)
+        return _safe_story_sentence(story, fallback=fallback)
+
+    match = re.match(
+        r"^(?:Resolve\s+(?:the\s+)?(?:scene|story|beat)|Show\s+(?:the\s+)?resolution)\s+"
+        r"(?:as|where|with|by)\s+(.+)$",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        story = _finite_story_clause(match.group(1), characters=subject)
+        return _safe_story_sentence(story, fallback=fallback)
+
+    if re.match(r"^(?:Introduce|Establish)\b", raw, flags=re.IGNORECASE):
+        discovery = re.search(
+            r"\band\s+introduce\s+([A-Z][A-Za-z'_-]{0,39})['’]s\s+discovery\s+of\s+(.+)$",
+            raw,
+            flags=re.IGNORECASE,
+        )
+        subject_tail = re.search(
+            rf"\b{re.escape(subject)}\s+([^.;!?]+)",
+            raw,
+            flags=re.IGNORECASE,
+        )
+        if discovery:
+            name, discovery_detail = discovery.groups()
+            story = f"In {setting}, {name} discovers {discovery_detail}"
+        elif subject_tail:
+            story = _finite_story_clause(
+                f"{subject} {subject_tail.group(1)}",
+                characters=subject,
+            )
+            if setting and setting.casefold() not in story.casefold():
+                story = f"{story} in {setting}"
+        elif "under pressure" in raw.casefold():
+            story = f"{subject} work under pressure in {setting}"
+        else:
+            story = fallback
+        return _safe_story_sentence(story, fallback=fallback)
+
+    if re.match(r"^(?:Stage|Hold\s+(?:a\s+)?reaction)\b", raw, flags=re.IGNORECASE):
+        return _safe_story_sentence(fallback, fallback=fallback)
+
+    match = re.match(r"^Show\s+(.+)$", raw, flags=re.IGNORECASE)
+    if match:
+        return _safe_story_sentence(f"We see {match.group(1)}", fallback=fallback)
+
+    match = re.match(r"^Reveal\s+(.+)$", raw, flags=re.IGNORECASE)
+    if match:
+        return _safe_story_sentence(f"We discover {match.group(1)}", fallback=fallback)
+
+    return _safe_story_sentence(raw, fallback=fallback)
 
 
 def _audience_action(
@@ -173,12 +288,21 @@ def _audience_action(
             setting=_spoken_story_text(setting),
             characters=_spoken_characters(characters),
         )
-        return opening
+        return _safe_story_sentence(opening, fallback="The story begins.")
 
     primary = _PRIMARY_ACTION.match(action)
     if primary:
-        _characters, _setting, purpose = primary.groups()
-        return _story_purpose(purpose)
+        raw_characters, setting, purpose = primary.groups()
+        characters = _spoken_characters(raw_characters)
+        fallback = _PRIMARY_OPENINGS[
+            min(role_occurrence - 1, len(_PRIMARY_OPENINGS) - 1)
+        ].format(characters=characters)
+        return _natural_story_purpose(
+            purpose,
+            characters=characters,
+            setting=_spoken_story_text(setting),
+            fallback=fallback,
+        )
 
     bridge = _BRIDGE_ACTION.match(action)
     if bridge:
@@ -186,10 +310,15 @@ def _audience_action(
         opening = _BRIDGE_OPENINGS[
             min(role_occurrence - 1, len(_BRIDGE_OPENINGS) - 1)
         ].format(setting=_spoken_story_text(setting))
-        return opening
+        return _safe_story_sentence(opening, fallback="The tension carries forward.")
 
     opening = _GENERIC_OPENINGS[min(sequence - 1, len(_GENERIC_OPENINGS) - 1)]
-    clean_action = _story_purpose(action)
+    clean_action = _natural_story_purpose(
+        action,
+        characters="The characters",
+        setting="",
+        fallback="The next story beat unfolds.",
+    )
     if not clean_action:
         clean_action = "The next story beat unfolds."
     if opening.endswith((",", " as")):
@@ -439,7 +568,10 @@ def build_narrated_pitch_cues(
             " ".join(part for part in narration_parts if part),
             maximum=3_600,
         )
-        narration = _spoken_story_text(narration, maximum=3_600)
+        if not dialogue_text:
+            narration = _spoken_story_text(narration, maximum=3_600)
+            if _PRODUCTION_DIRECTIVE.search(narration) or _PRODUCTION_META.search(narration):
+                raise ValueError("audience narration retained production-direction language")
         if not narration:
             raise ValueError("an audience-facing narration cue could not be built")
         cues.append(

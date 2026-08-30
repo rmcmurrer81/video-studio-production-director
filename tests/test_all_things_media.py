@@ -184,9 +184,11 @@ Then we leave before the doors seal.
         source = (
             "Create a 45-second science-fiction dialogue scene in a quiet orbital repair bay. "
             "Two old friends, Mara and Dax, must decide whether to leave a damaged station "
-            "before an alien signal reaches them. Mara says, “The signal knows our names.” "
+            "before an alien signal reaches them. Keep the room tone subtle and the dialogue "
+            "clear. Mara says, “The signal knows our names.” "
             "Dax answers, “Then we leave before it learns our plans.” "
-            "End with them choosing to work together."
+            "End with them choosing to work together. Make this as a storyboard production "
+            "plan and narrated investor-pitch preview, not finished filmed footage."
         )
         self.assertEqual(
             extract_screenplay_dialogue(source),
@@ -198,12 +200,12 @@ Then we leave before the doors seal.
             },
         )
         purposes = (
-            "Establish the setting of the quiet, damaged orbital repair bay and introduce "
-            "Mara and Dax working under pressure.",
+            "Introduce the quiet, tense atmosphere of the orbital repair bay and introduce "
+            "Mara's discovery of the approaching signal.",
             "Deliver the core dramatic conflict as Mara reveals the signal's nature and "
             "Dax responds with determination.",
-            "Show the resolution where they choose to work together, quickly prepping the "
-            "ship for immediate departure.",
+            "Resolve the scene with Mara and Dax choosing to work together to escape the "
+            "station before the signal arrives.",
         )
         settings = (
             "Orbital Repair Bay, Damaged Space Station",
@@ -257,6 +259,27 @@ Then we leave before the doors seal.
         self.assertEqual(exact[0]["shot_id"], "SC02-SH02")
         self.assertIn("The signal knows our names.", exact[0]["narration"])
         self.assertIn("Then we leave before it learns our plans.", exact[0]["narration"])
+        self.assertEqual(
+            cues[1]["narration"],
+            "In Orbital Repair Bay, Damaged Space Station, Mara discovers the approaching signal.",
+        )
+        self.assertEqual(
+            cues[7]["narration"],
+            "Mara and Dax choose to work together to escape the station before the signal arrives.",
+        )
+        production_language = re.compile(
+            r"\b(?:introduc(?:e|es|ed|ing)|establish(?:es|ed|ing)?|"
+            r"stag(?:e|es|ed|ing)|deliver(?:s|ed|ing)?|resolve the scene|"
+            r"show the resolution|hold a reaction|scene beat|primary coverage|"
+            r"continuity bridge|brief audio direction)\b",
+            re.IGNORECASE,
+        )
+        for cue in cues:
+            if cue["dialogue_source"] != "source_exact":
+                self.assertIsNone(
+                    production_language.search(cue["narration"]),
+                    cue["narration"],
+                )
         spoken = " ".join(cue["narration"] for cue in cues)
         self.assertNotRegex(
             spoken.lower(),
