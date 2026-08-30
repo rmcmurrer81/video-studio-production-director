@@ -1488,6 +1488,36 @@ class AllThingsAgenticTests(unittest.TestCase):
         self.assertEqual(ordinary["release_decision"], "hold")
         self.assertEqual(ordinary["risk_flagged_shot_ids"], [])
 
+    def test_visual_prompts_enforce_materially_distinct_role_specific_compositions(self) -> None:
+        brief = ProductionBrief.from_mapping(brief_mapping())
+        timeline = compile_storyboard_timeline(brief)
+        prompts = {
+            shot["role"]: storyboard_panel_prompt(brief, shot)
+            for shot in timeline["shots"]
+        }
+
+        establishing = prompts["establishing"]
+        self.assertIn("Every card in the sequence must have a materially distinct composition", establishing)
+        self.assertIn("use it only for character, costume, prop, and line-art continuity", establishing)
+        self.assertIn("Do not copy the reference image's camera angle, crop, blocking, pose", establishing)
+        self.assertIn("genuinely wide environmental master", establishing)
+        self.assertIn("natural full figures inside that environment", establishing)
+        self.assertIn("Do not use a medium, over-the-shoulder, waist-up", establishing)
+
+        primary = prompts["primary_coverage"]
+        self.assertIn("materially different from the establishing master", primary)
+        self.assertIn("medium two-shot, over-the-shoulder, or waist-up", primary)
+        self.assertIn("Do not repeat the wide environmental view", primary)
+        self.assertIn("faces, eyelines, and the central interaction", primary)
+
+        bridge = prompts["continuity_bridge"]
+        self.assertIn("tight close reaction, prop-only insert, or environmental detail", bridge)
+        self.assertIn("Never reuse the establishing wide or two-full-body composition", bridge)
+        self.assertIn("never pose both characters as full figures", bridge)
+        self.assertIn("prefer the prop alone without a hand", bridge)
+
+        self.assertEqual(len(set(prompts.values())), 3)
+
     def test_visual_storyboard_is_bounded_ordered_and_cryptographically_validated(self) -> None:
         brief = ProductionBrief.from_mapping(brief_mapping())
         timeline = compile_storyboard_timeline(brief)

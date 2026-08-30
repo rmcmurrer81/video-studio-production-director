@@ -33,6 +33,12 @@ _NATURAL_SCENE_HEADING = re.compile(r"^SCENE\s+\d{1,3}\s*:$", re.IGNORECASE)
 _QUOTED_DIALOGUE = re.compile(
     r'(?:"([^"\n]{2,500})"|“([^”\n]{2,500})”|‘([^’\n]{2,500})’)'
 )
+_ATTRIBUTED_QUOTED_DIALOGUE = re.compile(
+    r"\b([A-Z][A-Za-z'_\-]{0,39}(?:\s+[A-Z][A-Za-z'_\-]{0,39}){0,3})\s+"
+    r"(?:(?i:says|said|asks|asked|answers|answered|replies|replied)|"
+    r"(?i:tells|told)\s+[A-Z][A-Za-z'_\-]{0,39})\s*,?\s*"
+    r'(?:"([^"\n]{2,500})"|“([^”\n]{2,500})”|‘([^’\n]{2,500})’)'
+)
 
 
 _SHOT_ID = re.compile(r"\bSC\d{1,3}-SH\d{1,3}\b", re.IGNORECASE)
@@ -62,19 +68,19 @@ _BRIDGE_ACTION = re.compile(
 _BRIEF_AUDIO = re.compile(r"\bBrief audio direction:\s*(.+)$", re.IGNORECASE)
 
 _ESTABLISH_OPENINGS = (
-    "We begin in {setting}, with {characters} together.",
-    "The story moves to {setting}, where {characters} face the next turn.",
-    "Later, we arrive in {setting} as {characters} move forward.",
+    "{characters} enter {setting}.",
+    "In {setting}, {characters} face the next turn.",
+    "{characters} reach {setting} for the final choice.",
 )
 _PRIMARY_OPENINGS = (
-    "The focus shifts to {characters} in {setting}.",
-    "Now {characters} take the lead in {setting}.",
-    "Here, {characters} carry the moment in {setting}.",
+    "{characters} act.",
+    "{characters} respond.",
+    "{characters} decide.",
 )
 _BRIDGE_OPENINGS = (
-    "A closer detail in {setting} lets the moment sink in.",
-    "One revealing detail in {setting} carries the tension forward.",
-    "The moment lingers on a telling detail in {setting}.",
+    "A close detail reveals the danger.",
+    "A reaction carries the tension forward.",
+    "A final detail confirms their choice.",
 )
 _GENERIC_OPENINGS = (
     "We begin as",
@@ -125,10 +131,28 @@ def _spoken_characters(value: Any) -> str:
 
 
 def _story_purpose(value: Any) -> str:
-    purpose = _clean(value)
-    purpose = re.sub(r"^Establish\s+", "We learn ", purpose, flags=re.IGNORECASE)
-    purpose = re.sub(r"^Show\s+", "We see ", purpose, flags=re.IGNORECASE)
-    purpose = re.sub(r"^Reveal\s+", "We discover ", purpose, flags=re.IGNORECASE)
+    purpose = _spoken_story_text(value)
+    match = re.match(
+        r"^(?:Establish|Introduce) the setting of\s+.+?\s+and introduce\s+(.+)$",
+        purpose,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        purpose = f"We find {match.group(1)}"
+    else:
+        for pattern in (
+            r"^Deliver (?:the )?core dramatic conflict as\s+",
+            r"^Show the resolution where\s+",
+            r"^Establish\s+",
+            r"^Show\s+",
+            r"^Reveal\s+",
+        ):
+            rewritten = re.sub(pattern, "", purpose, count=1, flags=re.IGNORECASE)
+            if rewritten != purpose:
+                purpose = rewritten
+                break
+    if purpose and purpose[0].islower():
+        purpose = purpose[0].upper() + purpose[1:]
     return _sentence(purpose)
 
 
@@ -142,36 +166,30 @@ def _audience_action(
 
     establish = _ESTABLISH_ACTION.match(action)
     if establish:
-        setting, characters, purpose = establish.groups()
+        setting, characters, _purpose = establish.groups()
         opening = _ESTABLISH_OPENINGS[
             min(role_occurrence - 1, len(_ESTABLISH_OPENINGS) - 1)
         ].format(
             setting=_spoken_story_text(setting),
             characters=_spoken_characters(characters),
         )
-        return f"{opening} {_story_purpose(purpose)}".strip()
+        return opening
 
     primary = _PRIMARY_ACTION.match(action)
     if primary:
-        characters, setting, purpose = primary.groups()
-        opening = _PRIMARY_OPENINGS[
-            min(role_occurrence - 1, len(_PRIMARY_OPENINGS) - 1)
-        ].format(
-            setting=_spoken_story_text(setting),
-            characters=_spoken_characters(characters),
-        )
-        return f"{opening} {_story_purpose(purpose)}".strip()
+        _characters, _setting, purpose = primary.groups()
+        return _story_purpose(purpose)
 
     bridge = _BRIDGE_ACTION.match(action)
     if bridge:
-        setting, purpose = bridge.groups()
+        setting, _purpose = bridge.groups()
         opening = _BRIDGE_OPENINGS[
             min(role_occurrence - 1, len(_BRIDGE_OPENINGS) - 1)
         ].format(setting=_spoken_story_text(setting))
-        return f"{opening} {_story_purpose(purpose)}".strip()
+        return opening
 
     opening = _GENERIC_OPENINGS[min(sequence - 1, len(_GENERIC_OPENINGS) - 1)]
-    clean_action = _sentence(action)
+    clean_action = _story_purpose(action)
     if not clean_action:
         clean_action = "The next story beat unfolds."
     if opening.endswith((",", " as")):
@@ -197,11 +215,40 @@ def _audience_dialogue(lines: Sequence[str]) -> str:
 
 
 def _audience_audio(direction: str) -> str:
-    match = _BRIEF_AUDIO.search(direction)
-    if not match:
-        return ""
-    audio = _sentence(match.group(1), maximum=900)
-    return f"Around them, {audio[0].lower() + audio[1:]}" if audio else ""
+    # Audio direction remains visible in the production card. Speaking it made
+    # short story pitches sound like a technical read-through and could more
+    # than triple their requested duration.
+    return ""
+
+
+def _unscoped_dialogue_scene(shots: Sequence[Any]) -> int:
+    """Choose the scene that most clearly carries natural-chat dialogue."""
+
+    first_scene: int | None = None
+    for raw_shot in shots:
+        if not isinstance(raw_shot, Mapping):
+            continue
+        scene_number = raw_shot.get("scene_number")
+        if isinstance(scene_number, bool) or not isinstance(scene_number, int):
+            continue
+        if first_scene is None:
+            first_scene = scene_number
+        card = raw_shot.get("storyboard_card")
+        action = _clean(card.get("action") if isinstance(card, Mapping) else "").lower()
+        if any(
+            marker in action
+            for marker in (
+                "dialogue",
+                "dramatic conflict",
+                "reveals",
+                "responds",
+                "answers",
+                "argument",
+                "confronts",
+            )
+        ):
+            return scene_number
+    return first_scene or 1
 
 
 def extract_screenplay_dialogue(
@@ -293,6 +340,19 @@ def extract_screenplay_dialogue(
                 if spoken and len(result[number]) < maximum_lines_per_scene:
                     result[number].append(spoken)
 
+    if scene_number == 0:
+        unscoped: list[str] = []
+        for match in _ATTRIBUTED_QUOTED_DIALOGUE.finditer(normalised_source):
+            speaker = _speaker_name(match.group(1))
+            spoken = _clean(
+                next((group for group in match.groups()[1:] if group is not None), ""),
+                maximum=600,
+            )
+            if speaker and spoken and len(unscoped) < maximum_lines_per_scene:
+                unscoped.append(f"{speaker}: {spoken}")
+        if unscoped:
+            result[0] = unscoped
+
     return {number: values for number, values in result.items() if values}
 
 
@@ -308,10 +368,24 @@ def build_narrated_pitch_cues(
     if not isinstance(shots, Sequence) or isinstance(shots, (str, bytes)) or not shots:
         raise ValueError("a non-empty planned shot timeline is required")
     dialogue = extract_screenplay_dialogue(source_message)
+    unscoped_dialogue = dialogue.pop(0, [])
+    if unscoped_dialogue:
+        target_scene = _unscoped_dialogue_scene(shots)
+        dialogue[target_scene] = [
+            *dialogue.get(target_scene, []),
+            *unscoped_dialogue,
+        ]
     dialogue_offsets: dict[int, int] = {}
     role_counts: dict[str, int] = {}
     heard_audio: set[str] = set()
     cues: list[dict[str, Any]] = []
+    primary_dialogue_scenes = {
+        shot.get("scene_number")
+        for shot in shots
+        if isinstance(shot, Mapping)
+        and _clean(shot.get("role")).lower().replace(" ", "_").replace("-", "_")
+        == "primary_coverage"
+    }
 
     for index, raw_shot in enumerate(shots, start=1):
         if not isinstance(raw_shot, Mapping):
@@ -331,7 +405,11 @@ def build_narrated_pitch_cues(
         direction = _clean(card.get("dialogue_or_audio") or "")
         available_lines = dialogue.get(scene_number, [])
         offset = dialogue_offsets.get(scene_number, 0)
-        selected_lines = available_lines[offset : offset + 2]
+        dialogue_card = (
+            role_key == "primary_coverage"
+            or scene_number not in primary_dialogue_scenes
+        )
+        selected_lines = available_lines[offset : offset + 2] if dialogue_card else []
         if selected_lines:
             dialogue_offsets[scene_number] = offset + len(selected_lines)
             dialogue_text = _audience_dialogue(selected_lines)
@@ -347,15 +425,16 @@ def build_narrated_pitch_cues(
         elif audio_key:
             heard_audio.add(audio_key)
 
-        narration_parts = [
-            _audience_action(
-                action,
-                role_occurrence=role_counts[role_key],
-                sequence=index,
-            ),
-            dialogue_text,
-            audio_text,
-        ]
+        story_text = _audience_action(
+            action,
+            role_occurrence=role_counts[role_key],
+            sequence=index,
+        )
+        narration_parts = (
+            [dialogue_text]
+            if dialogue_text
+            else [story_text, audio_text]
+        )
         narration = _clean(
             " ".join(part for part in narration_parts if part),
             maximum=3_600,

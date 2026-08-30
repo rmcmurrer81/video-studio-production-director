@@ -89,10 +89,11 @@ Then we leave before the doors seal.
 """
         cues = build_narrated_pitch_cues(brief, timeline, source_message=source)
         self.assertEqual(len(cues), 2)
-        self.assertEqual(cues[0]["dialogue_source"], "source_exact")
-        self.assertEqual(len(cues[0]["dialogue_lines"]), 2)
-        self.assertIn('Mara says, "Battery C', cues[0]["narration"])
-        self.assertEqual(cues[1]["dialogue_source"], "planned_direction")
+        self.assertEqual(cues[0]["dialogue_source"], "planned_direction")
+        self.assertEqual(cues[0]["dialogue_lines"], [])
+        self.assertEqual(cues[1]["dialogue_source"], "source_exact")
+        self.assertEqual(len(cues[1]["dialogue_lines"]), 2)
+        self.assertIn('Mara says, "Battery C', cues[1]["narration"])
         narration = pitch_narration_text(brief, cues)
         self.assertIn("Complete cue coverage: 2 cards.", narration)
         self.assertIn("CARD 2 — SC01-SH02", narration)
@@ -171,13 +172,99 @@ Then we leave before the doors seal.
             self.assertIsNone(forbidden.search(cue["narration"]), cue["narration"])
         openings = [cue["narration"].split(".", 1)[0] for cue in cues]
         self.assertEqual(len(set(openings)), len(openings), openings)
-        self.assertTrue(cues[0]["narration"].startswith("We begin in Quiet orbital repair bay"))
-        self.assertTrue(cues[-1]["narration"].startswith("One revealing detail"))
-        self.assertIn("Battery C will not survive another jump.", cues[0]["narration"])
+        self.assertTrue(cues[0]["narration"].startswith("Mara and Jonah enter Quiet orbital repair bay"))
+        self.assertTrue(cues[-1]["narration"].startswith("A reaction carries"))
+        self.assertIn("Battery C will not survive another jump.", cues[1]["narration"])
         self.assertEqual(
             sum("low ship hum and warning alarm" in cue["narration"].lower() for cue in cues),
-            1,
+            0,
         )
+
+    def test_natural_chat_quotes_drive_concise_conflict_coverage(self) -> None:
+        source = (
+            "Create a 45-second science-fiction dialogue scene in a quiet orbital repair bay. "
+            "Two old friends, Mara and Dax, must decide whether to leave a damaged station "
+            "before an alien signal reaches them. Mara says, “The signal knows our names.” "
+            "Dax answers, “Then we leave before it learns our plans.” "
+            "End with them choosing to work together."
+        )
+        self.assertEqual(
+            extract_screenplay_dialogue(source),
+            {
+                0: [
+                    "Mara: The signal knows our names.",
+                    "Dax: Then we leave before it learns our plans.",
+                ]
+            },
+        )
+        purposes = (
+            "Establish the setting of the quiet, damaged orbital repair bay and introduce "
+            "Mara and Dax working under pressure.",
+            "Deliver the core dramatic conflict as Mara reveals the signal's nature and "
+            "Dax responds with determination.",
+            "Show the resolution where they choose to work together, quickly prepping the "
+            "ship for immediate departure.",
+        )
+        settings = (
+            "Orbital Repair Bay, Damaged Space Station",
+            "Orbital Repair Bay, Console Area",
+            "Orbital Repair Bay, Hangar Controls",
+        )
+        shots = []
+        for scene_number, (purpose, setting) in enumerate(zip(purposes, settings), start=1):
+            for shot_number, role in enumerate(
+                ("establishing", "primary_coverage", "continuity_bridge"),
+                start=1,
+            ):
+                if role == "establishing":
+                    action = (
+                        f"Establish {setting} and the spatial relationship of Mara, Dax "
+                        f"before this scene beat: {purpose}"
+                    )
+                elif role == "primary_coverage":
+                    action = (
+                        f"Stage Mara, Dax in {setting} for the primary scene beat: {purpose}"
+                    )
+                else:
+                    action = (
+                        f"Hold a reaction, prop, or environmental detail in {setting} "
+                        f"that directly supports this beat: {purpose}"
+                    )
+                shots.append(
+                    {
+                        "shot_id": f"SC{scene_number:02d}-SH{shot_number:02d}",
+                        "scene_number": scene_number,
+                        "role": role,
+                        "planned_in_timecode": "00:00:00:00",
+                        "planned_out_timecode": "00:00:05:00",
+                        "storyboard_card": {
+                            "action": action,
+                            "dialogue_or_audio": (
+                                "Brief audio direction: long technical audio notes stay in "
+                                "the production document instead of the spoken pitch."
+                            ),
+                        },
+                    }
+                )
+
+        cues = build_narrated_pitch_cues(
+            {"title": "Signal Horizon", "summary": "Two friends choose to leave."},
+            {"shots": shots},
+            source_message=source,
+        )
+        exact = [cue for cue in cues if cue["dialogue_source"] == "source_exact"]
+        self.assertEqual(len(exact), 1)
+        self.assertEqual(exact[0]["shot_id"], "SC02-SH02")
+        self.assertIn("The signal knows our names.", exact[0]["narration"])
+        self.assertIn("Then we leave before it learns our plans.", exact[0]["narration"])
+        spoken = " ".join(cue["narration"] for cue in cues)
+        self.assertNotRegex(
+            spoken.lower(),
+            r"we learn|deliver the core dramatic conflict|show the resolution|"
+            r"brief audio direction|primary coverage|continuity bridge",
+        )
+        self.assertLessEqual(len(spoken.split()), 95)
+
     def test_quoted_prose_is_used_only_as_a_fallback(self) -> None:
         source = """EXT. BEACH - SUNSET
 Elena watches the tide. “We can still turn back,” she says.

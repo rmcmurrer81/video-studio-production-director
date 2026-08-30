@@ -1597,6 +1597,32 @@ def storyboard_panel_prompt(
     card = shot.get("storyboard_card")
     if not isinstance(card, Mapping):
         raise BriefValidationError("visual storyboard shot is missing its card")
+    role = shot.get("role")
+    role_directions = {
+        "establishing": (
+            "COMPOSITION CONTRACT — ESTABLISHING: create a genuinely wide environmental "
+            "master. Show the room or location geography clearly, with the named characters "
+            "as natural full figures inside that environment. Keep enough surrounding space "
+            "to explain entrances, exits, and their spatial relationship. Do not use a medium, "
+            "over-the-shoulder, waist-up, reaction close-up, or prop insert composition."
+        ),
+        "primary_coverage": (
+            "COMPOSITION CONTRACT — PRIMARY COVERAGE: make this materially different from "
+            "the establishing master. Use a medium two-shot, over-the-shoulder, or waist-up "
+            "character composition that makes faces, eyelines, and the central interaction "
+            "dominant. Do not repeat the wide environmental view or stage both characters as "
+            "small full-body figures."
+        ),
+        "continuity_bridge": (
+            "COMPOSITION CONTRACT — CONTINUITY BRIDGE: use a tight close reaction, prop-only "
+            "insert, or environmental detail that supplies a specific editorial bridge. Crop "
+            "tightly around one face, one safe prop, or one environmental detail. Never reuse "
+            "the establishing wide or two-full-body composition, and never pose both characters "
+            "as full figures. If a prop is involved, prefer the prop alone without a hand."
+        ),
+    }
+    if role not in role_directions:
+        raise BriefValidationError("visual storyboard shot has an invalid coverage role")
     characters = ", ".join(scene.characters) if scene.characters else "no named characters"
     continuity = " ".join(str(item) for item in card.get("continuity_requirements", []))
     return (
@@ -1609,7 +1635,13 @@ def storyboard_panel_prompt(
         "Do not place a hand or handheld prop in extreme foreground or make it larger than a "
         "character's head unless the stated action explicitly requires that scale. For a detail "
         "or insert, prefer the prop or environmental detail alone; when human contact is essential, "
-        "keep the proportionate hand, wrist, and forearm together in the frame. "
+        "keep the proportionate hand, wrist, and forearm together in the frame. Every card in "
+        "the sequence must have a materially distinct composition: do not reuse another card's "
+        "camera distance, blocking, focal subject, or generic two-character pose. If a reference "
+        "image is supplied, use it only for character, costume, prop, and line-art continuity. "
+        "Do not copy the reference image's camera angle, crop, blocking, pose, background layout, "
+        "or composition. "
+        f"{role_directions[role]} "
         f"Project: {brief.title}. Overall visual direction: {brief.visual_direction}. "
         f"Scene {scene.number} setting: {scene.setting}. Characters: {characters}. "
         f"Scene purpose: {scene.purpose}. Shot {shot.get('shot_id')}: {card.get('framing')}. "
