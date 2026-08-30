@@ -118,7 +118,9 @@ class VisualPanelGenerationError(AllThingsError):
             "provider_blocked",
             "generation_failed",
             "invalid_provider_asset",
+            "mixed_panel_failures",
             "quota_or_rate_limited",
+            "renderer_not_configured",
         }
     )
 
@@ -1086,6 +1088,7 @@ _VISUAL_MISSING_REASONS = frozenset(
         "invalid_provider_asset",
         "panel_limit_reached",
         "inline_budget_exhausted",
+        "mixed_panel_failures",
         "quota_or_rate_limited",
     }
 )
@@ -1704,6 +1707,48 @@ def public_job(record: Mapping[str, Any]) -> dict[str, Any]:
     return {key: record.get(key) for key in sorted(allowed) if key in record}
 
 
+def _canonical_diagnostic_code(
+    value: Any,
+    allowed_codes: frozenset[str],
+) -> str | None:
+    if type(value) is not str:
+        return None
+    return next((code for code in allowed_codes if value == code), None)
+
+
+def _visual_storyboard_incomplete_code(
+    visual_storyboard: Mapping[str, Any],
+) -> str:
+    """Reduce missing panels to one non-sensitive, allowlisted failure code."""
+
+    panels = visual_storyboard.get("panels")
+    if not isinstance(panels, list):
+        return "mixed_panel_failures"
+    reasons: set[str] = set()
+    for panel in panels:
+        if not isinstance(panel, Mapping):
+            return "mixed_panel_failures"
+        if panel.get("status") != "missing":
+            continue
+        reason = _canonical_diagnostic_code(
+            panel.get("missing_reason"),
+            VisualPanelGenerationError.ALLOWED_CODES,
+        )
+        if reason is None or reason == "mixed_panel_failures":
+            return "mixed_panel_failures"
+        reasons.add(reason)
+    return next(iter(reasons)) if len(reasons) == 1 else "mixed_panel_failures"
+
+
+def _visual_panel_diagnostic_code(exc: Exception) -> str | None:
+    if type(exc) is not VisualPanelGenerationError:
+        return None
+    return _canonical_diagnostic_code(
+        exc.code,
+        VisualPanelGenerationError.ALLOWED_CODES,
+    )
+
+
 def _narrated_pitch_render_diagnostic_code(exc: Exception) -> str | None:
     """Return only a canonical code from the typed cloud-media render error."""
 
@@ -1711,15 +1756,11 @@ def _narrated_pitch_render_diagnostic_code(exc: Exception) -> str | None:
     # renderer on successful and non-media paths.
     from .all_things_cloud_media import NarratedPitchRenderError
 
-    if type(exc) is not NarratedPitchRenderError or type(exc.code) is not str:
+    if type(exc) is not NarratedPitchRenderError:
         return None
-    return next(
-        (
-            allowed_code
-            for allowed_code in NARRATED_PITCH_RENDER_DIAGNOSTIC_CODES
-            if exc.code == allowed_code
-        ),
-        None,
+    return _canonical_diagnostic_code(
+        exc.code,
+        NARRATED_PITCH_RENDER_DIAGNOSTIC_CODES,
     )
 
 
@@ -2074,7 +2115,9 @@ class AllThingsJobService:
             if brief.ready_for_production and self.artifact_store is not None:
                 failure_code = "visual_storyboard_incomplete"
                 if visual_storyboard.get("status") != "complete":
-                    raise VisualPanelGenerationError("generation_failed")
+                    raise VisualPanelGenerationError(
+                        _visual_storyboard_incomplete_code(visual_storyboard)
+                    )
                 if self.narrated_pitch_renderer is None:
                     raise ConfigurationError("the worker service has no narrated pitch renderer")
                 owned = self.repository.update_claimed(
@@ -2216,7 +2259,11 @@ class AllThingsJobService:
                 "retryable": int(claimed.get("attempt", 1))
                 < int(claimed.get("max_attempts", MAX_ATTEMPTS)),
             }
-            if failure_code == "narrated_pitch_render_failed":
+            if failure_code == "visual_storyboard_incomplete":
+                diagnostic_code = _visual_panel_diagnostic_code(exc)
+                if diagnostic_code is not None:
+                    error["diagnostic_code"] = diagnostic_code
+            elif failure_code == "narrated_pitch_render_failed":
                 diagnostic_code = _narrated_pitch_render_diagnostic_code(exc)
                 if diagnostic_code is not None:
                     error["diagnostic_code"] = diagnostic_code

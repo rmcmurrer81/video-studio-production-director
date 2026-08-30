@@ -361,6 +361,17 @@ class StaticVisualProvider:
         )
 
 
+class FailingVisualProvider:
+    def __init__(self, *errors: Exception) -> None:
+        self.errors = errors
+        self.call_count = 0
+
+    def create_panel(self, *_args: object, **_kwargs: object) -> VisualPanelProviderResult:
+        error = self.errors[min(self.call_count, len(self.errors) - 1)]
+        self.call_count += 1
+        raise error
+
+
 class StaticArtifactStore:
     def put_bytes(
         self,
@@ -424,6 +435,58 @@ class FakeTasksClient:
 
 
 class AllThingsAgenticTests(unittest.TestCase):
+    def _execute_visual_storyboard_failure(
+        self,
+        visual_provider: object,
+        *,
+        source_message: str = "Make a short scene.",
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        repository = MemoryRepository()
+        service = AllThingsJobService(
+            config=valid_config(),
+            repository=repository,
+            dispatcher=RecordingDispatcher(),
+            provider=StaticProvider(),
+            visual_provider=visual_provider,  # type: ignore[arg-type]
+            artifact_store=StaticArtifactStore(),
+        )
+        queued = service.submit(source_message)
+        failed = dict(service.execute(str(queued["job_id"]), attempt=1))
+        return failed, repository.get(str(queued["job_id"]))
+
+    def test_visual_storyboard_failure_records_unique_allowlisted_reason(self) -> None:
+        failed, durable = self._execute_visual_storyboard_failure(
+            StaticVisualProvider(error_code="quota_or_rate_limited")
+        )
+
+        self.assertEqual(failed["stage"], "visual_storyboard_incomplete")
+        self.assertEqual(failed["error"]["diagnostic_code"], "quota_or_rate_limited")
+        self.assertEqual(durable["error"]["diagnostic_code"], "quota_or_rate_limited")
+
+    def test_visual_storyboard_failure_aggregates_mixed_allowlisted_reasons(self) -> None:
+        failed, _durable = self._execute_visual_storyboard_failure(
+            FailingVisualProvider(
+                VisualPanelGenerationError("provider_blocked"),
+                VisualPanelGenerationError("quota_or_rate_limited"),
+            )
+        )
+
+        self.assertEqual(failed["error"]["diagnostic_code"], "mixed_panel_failures")
+
+    def test_visual_storyboard_failure_redacts_arbitrary_exception_and_source_text(self) -> None:
+        source_text = "PRIVATE SCREENPLAY: the vault phrase is amber-nine."
+        exception_text = f"provider response echoed {source_text} from C:\\private\\panel.png"
+        failed, durable = self._execute_visual_storyboard_failure(
+            FailingVisualProvider(RuntimeError(exception_text)),
+            source_message=source_text,
+        )
+
+        self.assertEqual(failed["error"]["diagnostic_code"], "generation_failed")
+        self.assertEqual(durable["error"]["diagnostic_code"], "generation_failed")
+        self.assertNotIn(exception_text, json.dumps(failed))
+        self.assertNotIn(source_text, json.dumps(failed))
+        self.assertNotIn(exception_text, json.dumps(durable["error"]))
+
     def _execute_pitch_render_failure(
         self,
         error: Exception,
