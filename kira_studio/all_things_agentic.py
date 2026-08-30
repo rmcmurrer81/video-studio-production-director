@@ -79,6 +79,8 @@ NARRATED_PITCH_RENDER_DIAGNOSTIC_CODES = frozenset(
         "pitch_probe_failed",
         "pitch_probe_mismatch",
         "pitch_render_failed",
+        "segment_probe_failed",
+        "segment_probe_mismatch",
         "tts_synthesis_failed",
         "unresolved_visual_asset",
         "unsafe_concat_input",

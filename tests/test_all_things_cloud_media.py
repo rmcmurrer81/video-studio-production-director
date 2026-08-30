@@ -156,16 +156,46 @@ class FakeMediaRunner:
         video_codec: str = "h264",
         width: int = 1920,
         duration_seconds: float = 2.0,
+        segment_durations: tuple[float, ...] | None = None,
+        segment_video_codec: str = "h264",
+        segment_width: int = 1920,
+        segment_probe_stdout: bytes | None = None,
     ) -> None:
         self.calls: list[tuple[str, ...]] = []
         self.video_codec = video_codec
         self.width = width
         self.duration_seconds = duration_seconds
+        self.segment_durations = segment_durations or (1.0,)
+        self.segment_video_codec = segment_video_codec
+        self.segment_width = segment_width
+        self.segment_probe_stdout = segment_probe_stdout
+        self.segment_probe_count = 0
 
     def __call__(self, command: object) -> object:
         call = tuple(command)  # type: ignore[arg-type]
         self.calls.append(call)
         if call[0] == "fake-ffprobe":
+            is_segment = Path(call[-1]).name.startswith("segment-")
+            if is_segment and self.segment_probe_stdout is not None:
+                self.segment_probe_count += 1
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=self.segment_probe_stdout,
+                    stderr=b"private segment probe detail",
+                )
+            if is_segment:
+                duration_index = min(
+                    self.segment_probe_count,
+                    len(self.segment_durations) - 1,
+                )
+                probe_duration = self.segment_durations[duration_index]
+                probe_video_codec = self.segment_video_codec
+                probe_width = self.segment_width
+                self.segment_probe_count += 1
+            else:
+                probe_duration = self.duration_seconds
+                probe_video_codec = self.video_codec
+                probe_width = self.width
             return SimpleNamespace(
                 returncode=0,
                 stdout=json.dumps(
@@ -173,13 +203,13 @@ class FakeMediaRunner:
                         "streams": [
                             {
                                 "codec_type": "video",
-                                "codec_name": self.video_codec,
-                                "width": self.width,
+                                "codec_name": probe_video_codec,
+                                "width": probe_width,
                                 "height": 1080,
                             },
                             {"codec_type": "audio", "codec_name": "aac"},
                         ],
-                        "format": {"duration": f"{self.duration_seconds:.6f}"},
+                        "format": {"duration": f"{probe_duration:.6f}"},
                     }
                 ).encode("utf-8"),
                 stderr=b"",
@@ -348,7 +378,7 @@ class GoogleCloudNarratedPitchRendererTests(unittest.TestCase):
         self.assertIn("MARA: Battery C", tts.requests[0]["request"]["input"]["text"])  # type: ignore[index]
         ffmpeg_calls = [call for call in runner.calls if call[0] == "fake-ffmpeg"]
         self.assertEqual(len(ffmpeg_calls), 3)
-        self.assertEqual(len([call for call in runner.calls if call[0] == "fake-ffprobe"]), 1)
+        self.assertEqual(len([call for call in runner.calls if call[0] == "fake-ffprobe"]), 3)
         self.assertEqual(manifest["video"]["content_type"], "video/mp4")
         self.assertEqual(manifest["video"]["video_codec"], "h264")
         self.assertEqual(manifest["video"]["audio_codec"], "aac")
@@ -377,6 +407,71 @@ class GoogleCloudNarratedPitchRendererTests(unittest.TestCase):
         self.assertNotIn("public_url", serialized)
         with self.assertRaises(TypeError):
             manifest["video"]["sha256"] = "0" * 64
+
+    def test_uses_measured_encoded_durations_for_final_probe_and_subtitles(self) -> None:
+        brief, timeline, source, visuals = pitch_values()
+        runner = FakeMediaRunner(
+            duration_seconds=2.8,
+            segment_durations=(1.4, 1.4),
+        )
+        renderer, _tts, _runner, bucket = self.renderer(runner=runner)
+
+        manifest = renderer.render(
+            brief,
+            timeline,
+            source,
+            visuals,
+            "job-123",
+        )
+
+        # The synthesized WAVs are 1.0 seconds each.  Their 0.8-second total
+        # drift from the encoded segments exceeds the unchanged 0.5s final
+        # tolerance, so this succeeds only when measured MP4 durations are used.
+        self.assertEqual(manifest["video"]["duration_seconds"], 2.8)
+        subtitle_upload = next(
+            upload
+            for upload in bucket.uploads
+            if upload["content_type"] == "application/x-subrip"
+        )
+        subtitles = subtitle_upload["data"].decode("utf-8")  # type: ignore[union-attr]
+        self.assertIn("00:00:00,000 --> 00:00:01,400", subtitles)
+        self.assertIn("00:00:01,400 --> 00:00:02,800", subtitles)
+        serialized = json.dumps(manifest)
+        self.assertNotIn("segment-", serialized)
+        self.assertNotIn("kira-narrated-pitch-", serialized)
+
+    def test_segment_probes_fail_closed_without_exposing_probe_detail(self) -> None:
+        private_detail = b"not-json C:\\private\\segment.mp4 PRIVATE SCREENPLAY TEXT"
+        cases = (
+            (
+                FakeMediaRunner(segment_probe_stdout=private_detail),
+                "segment_probe_failed",
+            ),
+            (
+                FakeMediaRunner(segment_video_codec="vp9"),
+                "segment_probe_mismatch",
+            ),
+            (
+                FakeMediaRunner(segment_durations=(float("nan"),)),
+                "segment_probe_mismatch",
+            ),
+            (
+                FakeMediaRunner(segment_durations=(901.0,)),
+                "segment_probe_mismatch",
+            ),
+        )
+        for runner, expected_code in cases:
+            with self.subTest(expected_code=expected_code):
+                brief, timeline, source, visuals = pitch_values()
+                renderer, _tts, _runner, bucket = self.renderer(runner=runner)
+                with self.assertRaisesRegex(
+                    NarratedPitchRenderError,
+                    expected_code,
+                ) as caught:
+                    renderer.render(brief, timeline, source, visuals, "job-123")
+                self.assertEqual(str(caught.exception), expected_code)
+                self.assertNotIn("private", str(caught.exception).casefold())
+                self.assertEqual(bucket.uploads, [])
 
     def test_resolves_private_panel_artifacts_through_loader(self) -> None:
         brief, timeline, source, visuals = pitch_values()
