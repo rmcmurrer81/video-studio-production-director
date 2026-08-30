@@ -71,7 +71,10 @@ class _MemoryRepository:
     def __init__(self) -> None:
         self.records: dict[str, dict[str, object]] = {}
 
-    def admit_submission(self, **_kwargs: object) -> dict[str, object]:
+    def admit_submission(
+        self, record: dict[str, object], **_kwargs: object
+    ) -> dict[str, object]:
+        self.create(record)
         return {}
 
     def recent_success_durations(self, **_kwargs: object) -> tuple[()]:

@@ -25,6 +25,7 @@ from kira_studio.all_things_agentic import (
     AllThingsError,
     AllThingsJobService,
     ConfigurationError,
+    JobDispatchPendingError,
     JobLeaseBusyError,
     JobNotFoundError,
     MAX_PIPELINE_DISPATCHES,
@@ -253,6 +254,8 @@ class Handler(BaseHTTPRequestHandler):
             status = HTTPStatus.TOO_MANY_REQUESTS
         elif isinstance(exc, JobLeaseBusyError):
             status = HTTPStatus.CONFLICT
+        elif isinstance(exc, JobDispatchPendingError):
+            status = HTTPStatus.SERVICE_UNAVAILABLE
         elif isinstance(exc, ConfigurationError):
             status = HTTPStatus.SERVICE_UNAVAILABLE
         elif isinstance(exc, AllThingsError):

@@ -4,8 +4,10 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
+import time
 import unittest
 
 from kira_studio.all_things_agentic import (
@@ -16,10 +18,12 @@ from kira_studio.all_things_agentic import (
     BriefProviderResult,
     BriefValidationError,
     ConfigurationError,
+    JobDispatchPendingError,
     JobLeaseBusyError,
     JobNotFoundError,
     JobState,
     JobTransitionError,
+    JobVisualCapacityPendingError,
     MAX_DURABLE_JOB_BYTES,
     MAX_MESSAGE_BYTES,
     MAX_MESSAGE_CHARS,
@@ -28,13 +32,22 @@ from kira_studio.all_things_agentic import (
     PIPELINE_CONTINUATION_SCHEMA,
     PRODUCTION_BRIEF_RESPONSE_SCHEMA,
     ProductionBrief,
+    PipelineCheckpointError,
     STORYBOARD_FRAME_RATE,
     STORYBOARD_PACKAGE_SCHEMA,
     VisualPanelGenerationError,
     VisualPanelProviderResult,
+    VISUAL_CAPACITY_REQUEST_LIMIT,
+    VISUAL_CAPACITY_SCHEMA,
+    VISUAL_CAPACITY_WINDOW_SCHEMA,
+    VISUAL_CAPACITY_WINDOW_SECONDS,
+    _load_pipeline_checkpoint,
+    _visual_capacity_reservation_token,
+    _write_pipeline_checkpoint,
     audit_storyboard_package,
     build_storyboard_package,
     build_visual_storyboard,
+    canonical_json,
     compile_storyboard_timeline,
     eta_payload,
     fit_visual_storyboard_to_job_budget,
@@ -136,12 +149,79 @@ def browser_json_number_roundtrip(value: object) -> object:
 
 
 class MemoryRepository:
-    def __init__(self) -> None:
+    def __init__(self, *, enforce_visual_capacity: bool = False) -> None:
         self.records: dict[str, dict[str, object]] = {}
         self.admission: dict[str, object] | None = None
+        self.enforce_visual_capacity = enforce_visual_capacity
+        self.visual_reservations: list[datetime] = []
+        self.visual_windows: list[dict[str, object]] = []
+        self.confirm_failures_remaining = 0
+
+    @staticmethod
+    def _continuation_token(value: object) -> str | None:
+        if not isinstance(value, dict):
+            return None
+        window = value.get("visual_capacity_window")
+        if not isinstance(window, dict):
+            return None
+        token = window.get("reservation_token")
+        return token if isinstance(token, str) else None
+
+    def _release_visual_tokens(self, *tokens: str | None) -> None:
+        selected = {token for token in tokens if token is not None}
+        if not selected:
+            return
+        head_removed = bool(
+            self.visual_windows
+            and self.visual_windows[0].get("reservation_token") in selected
+        )
+        self.visual_windows = [
+            item
+            for item in self.visual_windows
+            if item.get("reservation_token") not in selected
+        ]
+        if head_removed and self.visual_windows:
+            now_epoch = math.ceil(time.time())
+            prior = now_epoch + VISUAL_CAPACITY_WINDOW_SECONDS
+            for position, item in enumerate(self.visual_windows):
+                if position:
+                    prior += VISUAL_CAPACITY_WINDOW_SECONDS
+                item["not_before_epoch_seconds"] = max(
+                    int(item["not_before_epoch_seconds"]), prior
+                )
+                prior = int(item["not_before_epoch_seconds"])
+
+    @staticmethod
+    def _active_slot(record: dict[str, object], *, now: datetime) -> dict[str, object]:
+        target = record.get("target")
+        lease_seconds = (
+            int(target.get("worker_lease_seconds", 1_800))
+            if isinstance(target, dict)
+            else 1_800
+        )
+        record_expires_at = datetime.fromisoformat(str(record["record_expires_at"]))
+        return {
+            "job_id": str(record["job_id"]),
+            "attempt": int(record["attempt"]),
+            "slot_expires_at": (
+                record_expires_at + timedelta(seconds=lease_seconds)
+            ).isoformat(),
+        }
+
+    def _release_admission_slot(self, job_id: str) -> None:
+        if self.admission is None:
+            return
+        active = self.admission.get("active_slots")
+        if isinstance(active, list):
+            self.admission["active_slots"] = [
+                item
+                for item in active
+                if isinstance(item, dict) and item.get("job_id") != job_id
+            ]
 
     def admit_submission(
         self,
+        record: dict[str, object],
         *,
         now: str,
         cooldown_seconds: int,
@@ -149,7 +229,19 @@ class MemoryRepository:
         max_jobs: int,
     ) -> dict[str, object]:
         now_value = datetime.fromisoformat(now)
+        if str(record["job_id"]) in self.records:
+            raise JobTransitionError("job already exists")
         current = deepcopy(self.admission) if self.admission else None
+        active_slots = (
+            [
+                item
+                for item in current.get("active_slots", [])
+                if isinstance(item, dict)
+                and datetime.fromisoformat(str(item["slot_expires_at"])) > now_value
+            ]
+            if current
+            else []
+        )
         window_started = (
             datetime.fromisoformat(str(current["window_started_at"])) if current else now_value
         )
@@ -171,22 +263,174 @@ class MemoryRepository:
                 retry_after,
                 int(cooldown_seconds - (now_value - last_admitted).total_seconds() + 0.999),
             )
+        if len(active_slots) >= max_jobs:
+            earliest = min(
+                datetime.fromisoformat(str(item["slot_expires_at"]))
+                for item in active_slots
+            )
+            retry_after = max(
+                retry_after,
+                max(1, math.ceil((earliest - now_value).total_seconds())),
+            )
         if retry_after > 0:
             raise AdmissionLimitError(
                 "shared demo job admission limit reached",
                 retry_after_seconds=retry_after,
             )
+        active_slots.append(self._active_slot(record, now=now_value))
         self.admission = {
             "window_started_at": window_started.isoformat(),
             "last_admitted_at": now_value.isoformat(),
             "count": count + 1,
+            "active_slots": active_slots,
         }
+        self.records[str(record["job_id"])] = deepcopy(record)
         return deepcopy(self.admission)
 
     def create(self, record: dict[str, object]) -> dict[str, object]:
         job_id = str(record["job_id"])
         self.records[job_id] = deepcopy(record)
         return deepcopy(record)
+
+    def reserve_visual_request(
+        self,
+        *,
+        now: str,
+        window_seconds: int,
+        max_requests: int,
+        reservation_token: str,
+    ) -> dict[str, object]:
+        now_value = datetime.fromisoformat(now)
+        window = next(
+            (
+                item
+                for item in self.visual_windows
+                if item.get("reservation_token") == reservation_token
+            ),
+            None,
+        )
+        if window is None:
+            return {
+                "schema": VISUAL_CAPACITY_SCHEMA,
+                "granted": False,
+                "retry_after_seconds": 1,
+                "window_seconds": window_seconds,
+                "request_limit": max_requests,
+                "reservation_count": 0,
+                "window_active": False,
+            }
+        if not self.enforce_visual_capacity:
+            # Even the permissive fixture records the real provider request so
+            # the next FIFO window receives the production 75-second spacing.
+            # It skips only denial behavior, not durable pacing metadata.
+            self.visual_reservations.append(now_value)
+            window["requests_used"] = int(window["requests_used"]) + 1
+            return {
+                "schema": VISUAL_CAPACITY_SCHEMA,
+                "granted": True,
+                "retry_after_seconds": 0,
+                "window_seconds": window_seconds,
+                "request_limit": max_requests,
+                "reservation_count": 1,
+                "window_active": True,
+            }
+        self.visual_reservations = [
+            value
+            for value in self.visual_reservations
+            if (now_value - value).total_seconds() < window_seconds
+        ]
+        is_head = self.visual_windows[0] is window
+        not_before = int(window["not_before_epoch_seconds"])
+        granted = (
+            is_head
+            and math.ceil(now_value.timestamp()) >= not_before
+            and len(self.visual_reservations) < max_requests
+            and int(window["requests_used"]) < max_requests
+        )
+        retry_after = 0
+        if granted:
+            self.visual_reservations.append(now_value)
+            window["requests_used"] = int(window["requests_used"]) + 1
+        else:
+            retry_after = max(
+                1,
+                not_before - math.ceil(now_value.timestamp()),
+            )
+        return {
+            "schema": VISUAL_CAPACITY_SCHEMA,
+            "granted": granted,
+            "retry_after_seconds": retry_after,
+            "window_seconds": window_seconds,
+            "request_limit": max_requests,
+            "reservation_count": len(self.visual_reservations),
+            "window_active": True,
+        }
+
+    def prepare_visual_window(
+        self,
+        *,
+        now: str,
+        reservation_token: str,
+        window_seconds: int,
+        max_requests: int,
+    ) -> dict[str, object]:
+        now_value = datetime.fromisoformat(now)
+        self.visual_reservations = [
+            value
+            for value in self.visual_reservations
+            if (now_value - value).total_seconds() < window_seconds
+        ]
+        existing = next(
+            (
+                item
+                for item in self.visual_windows
+                if item.get("reservation_token") == reservation_token
+            ),
+            None,
+        )
+        if existing is None:
+            not_before = math.ceil(now_value.timestamp())
+            if self.visual_windows:
+                not_before = max(
+                    not_before,
+                    int(self.visual_windows[-1]["not_before_epoch_seconds"])
+                    + window_seconds,
+                )
+            elif self.visual_reservations:
+                not_before = max(
+                    not_before,
+                    math.ceil(self.visual_reservations[-1].timestamp())
+                    + window_seconds,
+                )
+            existing = {
+                "reservation_token": reservation_token,
+                "not_before_epoch_seconds": not_before,
+                "requests_used": 0,
+            }
+            self.visual_windows.append(existing)
+        return {
+            "schema": VISUAL_CAPACITY_WINDOW_SCHEMA,
+            "reservation_token": reservation_token,
+            "not_before_epoch_seconds": int(existing["not_before_epoch_seconds"]),
+            "request_limit": max_requests,
+            "window_seconds": window_seconds,
+        }
+
+    def complete_visual_window(
+        self,
+        *,
+        now: str,
+        reservation_token: str,
+        window_seconds: int,
+        max_requests: int,
+    ) -> dict[str, object]:
+        before = len(self.visual_windows)
+        self._release_visual_tokens(reservation_token)
+        return {
+            "schema": VISUAL_CAPACITY_SCHEMA,
+            "released": len(self.visual_windows) != before,
+            "queue_depth": len(self.visual_windows),
+        }
 
     def get(self, job_id: str) -> dict[str, object]:
         if job_id not in self.records:
@@ -211,6 +455,9 @@ class MemoryRepository:
         now: str,
     ) -> dict[str, object] | None:
         record = self.get(job_id)
+        record_expires_at = datetime.fromisoformat(str(record["record_expires_at"]))
+        if datetime.fromisoformat(now) >= record_expires_at:
+            return None
         if (
             int(record["attempt"]) != attempt
             or int(record.get("dispatch_sequence", -1)) != dispatch_sequence
@@ -234,9 +481,72 @@ class MemoryRepository:
             update["started_at"] = record.get("started_at") or now
             if record.get("cancel_requested"):
                 update["state"] = JobState.CANCELLING.value
+        pending = record.get("pending_dispatch")
+        if (
+            isinstance(pending, dict)
+            and pending.get("application_attempt") == attempt
+            and pending.get("dispatch_sequence") == dispatch_sequence
+        ):
+            update["pending_dispatch"] = None
         return self.update(job_id, update)
 
     def continue_job(
+        self,
+        job_id: str,
+        patch: dict[str, object],
+        *,
+        attempt: int,
+        dispatch_sequence: int,
+        lease_token: str,
+        cancelled_patch: dict[str, object],
+    ) -> dict[str, object]:
+        record = self.get(job_id)
+        current_token = self._continuation_token(record.get("continuation"))
+        proposed_token = self._continuation_token(patch.get("continuation"))
+        sequence_matches = (
+            int(record["attempt"]) == attempt
+            and int(record.get("dispatch_sequence", -1)) == dispatch_sequence
+        )
+        if not sequence_matches or record.get("lease_token") != lease_token:
+            # A replacement worker for the same application attempt and
+            # dispatch sequence derives the same successor token.  A stale
+            # predecessor must not remove that shared prepared token merely
+            # because its lease no longer matches while that replacement is
+            # still RUNNING.  A terminal record or an advanced sequence makes
+            # the proposed token unambiguously provisional, so clean it up.
+            if (
+                (
+                    record["state"]
+                    in {
+                        JobState.CANCELLED.value,
+                        JobState.SUCCEEDED.value,
+                        JobState.FAILED.value,
+                        JobState.CANCELLING.value,
+                    }
+                    or not sequence_matches
+                )
+                and proposed_token != current_token
+            ):
+                self._release_visual_tokens(proposed_token)
+            return record
+        selected = (
+            cancelled_patch
+            if record.get("cancel_requested")
+            or record["state"] == JobState.CANCELLING.value
+            else patch
+        )
+        if selected is cancelled_patch:
+            selected = {**selected, "pending_dispatch": None}
+            self._release_visual_tokens(current_token, proposed_token)
+            self._release_admission_slot(job_id)
+        elif current_token != proposed_token:
+            self._release_visual_tokens(current_token)
+        return self.update(
+            job_id,
+            {**selected, "lease_token": None, "lease_expires_at": None},
+        )
+
+    def defer_claimed(
         self,
         job_id: str,
         patch: dict[str, object],
@@ -253,15 +563,59 @@ class MemoryRepository:
             or record.get("lease_token") != lease_token
         ):
             return record
-        selected = (
-            cancelled_patch
-            if record.get("cancel_requested")
-            or record["state"] == JobState.CANCELLING.value
-            else patch
+        cancellation_wins = bool(record.get("cancel_requested")) or (
+            record["state"] == JobState.CANCELLING.value
         )
+        if cancellation_wins:
+            self._release_visual_tokens(
+                self._continuation_token(record.get("continuation"))
+            )
+            selected = {**cancelled_patch, "pending_dispatch": None}
+            self._release_admission_slot(job_id)
+        else:
+            selected = {
+                **patch,
+                "state": JobState.QUEUED.value,
+                "dispatch_sequence": dispatch_sequence,
+            }
         return self.update(
             job_id,
             {**selected, "lease_token": None, "lease_expires_at": None},
+        )
+
+    def confirm_continuation_dispatch(
+        self,
+        job_id: str,
+        dispatch: dict[str, object],
+        *,
+        attempt: int,
+        dispatch_sequence: int,
+        pending_manifest_sha256: str,
+    ) -> dict[str, object]:
+        if self.confirm_failures_remaining:
+            self.confirm_failures_remaining -= 1
+            raise RuntimeError("lost confirm response")
+        record = self.get(job_id)
+        pending = record.get("pending_dispatch")
+        if pending is None:
+            return record
+        if (
+            not isinstance(pending, dict)
+            or pending.get("manifest_sha256") != pending_manifest_sha256
+            or pending.get("application_attempt") != attempt
+            or pending.get("dispatch_sequence") != dispatch_sequence
+        ):
+            raise JobTransitionError("pending continuation dispatch changed")
+        if (
+            int(record["attempt"]) != attempt
+            or int(record.get("dispatch_sequence", -1)) != dispatch_sequence
+            or record["state"] != JobState.QUEUED.value
+            or record.get("cancel_requested")
+        ):
+            return record
+        return self.update(
+            job_id,
+            {"dispatch": deepcopy(dispatch), "pending_dispatch": None},
         )
 
     def update_claimed(
@@ -301,6 +655,21 @@ class MemoryRepository:
             if record.get("cancel_requested") or record["state"] == JobState.CANCELLING.value
             else patch
         )
+        successor_sequence = int(record.get("dispatch_sequence", -1)) + 1
+        prepared_successor = (
+            _visual_capacity_reservation_token(
+                job_id=job_id,
+                attempt=attempt,
+                dispatch_sequence=successor_sequence,
+            )
+            if 1 <= successor_sequence < MAX_PIPELINE_DISPATCHES
+            else None
+        )
+        self._release_visual_tokens(
+            self._continuation_token(record.get("continuation")),
+            prepared_successor,
+        )
+        self._release_admission_slot(job_id)
         return self.update(
             job_id,
             {**selected, "lease_token": None, "lease_expires_at": None},
@@ -316,6 +685,7 @@ class MemoryRepository:
         record = self.get(job_id)
         if int(record["attempt"]) != attempt or record["state"] != JobState.QUEUED.value:
             return record
+        self._release_admission_slot(job_id)
         return self.update(job_id, patch)
 
     def request_cancel(self, job_id: str, *, now: str) -> dict[str, object]:
@@ -323,6 +693,10 @@ class MemoryRepository:
         if record["state"] in {JobState.CANCELLED.value, JobState.SUCCEEDED.value, JobState.FAILED.value}:
             return record
         if record["state"] == JobState.QUEUED.value:
+            self._release_visual_tokens(
+                self._continuation_token(record.get("continuation"))
+            )
+            self._release_admission_slot(job_id)
             return self.update(
                 job_id,
                 {
@@ -333,6 +707,9 @@ class MemoryRepository:
                     "updated_at": now,
                     "completed_at": now,
                     "duration_seconds": 0.0,
+                    "dispatch": None,
+                    "continuation": None,
+                    "pending_dispatch": None,
                 },
             )
         return self.update(
@@ -345,13 +722,52 @@ class MemoryRepository:
             },
         )
 
-    def prepare_retry(self, job_id: str, patch: dict[str, object]) -> dict[str, object]:
+    def prepare_retry(
+        self,
+        job_id: str,
+        patch: dict[str, object],
+        *,
+        now: str,
+        cooldown_seconds: int,
+        window_seconds: int,
+        max_jobs: int,
+    ) -> dict[str, object]:
         record = self.get(job_id)
         if record["state"] not in {JobState.FAILED.value, JobState.CANCELLED.value}:
             raise JobTransitionError("invalid retry")
         if int(record["attempt"]) >= int(record["max_attempts"]):
             raise JobTransitionError("retry limit")
-        return self.update(job_id, {**patch, "attempt": int(record["attempt"]) + 1})
+        now_value = datetime.fromisoformat(now)
+        current = deepcopy(self.admission) if self.admission else {
+            "window_started_at": now,
+            "last_admitted_at": now,
+            "count": 0,
+            "active_slots": [],
+        }
+        active_slots = [
+            item
+            for item in current.get("active_slots", [])
+            if isinstance(item, dict)
+            and item.get("job_id") != job_id
+            and datetime.fromisoformat(str(item["slot_expires_at"])) > now_value
+        ]
+        if len(active_slots) >= max_jobs:
+            earliest = min(
+                datetime.fromisoformat(str(item["slot_expires_at"]))
+                for item in active_slots
+            )
+            raise AdmissionLimitError(
+                "shared demo active-job limit reached",
+                retry_after_seconds=max(
+                    1, math.ceil((earliest - now_value).total_seconds())
+                ),
+            )
+        update = {**patch, "attempt": int(record["attempt"]) + 1}
+        retried = {**record, **update}
+        active_slots.append(self._active_slot(retried, now=now_value))
+        current["active_slots"] = active_slots
+        self.admission = current
+        return self.update(job_id, update)
 
     def recent_success_durations(self, *, limit: int = 20) -> tuple[float, ...]:
         return tuple(
@@ -368,7 +784,10 @@ class RecordingDispatcher:
         self.job_ids: list[str] = []
         self.attempts: list[int] = []
         self.dispatch_sequences: list[int] = []
+        self.delay_seconds: list[int] = []
+        self.scheduled_epoch_seconds: list[int | None] = []
         self.fail = fail
+        self.failures_remaining = 0
 
     def enqueue(
         self,
@@ -376,12 +795,21 @@ class RecordingDispatcher:
         *,
         attempt: int,
         dispatch_sequence: int,
+        delay_seconds: int = 0,
+        scheduled_epoch_seconds: int | None = None,
     ) -> dict[str, object]:
         self.job_ids.append(job_id)
         self.attempts.append(attempt)
         self.dispatch_sequences.append(dispatch_sequence)
-        if self.fail:
+        self.delay_seconds.append(delay_seconds)
+        self.scheduled_epoch_seconds.append(scheduled_epoch_seconds)
+        if self.fail or self.failures_remaining:
+            if self.failures_remaining:
+                self.failures_remaining -= 1
             raise RuntimeError("unavailable")
+        scheduled = scheduled_epoch_seconds
+        if scheduled is None and delay_seconds:
+            scheduled = math.ceil(time.time()) + delay_seconds
         return {
             "provider": "Google Cloud Tasks",
             "task_name": (
@@ -390,6 +818,8 @@ class RecordingDispatcher:
             ),
             "attempt": attempt,
             "dispatch_sequence": dispatch_sequence,
+            "schedule_delay_seconds": delay_seconds,
+            "scheduled_epoch_seconds": scheduled,
         }
 
 
@@ -421,6 +851,71 @@ class FullScreenplayProvider:
             brief=ProductionBrief.from_mapping(full_screenplay_mapping()),
             execution={"evidence_origin": "test_double", "provider": "test"},
         )
+
+
+class MaximumScreenplayProvider:
+    """Return the schema maximum: forty scenes and 120 compiled cards."""
+
+    def create_brief(self, message: str, *, job_id: str) -> BriefProviderResult:
+        value = brief_mapping()
+        value.update(
+            {
+                "duration_seconds": 2_400,
+                "scenes": [
+                    {
+                        "number": number,
+                        "purpose": f"Advance maximum-size sequence {number}.",
+                        "setting": f"production location {number}",
+                        "characters": ["Mara", "Jon"],
+                        "dialogue_required": True,
+                    }
+                    for number in range(1, 41)
+                ],
+            }
+        )
+        return BriefProviderResult(
+            brief=ProductionBrief.from_mapping(value),
+            execution={"evidence_origin": "test_double", "provider": "test"},
+        )
+
+
+class OneInactiveWindowPerVisualAttemptRepository(MemoryRepository):
+    """Force one fail-closed FIFO reconciliation before each provider attempt."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.prepared_window_count = 0
+        self.capacity_wait_count = 0
+        self._inactive_tokens: set[str] = set()
+
+    def prepare_visual_window(self, **kwargs: object) -> dict[str, object]:
+        token = str(kwargs["reservation_token"])
+        existed = any(
+            item.get("reservation_token") == token for item in self.visual_windows
+        )
+        result = super().prepare_visual_window(**kwargs)  # type: ignore[arg-type]
+        if not existed:
+            self.prepared_window_count += 1
+            if self.prepared_window_count % 2:
+                self._inactive_tokens.add(token)
+        return result
+
+    def reserve_visual_request(self, **kwargs: object) -> dict[str, object]:
+        token = str(kwargs["reservation_token"])
+        if token in self._inactive_tokens:
+            self._inactive_tokens.remove(token)
+            self._release_visual_tokens(token)
+            self.capacity_wait_count += 1
+            return {
+                "schema": VISUAL_CAPACITY_SCHEMA,
+                "granted": False,
+                "retry_after_seconds": 1,
+                "window_seconds": int(kwargs["window_seconds"]),
+                "request_limit": int(kwargs["max_requests"]),
+                "reservation_count": 0,
+                "window_active": False,
+            }
+        return super().reserve_visual_request(**kwargs)  # type: ignore[arg-type]
 
 
 class StaticVisualProvider:
@@ -603,6 +1098,37 @@ class UniqueVisualProvider:
         )
 
 
+class QuotaPatternVisualProvider(UniqueVisualProvider):
+    def __init__(self, *, quota_calls: set[int] | None = None) -> None:
+        super().__init__()
+        self.quota_calls = set(quota_calls or ())
+        self.attempted_shot_ids: list[str] = []
+
+    def create_panel(
+        self,
+        prompt: str,
+        *,
+        shot_id: str,
+        job_id: str,
+        reference_image: bytes | None = None,
+    ) -> VisualPanelProviderResult:
+        call_number = len(self.attempted_shot_ids) + 1
+        self.attempted_shot_ids.append(shot_id)
+        if call_number in self.quota_calls or -1 in self.quota_calls:
+            try:
+                raise RuntimeError(
+                    "PRIVATE provider payload, project number, and screenplay must stay redacted"
+                )
+            except RuntimeError:
+                raise VisualPanelGenerationError("quota_or_rate_limited") from None
+        return super().create_panel(
+            prompt,
+            shot_id=shot_id,
+            job_id=job_id,
+            reference_image=reference_image,
+        )
+
+
 class FakeModels:
     def __init__(self) -> None:
         self.get_calls: list[str] = []
@@ -645,10 +1171,11 @@ class AllThingsAgenticTests(unittest.TestCase):
         visual_provider: object,
         *,
         source_message: str = "Make a short scene.",
+        config: AllThingsConfig | None = None,
     ) -> tuple[dict[str, object], dict[str, object]]:
         repository = MemoryRepository()
         service = AllThingsJobService(
-            config=valid_config(),
+            config=config or valid_config(),
             repository=repository,
             dispatcher=RecordingDispatcher(),
             provider=StaticProvider(),
@@ -656,12 +1183,23 @@ class AllThingsAgenticTests(unittest.TestCase):
             artifact_store=StaticArtifactStore(),
         )
         queued = service.submit(source_message)
-        failed = dict(service.execute(str(queued["job_id"]), attempt=1))
+        job_id = str(queued["job_id"])
+        failed = dict(queued)
+        while failed["state"] == JobState.QUEUED.value:
+            raw = repository.get(job_id)
+            failed = dict(
+                service.execute(
+                    job_id,
+                    attempt=1,
+                    dispatch_sequence=int(raw["dispatch_sequence"]),
+                )
+            )
         return failed, repository.get(str(queued["job_id"]))
 
     def test_visual_storyboard_failure_records_unique_allowlisted_reason(self) -> None:
         failed, durable = self._execute_visual_storyboard_failure(
-            StaticVisualProvider(error_code="quota_or_rate_limited")
+            StaticVisualProvider(error_code="quota_or_rate_limited"),
+            config=valid_config(visual_quota_max_deferrals=0),
         )
 
         self.assertEqual(failed["stage"], "visual_storyboard_incomplete")
@@ -752,9 +1290,24 @@ class AllThingsAgenticTests(unittest.TestCase):
                 self.assertNotIn(exception_text, json.dumps(durable["error"]))
 
     def test_configuration_requires_verified_contest_model_family_and_real_targets(self) -> None:
-        self.assertEqual(valid_config().issues(), ())
-        with self.assertRaises(ConfigurationError):
-            valid_config(visual_panels_per_dispatch=3).assert_valid()
+        config = valid_config()
+        self.assertEqual(config.issues(), ())
+        self.assertEqual(config.visual_panels_per_dispatch, 2)
+        self.assertEqual(config.visual_successor_delay_seconds, 75)
+        self.assertEqual(config.visual_quota_max_deferrals, 4)
+        self.assertEqual(config.visual_quota_base_deferral_seconds, 90)
+        self.assertEqual(config.visual_quota_max_deferral_seconds, 720)
+        self.assertEqual(config.safe_dict()["visual_successor_delay_seconds"], 75)
+        self.assertNotEqual(
+            config.target_digest(),
+            valid_config(visual_successor_delay_seconds=76).target_digest(),
+        )
+        for invalid_panels in (1, 3):
+            with self.subTest(visual_panels_per_dispatch=invalid_panels):
+                with self.assertRaises(ConfigurationError):
+                    valid_config(
+                        visual_panels_per_dispatch=invalid_panels
+                    ).assert_valid()
         with self.assertRaises(ConfigurationError):
             valid_config(model="gemini-2.5-flash").assert_valid()
         with self.assertRaises(ConfigurationError):
@@ -763,6 +1316,140 @@ class AllThingsAgenticTests(unittest.TestCase):
             valid_config(image_model="imagen-4").assert_valid()
         with self.assertRaises(ConfigurationError):
             valid_config(project="", worker_url="http://localhost:8080").assert_valid()
+        with self.assertRaises(ConfigurationError):
+            valid_config(visual_quota_max_deferrals=5).assert_valid()
+        with self.assertRaises(ConfigurationError):
+            valid_config(visual_quota_base_deferral_seconds=29).assert_valid()
+        with self.assertRaises(ConfigurationError):
+            valid_config(visual_quota_max_deferral_seconds=901).assert_valid()
+        with self.assertRaises(ConfigurationError):
+            valid_config(
+                visual_quota_base_deferral_seconds=721,
+                visual_quota_max_deferral_seconds=720,
+            ).assert_valid()
+        for invalid_delay in (0, 74, 76, 901):
+            with self.subTest(visual_successor_delay_seconds=invalid_delay):
+                with self.assertRaises(ConfigurationError):
+                    valid_config(
+                        visual_successor_delay_seconds=invalid_delay
+                    ).assert_valid()
+        for invalid_jobs in (1, 3, 5):
+            with self.subTest(admission_max_jobs=invalid_jobs):
+                with self.assertRaises(ConfigurationError):
+                    valid_config(admission_max_jobs=invalid_jobs).assert_valid()
+
+    def test_shipped_environment_example_is_valid_with_reviewed_bounds(self) -> None:
+        path = (
+            Path(__file__).resolve().parents[1]
+            / "contest_config"
+            / "all_things_agentic.env.example"
+        )
+        environment: dict[str, str] = {}
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            environment[key] = value
+        config = AllThingsConfig.from_environment(environment)
+        self.assertEqual(config.issues(), ())
+        self.assertEqual(config.admission_max_jobs, 4)
+        self.assertEqual(config.visual_panels_per_dispatch, 2)
+        self.assertEqual(config.visual_successor_delay_seconds, 75)
+        self.assertEqual(config.visual_quota_max_deferrals, 4)
+        self.assertEqual(config.visual_quota_base_deferral_seconds, 90)
+        self.assertEqual(config.visual_quota_max_deferral_seconds, 720)
+        self.assertEqual(config.worker_lease_seconds, 1_800)
+
+    def test_checkpoint_capacity_wait_boundary_is_symmetric_on_write_and_load(
+        self,
+    ) -> None:
+        source = "Plan every bounded sequence without losing its FIFO checkpoint."
+        job_id = "00000000-0000-4000-8000-000000000123"
+        attempt = 1
+        dispatch_sequence = 1
+        config = valid_config()
+        brief = ProductionBrief.from_mapping(full_screenplay_mapping())
+        package = build_storyboard_package(brief)
+        artifact_store = StaticArtifactStore()
+        request_sha256 = sha256_json({"message": source})
+        target_digest = config.target_digest()
+        window = {
+            "schema": VISUAL_CAPACITY_WINDOW_SCHEMA,
+            "reservation_token": "a" * 64,
+            "not_before_epoch_seconds": 1_700_000_000,
+            "request_limit": VISUAL_CAPACITY_REQUEST_LIMIT,
+            "window_seconds": VISUAL_CAPACITY_WINDOW_SECONDS,
+        }
+        # Thirty-six panels need eighteen provider chunks.  The durable bound
+        # deliberately permits C+4 inactive-window recoveries, exactly 22.
+        continuation = _write_pipeline_checkpoint(
+            artifact_store=artifact_store,
+            job_id=job_id,
+            attempt=attempt,
+            dispatch_sequence=dispatch_sequence,
+            phase="visual_storyboard",
+            request_sha256=request_sha256,
+            target_digest=target_digest,
+            brief=brief,
+            storyboard_package=package,
+            provider_execution={"evidence_origin": "test_double"},
+            panels=(),
+            pitch_segments=(),
+            visual_evidence_origin="not_attempted",
+            previous_checkpoint_sha256=None,
+            max_dispatches=82,
+            quota_deferrals_used=4,
+            capacity_waits_used=22,
+            visual_capacity_window=window,
+        )
+        loaded = _load_pipeline_checkpoint(
+            continuation,
+            artifact_store=artifact_store,
+            job_id=job_id,
+            attempt=attempt,
+            dispatch_sequence=dispatch_sequence,
+            source_message=source,
+            request_sha256=request_sha256,
+            target_digest=target_digest,
+        )
+        self.assertEqual(loaded["capacity_waits_used"], 22)
+
+        # Re-sign a structurally valid test artifact at C+5 to prove the
+        # loader independently rejects the same boundary the writer enforces.
+        excessive = deepcopy(continuation)
+        descriptor = excessive["checkpoint"]
+        object_name = str(descriptor["object_name"])
+        body = json.loads(artifact_store.objects[object_name].decode("utf-8"))
+        body["capacity_waits_used"] = 23
+        body_without_digest = {
+            key: value for key, value in body.items() if key != "manifest_sha256"
+        }
+        body["manifest_sha256"] = sha256_json(body_without_digest)
+        encoded = canonical_json(body).encode("utf-8")
+        digest = hashlib.sha256(encoded).hexdigest()
+        artifact_store.objects[object_name] = encoded
+        descriptor["sha256"] = digest
+        descriptor["bytes"] = len(encoded)
+        excessive["checkpoint_sha256"] = digest
+        excessive["capacity_waits_used"] = 23
+        continuation_without_digest = {
+            key: value
+            for key, value in excessive.items()
+            if key != "manifest_sha256"
+        }
+        excessive["manifest_sha256"] = sha256_json(continuation_without_digest)
+        with self.assertRaises(PipelineCheckpointError):
+            _load_pipeline_checkpoint(
+                excessive,
+                artifact_store=artifact_store,
+                job_id=job_id,
+                attempt=attempt,
+                dispatch_sequence=dispatch_sequence,
+                source_message=source,
+                request_sha256=request_sha256,
+                target_digest=target_digest,
+            )
 
     def test_visual_storyboard_is_bounded_ordered_and_cryptographically_validated(self) -> None:
         brief = ProductionBrief.from_mapping(brief_mapping())
@@ -1211,12 +1898,26 @@ class AllThingsAgenticTests(unittest.TestCase):
             )
             visual_deltas.append(len(visual_provider.calls) - before)
 
-        self.assertEqual(current["state"], JobState.SUCCEEDED.value)
-        self.assertEqual(current["dispatch_sequence"], 54)
-        self.assertEqual(current["max_dispatches"], 56)
-        self.assertEqual(visual_deltas, ([2] * 18) + ([0] * 37))
-        self.assertEqual(dispatcher.dispatch_sequences, list(range(55)))
-        self.assertEqual(dispatcher.attempts, [1] * 55)
+        self.assertEqual(current["state"], JobState.SUCCEEDED.value, current)
+        self.assertEqual(current["dispatch_sequence"], 55)
+        self.assertEqual(current["max_dispatches"], 82)
+        self.assertEqual(visual_deltas, [0] + ([2] * 18) + ([0] * 37))
+        self.assertEqual(dispatcher.dispatch_sequences, list(range(56)))
+        self.assertEqual(dispatcher.attempts, [1] * 56)
+        # The outbox persists an absolute not-before time; reconciliation uses
+        # that exact timestamp instead of recomputing a relative delay.
+        self.assertEqual(dispatcher.delay_seconds, [0] * 56)
+        visual_schedules = dispatcher.scheduled_epoch_seconds[2:19]
+        self.assertEqual(len(visual_schedules), 17)
+        self.assertTrue(all(isinstance(value, int) for value in visual_schedules))
+        self.assertEqual(
+            [
+                int(visual_schedules[index])
+                - int(dispatcher.scheduled_epoch_seconds[1])
+                for index in range(len(visual_schedules))
+            ],
+            [75 * (index + 1) for index in range(17)],
+        )
         self.assertEqual(len(provider.calls), 1)
         self.assertEqual(pitch_renderer.calls, 1)
         self.assertEqual(pitch_renderer.segment_calls, list(range(36)))
@@ -1224,7 +1925,7 @@ class AllThingsAgenticTests(unittest.TestCase):
         continuation = current["continuation"]
         self.assertEqual(continuation["schema"], PIPELINE_CONTINUATION_SCHEMA)
         self.assertEqual(continuation["status"], "complete")
-        self.assertEqual(continuation["dispatches_used"], 55)
+        self.assertEqual(continuation["dispatches_used"], 56)
         self.assertEqual(continuation["required_pitch_count"], 36)
 
         visuals = current["visual_storyboard"]
@@ -1251,32 +1952,210 @@ class AllThingsAgenticTests(unittest.TestCase):
         self.assertEqual(durable["attempt"], 1)
         self.assertEqual(durable["max_attempts"], 3)
 
+    def test_quota_deferral_checkpoints_partial_chunk_and_resumes_same_attempt(
+        self,
+    ) -> None:
+        repository = MemoryRepository()
+        dispatcher = RecordingDispatcher()
+        provider = FullScreenplayProvider()
+        visual_provider = QuotaPatternVisualProvider(quota_calls={2})
+        artifact_store = StaticArtifactStore()
+        service = AllThingsJobService(
+            config=valid_config(
+                visual_panels_per_dispatch=2,
+                visual_quota_max_deferrals=3,
+                visual_quota_base_deferral_seconds=90,
+                visual_quota_max_deferral_seconds=720,
+            ),
+            repository=repository,
+            dispatcher=dispatcher,
+            provider=provider,
+            visual_provider=visual_provider,
+            artifact_store=artifact_store,
+            narrated_pitch_renderer=StaticNarratedPitchRenderer(artifact_store),
+        )
+
+        queued = service.submit("Plan the screenplay without duplicating quota-held panels.")
+        job_id = str(queued["job_id"])
+        planned = service.execute(job_id, attempt=1, dispatch_sequence=0)
+        self.assertEqual(planned["stage"], "waiting_for_visual_storyboard_continuation")
+        deferred = service.execute(job_id, attempt=1, dispatch_sequence=1)
+
+        self.assertEqual(deferred["state"], JobState.QUEUED.value)
+        self.assertEqual(deferred["stage"], "waiting_for_visual_quota_deferral")
+        self.assertEqual(deferred["attempt"], 1)
+        self.assertEqual(deferred["dispatch_sequence"], 2)
+        self.assertEqual(deferred["continuation"]["next_panel_index"], 1)
+        self.assertEqual(deferred["continuation"]["quota_deferrals_used"], 1)
+        self.assertIsNone(deferred["visual_storyboard"])
+        self.assertIsNone(deferred["pitch_preview"])
+        self.assertEqual(dispatcher.delay_seconds, [0, 0, 0])
+        self.assertEqual(
+            int(dispatcher.scheduled_epoch_seconds[2])
+            - int(dispatcher.scheduled_epoch_seconds[1]),
+            90,
+        )
+        self.assertTrue(dispatcher.job_ids[2].endswith(job_id))
+        self.assertEqual(dispatcher.attempts[:3], [1, 1, 1])
+
+        resumed = service.execute(job_id, attempt=1, dispatch_sequence=2)
+        self.assertEqual(resumed["state"], JobState.QUEUED.value)
+        self.assertEqual(resumed["continuation"]["next_panel_index"], 3)
+        self.assertEqual(resumed["continuation"]["quota_deferrals_used"], 1)
+
+        current = resumed
+        while current["state"] == JobState.QUEUED.value:
+            raw = repository.get(job_id)
+            current = service.execute(
+                job_id,
+                attempt=1,
+                dispatch_sequence=int(raw["dispatch_sequence"]),
+            )
+
+        self.assertEqual(current["state"], JobState.SUCCEEDED.value)
+        self.assertEqual(current["attempt"], 1)
+        self.assertEqual(current["dispatch_sequence"], 56)
+        self.assertEqual(current["max_dispatches"], 80)
+        self.assertEqual(current["continuation"]["quota_deferrals_used"], 1)
+        self.assertEqual(
+            current["execution"]["pipeline"]["visual_quota_deferrals_used"],
+            1,
+        )
+        panels = current["visual_storyboard"]["panels"]
+        self.assertEqual(len(panels), 36)
+        self.assertEqual(len({panel["shot_id"] for panel in panels}), 36)
+        self.assertEqual(len({panel["artifact_id"] for panel in panels}), 36)
+        self.assertEqual(dispatcher.dispatch_sequences, list(range(57)))
+        self.assertEqual(dispatcher.delay_seconds, [0] * 57)
+        self.assertEqual(visual_provider.attempted_shot_ids[:3], [
+            panels[0]["shot_id"],
+            panels[1]["shot_id"],
+            panels[1]["shot_id"],
+        ])
+
+    def test_two_jobs_share_fifo_without_spending_provider_deferral_budget(
+        self,
+    ) -> None:
+        repository = MemoryRepository(enforce_visual_capacity=True)
+        dispatcher = RecordingDispatcher()
+        visual_provider = UniqueVisualProvider()
+        artifact_store = StaticArtifactStore()
+        service = AllThingsJobService(
+            config=valid_config(admission_cooldown_seconds=0),
+            repository=repository,
+            dispatcher=dispatcher,
+            provider=FullScreenplayProvider(),
+            visual_provider=visual_provider,
+            artifact_store=artifact_store,
+            narrated_pitch_renderer=StaticNarratedPitchRenderer(artifact_store),
+        )
+        first = service.submit("Plan first concurrent screenplay.")
+        second = service.submit("Plan second concurrent screenplay.")
+        first_id = str(first["job_id"])
+        second_id = str(second["job_id"])
+        service.execute(first_id, attempt=1, dispatch_sequence=0)
+        service.execute(second_id, attempt=1, dispatch_sequence=0)
+
+        for _ in range(2):
+            with self.assertRaises(JobVisualCapacityPendingError) as caught:
+                service.execute(second_id, attempt=1, dispatch_sequence=1)
+            self.assertGreaterEqual(caught.exception.retry_after_seconds, 1)
+            waiting = repository.get(second_id)
+            self.assertEqual(waiting["state"], JobState.QUEUED.value)
+            self.assertEqual(waiting["dispatch_sequence"], 1)
+            self.assertEqual(waiting["continuation"]["capacity_waits_used"], 0)
+            self.assertEqual(waiting["continuation"]["quota_deferrals_used"], 0)
+            self.assertEqual(visual_provider.calls, [])
+
+        first_visual = service.execute(first_id, attempt=1, dispatch_sequence=1)
+        self.assertEqual(first_visual["dispatch_sequence"], 2)
+        self.assertEqual(len(visual_provider.calls), 2)
+
+        # Advance the deterministic in-memory clock state without sleeping.
+        # This models the reviewed 75-second rolling window expiring while
+        # preserving the second job's FIFO position.
+        repository.visual_reservations.clear()
+        second_token = repository._continuation_token(
+            repository.get(second_id)["continuation"]
+        )
+        second_window = next(
+            item
+            for item in repository.visual_windows
+            if item["reservation_token"] == second_token
+        )
+        second_window["not_before_epoch_seconds"] = math.ceil(time.time())
+        second_visual = service.execute(second_id, attempt=1, dispatch_sequence=1)
+
+        self.assertEqual(second_visual["state"], JobState.QUEUED.value)
+        self.assertEqual(second_visual["dispatch_sequence"], 2)
+        self.assertEqual(second_visual["continuation"]["capacity_waits_used"], 0)
+        self.assertEqual(second_visual["continuation"]["quota_deferrals_used"], 0)
+        self.assertEqual(len(visual_provider.calls), 4)
+
+    def test_quota_deferral_limit_fails_truthfully_without_partial_public_media(
+        self,
+    ) -> None:
+        source = "PRIVATE SCREENPLAY quota-redaction phrase amber-nine"
+        repository = MemoryRepository()
+        dispatcher = RecordingDispatcher()
+        artifact_store = StaticArtifactStore()
+        service = AllThingsJobService(
+            config=valid_config(
+                visual_quota_max_deferrals=4,
+                visual_quota_base_deferral_seconds=90,
+                visual_quota_max_deferral_seconds=720,
+            ),
+            repository=repository,
+            dispatcher=dispatcher,
+            provider=FullScreenplayProvider(),
+            visual_provider=QuotaPatternVisualProvider(quota_calls={-1}),
+            artifact_store=artifact_store,
+            narrated_pitch_renderer=StaticNarratedPitchRenderer(artifact_store),
+        )
+
+        current = service.submit(source)
+        job_id = str(current["job_id"])
+        for sequence in range(6):
+            current = service.execute(
+                job_id,
+                attempt=1,
+                dispatch_sequence=sequence,
+            )
+
+        self.assertEqual(current["state"], JobState.FAILED.value)
+        self.assertEqual(current["attempt"], 1)
+        self.assertEqual(current["error"], {
+            "code": "visual_storyboard_incomplete",
+            "type": "VisualPanelGenerationError",
+            "retryable": True,
+            "diagnostic_code": "quota_or_rate_limited",
+            "quota_deferrals_exhausted": True,
+            "quota_deferrals_used": 4,
+            "quota_deferral_limit": 4,
+        })
+        self.assertIsNone(current["brief"])
+        self.assertIsNone(current["storyboard_package"])
+        self.assertIsNone(current["visual_storyboard"])
+        self.assertIsNone(current["pitch_preview"])
+        self.assertIsNone(current["continuation"])
+        self.assertEqual(dispatcher.dispatch_sequences, [0, 1, 2, 3, 4, 5])
+        self.assertEqual(dispatcher.delay_seconds, [0, 0, 0, 0, 0, 0])
+        base_schedule = int(dispatcher.scheduled_epoch_seconds[1])
+        self.assertEqual(
+            [
+                int(value) - base_schedule
+                for value in dispatcher.scheduled_epoch_seconds[2:]
+            ],
+            [90, 180, 360, 720],
+        )
+        encoded = json.dumps(current)
+        self.assertNotIn(source, encoded)
+        self.assertNotIn("PRIVATE provider payload", encoded)
+        self.assertEqual(repository.get(job_id)["message"], source)
+
     def test_maximum_40_scene_plan_receives_a_sufficient_finite_dispatch_budget(
         self,
     ) -> None:
-        class MaximumScreenplayProvider:
-            def create_brief(self, message: str, *, job_id: str) -> BriefProviderResult:
-                value = brief_mapping()
-                value.update(
-                    {
-                        "duration_seconds": 2_400,
-                        "scenes": [
-                            {
-                                "number": number,
-                                "purpose": f"Advance maximum-size sequence {number}.",
-                                "setting": f"production location {number}",
-                                "characters": ["Mara", "Jon"],
-                                "dialogue_required": True,
-                            }
-                            for number in range(1, 41)
-                        ],
-                    }
-                )
-                return BriefProviderResult(
-                    brief=ProductionBrief.from_mapping(value),
-                    execution={"evidence_origin": "test_double", "provider": "test"},
-                )
-
         repository = MemoryRepository()
         dispatcher = RecordingDispatcher()
         artifact_store = StaticArtifactStore()
@@ -1299,10 +2178,52 @@ class AllThingsAgenticTests(unittest.TestCase):
 
         self.assertEqual(continued["state"], JobState.QUEUED.value)
         self.assertEqual(continued["max_dispatches"], MAX_PIPELINE_DISPATCHES)
-        self.assertEqual(MAX_PIPELINE_DISPATCHES, 182)
+        self.assertEqual(MAX_PIPELINE_DISPATCHES, 250)
         self.assertEqual(continued["continuation"]["required_panel_count"], 120)
         self.assertEqual(continued["continuation"]["required_pitch_count"], 120)
         self.assertEqual(dispatcher.dispatch_sequences, [0, 1])
+
+    def test_worst_case_capacity_and_quota_schedule_finishes_at_sequence_249(
+        self,
+    ) -> None:
+        repository = OneInactiveWindowPerVisualAttemptRepository()
+        dispatcher = RecordingDispatcher()
+        artifact_store = StaticArtifactStore()
+        visual_provider = QuotaPatternVisualProvider(quota_calls={1, 2, 3, 4})
+        pitch_renderer = StaticNarratedPitchRenderer(artifact_store)
+        service = AllThingsJobService(
+            config=valid_config(),
+            repository=repository,
+            dispatcher=dispatcher,
+            provider=MaximumScreenplayProvider(),
+            visual_provider=visual_provider,
+            artifact_store=artifact_store,
+            narrated_pitch_renderer=pitch_renderer,
+        )
+
+        current = service.submit("Exercise every bounded continuation delivery.")
+        job_id = str(current["job_id"])
+        while current["state"] == JobState.QUEUED.value:
+            durable = repository.get(job_id)
+            current = service.execute(
+                job_id,
+                attempt=1,
+                dispatch_sequence=int(durable["dispatch_sequence"]),
+            )
+
+        self.assertEqual(current["state"], JobState.SUCCEEDED.value, current)
+        self.assertEqual(current["dispatch_sequence"], 249)
+        self.assertEqual(current["max_dispatches"], MAX_PIPELINE_DISPATCHES)
+        self.assertEqual(current["continuation"]["dispatches_used"], 250)
+        self.assertEqual(current["continuation"]["max_dispatches"], 250)
+        self.assertEqual(current["continuation"]["quota_deferrals_used"], 4)
+        self.assertEqual(repository.capacity_wait_count, 64)
+        self.assertEqual(repository.prepared_window_count, 128)
+        self.assertEqual(len(visual_provider.attempted_shot_ids), 124)
+        self.assertEqual(len(visual_provider.calls), 120)
+        self.assertEqual(dispatcher.dispatch_sequences, list(range(250)))
+        self.assertEqual(pitch_renderer.segment_calls, list(range(120)))
+        self.assertEqual(pitch_renderer.finalize_calls, 1)
 
     def test_stale_dispatch_sequence_cannot_duplicate_checkpointed_panels(self) -> None:
         repository = MemoryRepository()
@@ -1320,15 +2241,16 @@ class AllThingsAgenticTests(unittest.TestCase):
         )
         queued = service.submit("Build every card exactly once.")
         job_id = str(queued["job_id"])
-        continued = service.execute(job_id, attempt=1, dispatch_sequence=0)
-        self.assertEqual(continued["dispatch_sequence"], 1)
+        service.execute(job_id, attempt=1, dispatch_sequence=0)
+        continued = service.execute(job_id, attempt=1, dispatch_sequence=1)
+        self.assertEqual(continued["dispatch_sequence"], 2)
         self.assertEqual(len(visual_provider.calls), 2)
 
-        stale = service.execute(job_id, attempt=1, dispatch_sequence=0)
+        stale = service.execute(job_id, attempt=1, dispatch_sequence=1)
         self.assertEqual(stale["state"], JobState.QUEUED.value)
-        self.assertEqual(stale["dispatch_sequence"], 1)
+        self.assertEqual(stale["dispatch_sequence"], 2)
         self.assertEqual(len(visual_provider.calls), 2)
-        self.assertEqual(dispatcher.dispatch_sequences, [0, 1])
+        self.assertEqual(dispatcher.dispatch_sequences, [0, 1, 2])
 
     def test_tampered_checkpoint_fails_closed_and_retry_starts_new_attempt(self) -> None:
         repository = MemoryRepository()
@@ -1347,11 +2269,12 @@ class AllThingsAgenticTests(unittest.TestCase):
         queued = service.submit("Reject any modified checkpoint.")
         job_id = str(queued["job_id"])
         service.execute(job_id, attempt=1, dispatch_sequence=0)
+        service.execute(job_id, attempt=1, dispatch_sequence=1)
         checkpoint = repository.get(job_id)["continuation"]["checkpoint"]
         object_name = str(checkpoint["object_name"])
         artifact_store.objects[object_name] += b"tampered"
 
-        failed = service.execute(job_id, attempt=1, dispatch_sequence=1)
+        failed = service.execute(job_id, attempt=1, dispatch_sequence=2)
         self.assertEqual(failed["state"], JobState.FAILED.value)
         self.assertEqual(failed["error"]["code"], "pipeline_checkpoint_invalid")
         self.assertTrue(failed["error"]["retryable"])
@@ -1366,8 +2289,8 @@ class AllThingsAgenticTests(unittest.TestCase):
         self.assertEqual(retried["attempt"], 2)
         self.assertEqual(retried["dispatch_sequence"], 0)
         self.assertIsNone(retried["continuation"])
-        self.assertEqual(dispatcher.attempts, [1, 1, 2])
-        self.assertEqual(dispatcher.dispatch_sequences, [0, 1, 0])
+        self.assertEqual(dispatcher.attempts, [1, 1, 1, 2])
+        self.assertEqual(dispatcher.dispatch_sequences, [0, 1, 2, 0])
 
     def test_visual_chunk_observes_cancellation_between_panels(self) -> None:
         repository = MemoryRepository()
@@ -1386,11 +2309,12 @@ class AllThingsAgenticTests(unittest.TestCase):
         visual_provider.cancel_callback = service.cancel
         queued = service.submit("Stop promptly when I cancel.")
         job_id = str(queued["job_id"])
-        cancelled = service.execute(job_id, attempt=1, dispatch_sequence=0)
+        service.execute(job_id, attempt=1, dispatch_sequence=0)
+        cancelled = service.execute(job_id, attempt=1, dispatch_sequence=1)
 
         self.assertEqual(cancelled["state"], JobState.CANCELLED.value)
         self.assertEqual(len(visual_provider.calls), 2)
-        self.assertEqual(dispatcher.dispatch_sequences, [0])
+        self.assertEqual(dispatcher.dispatch_sequences, [0, 1])
         self.assertIsNone(cancelled["continuation"])
         self.assertIsNone(cancelled["visual_storyboard"])
         self.assertEqual(repository.get(job_id)["message"], "Stop promptly when I cancel.")
@@ -1426,10 +2350,11 @@ class AllThingsAgenticTests(unittest.TestCase):
         job_id = str(queued["job_id"])
         service.execute(job_id, attempt=1, dispatch_sequence=0)
         service.execute(job_id, attempt=1, dispatch_sequence=1)
-        cancelled = service.execute(job_id, attempt=1, dispatch_sequence=2)
+        service.execute(job_id, attempt=1, dispatch_sequence=2)
+        cancelled = service.execute(job_id, attempt=1, dispatch_sequence=3)
 
         self.assertEqual(cancelled["state"], JobState.CANCELLED.value)
-        self.assertEqual(dispatcher.dispatch_sequences, [0, 1, 2])
+        self.assertEqual(dispatcher.dispatch_sequences, [0, 1, 2, 3])
         self.assertIsNone(cancelled["continuation"])
         self.assertIsNone(cancelled["pitch_preview"])
         self.assertEqual(
@@ -1455,13 +2380,14 @@ class AllThingsAgenticTests(unittest.TestCase):
         job_id = str(queued["job_id"])
         service.execute(job_id, attempt=1, dispatch_sequence=0)
         service.execute(job_id, attempt=1, dispatch_sequence=1)
-        continued = service.execute(job_id, attempt=1, dispatch_sequence=2)
+        service.execute(job_id, attempt=1, dispatch_sequence=2)
+        continued = service.execute(job_id, attempt=1, dispatch_sequence=3)
 
-        self.assertEqual(continued["dispatch_sequence"], 3)
+        self.assertEqual(continued["dispatch_sequence"], 4)
         self.assertEqual(pitch_renderer.segment_calls, [0])
-        stale = service.execute(job_id, attempt=1, dispatch_sequence=2)
+        stale = service.execute(job_id, attempt=1, dispatch_sequence=3)
         self.assertEqual(stale["state"], JobState.QUEUED.value)
-        self.assertEqual(stale["dispatch_sequence"], 3)
+        self.assertEqual(stale["dispatch_sequence"], 4)
         self.assertEqual(pitch_renderer.segment_calls, [0])
         segment_names = [
             name for name in artifact_store.objects if name.endswith("pitch-card-0001.mp4")
@@ -1502,6 +2428,35 @@ class AllThingsAgenticTests(unittest.TestCase):
         )
         self.assertNotIn("authorization", {key.casefold() for key in request["headers"]})
 
+    def test_quota_successor_is_named_and_has_an_explicit_bounded_schedule(self) -> None:
+        client = FakeTasksClient()
+        before = math.ceil(time.time())
+        receipt = CloudTasksDispatcher(valid_config(), client=client).enqueue(
+            "00000000-0000-0000-0000-000000000001",
+            attempt=2,
+            dispatch_sequence=7,
+            delay_seconds=720,
+        )
+        after = math.ceil(time.time())
+        task = client.calls[0]["task"]
+
+        self.assertTrue(task["name"].endswith("-a2-d007"))
+        self.assertEqual(receipt["task_name"], task["name"])
+        self.assertEqual(receipt["attempt"], 2)
+        self.assertEqual(receipt["dispatch_sequence"], 7)
+        self.assertEqual(receipt["schedule_delay_seconds"], 720)
+        scheduled = task["schedule_time"]["seconds"]
+        self.assertEqual(receipt["scheduled_epoch_seconds"], scheduled)
+        self.assertGreaterEqual(scheduled, before + 720)
+        self.assertLessEqual(scheduled, after + 720)
+        with self.assertRaises(JobTransitionError):
+            CloudTasksDispatcher(valid_config(), client=FakeTasksClient()).enqueue(
+                "00000000-0000-0000-0000-000000000001",
+                attempt=2,
+                dispatch_sequence=8,
+                delay_seconds=7_201,
+            )
+
     def test_cloud_tasks_dispatch_accepts_last_bounded_sequence_and_rejects_beyond_it(
         self,
     ) -> None:
@@ -1516,7 +2471,7 @@ class AllThingsAgenticTests(unittest.TestCase):
         )
 
         self.assertEqual(receipt["dispatch_sequence"], last_sequence)
-        self.assertTrue(client.calls[0]["task"]["name"].endswith("-a3-d181"))
+        self.assertTrue(client.calls[0]["task"]["name"].endswith("-a3-d249"))
         for invalid in (True, MAX_PIPELINE_DISPATCHES):
             with self.subTest(dispatch_sequence=invalid):
                 with self.assertRaises(JobTransitionError):
@@ -1661,14 +2616,14 @@ class AllThingsAgenticTests(unittest.TestCase):
     def test_shared_demo_admission_window_caps_new_jobs(self) -> None:
         repository = MemoryRepository()
         service = AllThingsJobService(
-            config=valid_config(admission_max_jobs=2, admission_cooldown_seconds=0),
+            config=valid_config(admission_cooldown_seconds=0),
             repository=repository,
             dispatcher=RecordingDispatcher(),
         )
-        service.submit("First bounded job.")
-        service.submit("Second bounded job.")
+        for number in range(1, 5):
+            service.submit(f"Bounded job {number}.")
         with self.assertRaises(AdmissionLimitError) as caught:
-            service.submit("Third bounded job.")
+            service.submit("Fifth bounded job.")
         self.assertGreaterEqual(caught.exception.retry_after_seconds, 1)
 
     def test_dispatch_failure_is_durable_and_truthful(self) -> None:
@@ -1701,9 +2656,39 @@ class AllThingsAgenticTests(unittest.TestCase):
         assert worker is not None and queue is not None
         self.assertGreater(int(worker.group("lease")), int(worker.group("timeout")))
         self.assertGreater(int(queue.group("duration")), int(worker.group("lease")))
-        self.assertGreater(int(queue.group("attempts")), 3)
+        self.assertGreaterEqual(int(queue.group("attempts")), MAX_PIPELINE_DISPATCHES)
+        self.assertGreaterEqual(int(queue.group("duration")), 21_600)
         self.assertIn("three **application attempts**", docs)
         self.assertIn("maxAttempts=3` / `maxRetryDuration=300s` policy is unsafe", docs)
+
+    def test_documented_request_budgets_match_the_bounded_worker_calls(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        setup = (root / "docs" / "ALL_THINGS_AGENTIC_SETUP.md").read_text(
+            encoding="utf-8"
+        )
+        architecture = (root / "docs" / "ARCHITECTURE.md").read_text(
+            encoding="utf-8"
+        )
+        for docs in (setup, architecture):
+            normalized = docs.casefold()
+            self.assertIn("600 seconds", normalized)
+            self.assertIn("sequence zero", normalized)
+            self.assertIn("two-panel visual continuation", normalized)
+            self.assertNotIn("1,510 seconds", docs)
+            self.assertNotIn("1,210 seconds", docs)
+
+    def test_documented_continuation_worker_can_enqueue_successor_tasks(self) -> None:
+        docs = (
+            Path(__file__).resolve().parents[1] / "docs" / "ALL_THINGS_AGENTIC_SETUP.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'gcloud tasks queues add-iam-policy-binding video-studio-production-briefs --project $env:AT_PROJECT --location $env:AT_REGION --member "serviceAccount:$($env:AT_WORKER_SA)" --role roles/cloudtasks.enqueuer',
+            docs,
+        )
+        self.assertIn(
+            'gcloud iam service-accounts add-iam-policy-binding $env:AT_TASKS_SA --project $env:AT_PROJECT --member "serviceAccount:$($env:AT_WORKER_SA)" --role roles/iam.serviceAccountUser',
+            docs,
+        )
 
 
 if __name__ == "__main__":

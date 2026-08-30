@@ -187,25 +187,22 @@ class GoogleVisualPanelProviderTests(unittest.TestCase):
             )
         self.assertEqual(client.models.calls[1]["contents"], "Make a fresh safe panel.")
 
-    def test_retries_only_rate_limit_and_retryable_5xx_with_bounded_backoff(self) -> None:
-        source = still_image_bytes()
+    def test_rate_limit_is_deferred_without_an_immediate_provider_retry(self) -> None:
         client = FakeClient(
             StatusError(429, "private key-like text"),
-            image_response(source),
+            image_response(still_image_bytes()),
         )
         provider = GoogleGenAIVisualPanelProvider(valid_config(), client=client)
         with patch("kira_studio.all_things_google.time.sleep") as sleep:
-            provider.create_panel(
-                "Retry a transient image request.",
-                shot_id="SC01-SH01",
-                job_id="job-3",
-            )
-        self.assertEqual(len(client.models.calls), 2)
-        self.assertEqual(
-            [call.args[0] for call in sleep.call_args_list],
-            [5],
-        )
-        self.assertEqual(sum(call.args[0] for call in sleep.call_args_list), 5)
+            with self.assertRaises(VisualPanelGenerationError) as caught:
+                provider.create_panel(
+                    "Defer a quota-limited image request.",
+                    shot_id="SC01-SH01",
+                    job_id="job-3",
+                )
+        self.assertEqual(caught.exception.code, "quota_or_rate_limited")
+        self.assertEqual(len(client.models.calls), 1)
+        sleep.assert_not_called()
 
     def test_exhausted_rate_limit_and_5xx_return_only_allowlisted_codes(self) -> None:
         rate_client = FakeClient(
@@ -228,11 +225,8 @@ class GoogleVisualPanelProviderTests(unittest.TestCase):
         self.assertNotIn("secret", str(caught.exception))
         self.assertIsNone(caught.exception.__cause__)
         self.assertIsNone(caught.exception.__context__)
-        self.assertEqual(len(rate_client.models.calls), 2)
-        self.assertEqual(
-            [call.args[0] for call in rate_sleep.call_args_list],
-            [5],
-        )
+        self.assertEqual(len(rate_client.models.calls), 1)
+        rate_sleep.assert_not_called()
 
         server_client = FakeClient(
             StatusError(503, "secret one"),
@@ -254,11 +248,11 @@ class GoogleVisualPanelProviderTests(unittest.TestCase):
         self.assertNotIn("secret", str(caught.exception))
         self.assertIsNone(caught.exception.__cause__)
         self.assertIsNone(caught.exception.__context__)
-        self.assertEqual(len(server_client.models.calls), 2)
-        self.assertEqual(
-            [call.args[0] for call in server_sleep.call_args_list],
-            [5],
-        )
+        # One global-gate reservation corresponds to exactly one provider
+        # request.  A 5xx is surfaced to the durable orchestrator instead of
+        # being retried invisibly inside the reserved request slot.
+        self.assertEqual(len(server_client.models.calls), 1)
+        server_sleep.assert_not_called()
 
     def test_nonretryable_provider_error_is_not_retried(self) -> None:
         client = FakeClient(StatusError(400, "private rejected prompt detail"))

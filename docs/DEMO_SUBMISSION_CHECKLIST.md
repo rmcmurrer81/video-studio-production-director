@@ -35,8 +35,10 @@ This checklist separates local contract verification from evidence that exists o
 - [ ] The worker is private; an unauthenticated request is rejected by Cloud Run IAM.
 - [ ] Both roles have the exact non-secret bucket/voice configuration. Only the API has the access-code digest.
 - [ ] Cloud Tasks dispatch deadline and Cloud Run worker timeout are 1,740 seconds; fenced lease is 1,800 seconds.
+- [ ] Queue recovery is `maxAttempts=250`, `maxRetryDuration=21600s`, concurrency 1, and rate 1/s.
+- [ ] Before upgrading a v1 admission ledger, the queue is paused/empty, no Firestore job is `queued`, `running`, or `cancelling`, and the private visual-capacity FIFO has no live entry/reservation; otherwise deployment remains on hold.
 - [ ] Queue concurrency and worker max instances are both one; worker `/health` reports `continuation_dispatch_configured: true`.
-- [ ] API and worker use `KIRA_ALL_THINGS_VISUAL_PANELS_PER_DISPATCH=2`; worker also has its own canonical URL and the task-caller service account configured for successor dispatches.
+- [ ] API and worker use the same reviewed pacing target: `KIRA_ALL_THINGS_VISUAL_PANELS_PER_DISPATCH=2`, `KIRA_ALL_THINGS_VISUAL_SUCCESSOR_DELAY_SECONDS=75`, `KIRA_ALL_THINGS_VISUAL_QUOTA_MAX_DEFERRALS=4`, `KIRA_ALL_THINGS_VISUAL_QUOTA_BASE_DEFERRAL_SECONDS=90`, and `KIRA_ALL_THINGS_VISUAL_QUOTA_MAX_DEFERRAL_SECONDS=720`; worker also has its own canonical URL and the task-caller service account configured for successor dispatches.
 - [ ] Worker starts at 2 CPU, 4 GiB, concurrency 1, max instances 1 for the first media acceptance run.
 
 ## 3. Access and boundary smoke tests

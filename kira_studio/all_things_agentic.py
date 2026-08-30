@@ -31,6 +31,9 @@ NARRATED_PITCH_SCHEMA = "video-studio.narrated-pitch/v1"
 NARRATED_PITCH_SEGMENT_SCHEMA = "video-studio.narrated-pitch-segment/v1"
 PIPELINE_CHECKPOINT_SCHEMA = "video-studio.pipeline-checkpoint/v1"
 PIPELINE_CONTINUATION_SCHEMA = "video-studio.pipeline-continuation/v1"
+PIPELINE_PENDING_DISPATCH_SCHEMA = "video-studio.pipeline-pending-dispatch/v1"
+VISUAL_CAPACITY_SCHEMA = "video-studio.visual-request-capacity/v1"
+VISUAL_CAPACITY_WINDOW_SCHEMA = "video-studio.visual-capacity-window/v1"
 STORYBOARD_FRAME_RATE = 24
 # Leaves headroom beneath Firestore's document limit for the separately exposed
 # creative brief, bounded request text, durable state, and provider evidence.
@@ -53,20 +56,54 @@ MAX_MESSAGE_BYTES = 640_000
 # keeps the bound conservative rather than relying on the service's hard error.
 MAX_DURABLE_JOB_BYTES = 900_000
 MAX_ATTEMPTS = 3
-# A continued visual request makes at most two provider calls.  Together with
-# provider-side request deadlines this keeps useful headroom beneath Cloud
-# Run/Cloud Tasks' reviewed 1,740-second request envelope.
+# The reviewed project quota allows two image requests per rolling 75-second
+# safety window.
+# Generate one pair per request, then schedule the next pair after a quiet gap.
 DEFAULT_VISUAL_PANELS_PER_DISPATCH = 2
 MAX_VISUAL_PANELS_PER_DISPATCH = 2
+# A provider quota response is different from a failed creative plan.  Preserve
+# already validated private panels and give the same application attempt four
+# deterministic scheduled successors (90, 180, 360, then 720 seconds by
+# default) instead of immediately consuming a user-visible retry.  Successful
+# visual successors are also spaced by 75 seconds so a long screenplay does
+# not immediately issue the next image request.  These are strict configuration
+# bounds, not unbounded retry or jitter knobs.
+DEFAULT_VISUAL_SUCCESSOR_DELAY_SECONDS = 75
+MIN_VISUAL_SUCCESSOR_DELAY_SECONDS = 75
+MAX_VISUAL_SUCCESSOR_DELAY_SECONDS = 900
+VISUAL_CAPACITY_REQUEST_LIMIT = 2
+VISUAL_CAPACITY_WINDOW_SECONDS = 75
+# Admission permits four concurrent jobs.  At most one live window per job plus
+# one stale/recovery window can therefore exist in the private FIFO.  Keep a
+# small hard cap so corrupt state can never produce an unbounded document or an
+# unbounded Cloud Tasks schedule.
+MAX_VISUAL_CAPACITY_QUEUE_LENGTH = 8
+# A fourth admitted job can legitimately wait behind three complete 1,800-second
+# worker leases plus the reviewed 75-second safety gaps.  Keep the opaque FIFO
+# turn long enough for that bounded worst case, while still pruning abandoned
+# turns deterministically.
+VISUAL_CAPACITY_TURN_TTL_SECONDS = 7_275
+DEFAULT_VISUAL_QUOTA_MAX_DEFERRALS = 4
+MAX_VISUAL_QUOTA_MAX_DEFERRALS = 4
+DEFAULT_VISUAL_QUOTA_BASE_DEFERRAL_SECONDS = 90
+DEFAULT_VISUAL_QUOTA_MAX_DEFERRAL_SECONDS = 720
+MIN_VISUAL_QUOTA_DEFERRAL_SECONDS = 30
+MAX_VISUAL_QUOTA_DEFERRAL_SECONDS = 900
+MAX_TASK_SCHEDULE_DELAY_SECONDS = 7_200
 # The production-brief schema permits 40 scenes and the deterministic compiler
 # emits three cards per scene.  With two visual panels per dispatch, the largest
-# valid plan needs an exclusive sequence bound of
-# 1 initial + ceil(120 / 2) visual + 120 pitch-card + 1 final = 182.
-MAX_PIPELINE_DISPATCHES = 182
+# valid plan needs 60 normal visual chunks plus four provider-429 successor
+# attempts.  Every visual attempt may need one FIFO timing reconciliation, then
+# 120 pitch-card workers and one finalizer, plus the initial planning worker:
+# 2*(60+4)+120+2 = 250 total deliveries.  The value is an exclusive sequence
+# bound, so valid sequences are 0..249. Capacity waits remain separate from
+# (and cannot consume) the four provider deferrals.
+MAX_PIPELINE_DISPATCHES = 250
 DEFAULT_ADMISSION_COOLDOWN_SECONDS = 10
 DEFAULT_ADMISSION_WINDOW_SECONDS = 3_600
 DEFAULT_ADMISSION_MAX_JOBS = 4
-DEFAULT_WORKER_LEASE_SECONDS = 360
+MAX_ADMISSION_MAX_JOBS = 4
+DEFAULT_WORKER_LEASE_SECONDS = 1_800
 # Firestore TTL deletes the entire private job record after this bounded
 # evidence/retry window.  The source is cleared earlier on success and at the
 # final retry limit.  One day is ample for a judge to inspect or retry a demo
@@ -143,6 +180,7 @@ class VisualPanelGenerationError(AllThingsError):
             "invalid_provider_asset",
             "mixed_panel_failures",
             "quota_or_rate_limited",
+            "project_visual_capacity_unavailable",
             "renderer_not_configured",
         }
     )
@@ -185,8 +223,65 @@ class PipelineContinuationDispatchError(AllThingsError):
     """The next bounded worker dispatch could not be durably scheduled."""
 
 
+class JobDispatchPendingError(AllThingsError):
+    """A durable continuation outbox still needs Cloud Tasks reconciliation."""
+
+    def __init__(self, message: str, *, retry_after_seconds: int = 5) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = max(1, min(60, int(retry_after_seconds)))
+
+
+class JobVisualCapacityPendingError(JobDispatchPendingError):
+    """The same named task must retry after its FIFO visual turn matures."""
+
+    def __init__(self, *, retry_after_seconds: int) -> None:
+        AllThingsError.__init__(
+            self,
+            "project image capacity is temporarily reserved by another job",
+        )
+        self.retry_after_seconds = max(
+            1,
+            min(MAX_TASK_SCHEDULE_DELAY_SECONDS, int(retry_after_seconds)),
+        )
+
+
 class PipelineWorkStopped(AllThingsError):
     """Chunk work stopped because cancellation or lease fencing won."""
+
+
+class _VisualQuotaDeferred(AllThingsError):
+    """Internal, redacted signal carrying only validated partial progress."""
+
+    def __init__(
+        self,
+        panels: Sequence[Mapping[str, Any]],
+        *,
+        evidence_origin: str,
+    ) -> None:
+        super().__init__("visual provider quota requires a bounded successor")
+        self.panels = tuple(dict(panel) for panel in panels)
+        self.evidence_origin = evidence_origin
+
+
+class _VisualCapacityDeferred(AllThingsError):
+    """Internal signal for a denied project-wide image-request reservation."""
+
+    def __init__(
+        self,
+        panels: Sequence[Mapping[str, Any]],
+        *,
+        evidence_origin: str,
+        retry_after_seconds: int,
+        window_active: bool = True,
+    ) -> None:
+        super().__init__("project image capacity requires a bounded successor")
+        self.panels = tuple(dict(panel) for panel in panels)
+        self.evidence_origin = evidence_origin
+        self.retry_after_seconds = max(
+            1,
+            min(MAX_TASK_SCHEDULE_DELAY_SECONDS, int(retry_after_seconds)),
+        )
+        self.window_active = bool(window_active)
 
 
 class JobState(str, Enum):
@@ -215,6 +310,36 @@ def canonical_json(value: Any) -> str:
 
 def sha256_json(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _visual_capacity_reservation_token(
+    *,
+    job_id: str,
+    attempt: int,
+    dispatch_sequence: int,
+) -> str:
+    """Derive the retry-stable opaque FIFO token for one visual dispatch."""
+
+    if (
+        re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+            job_id,
+        )
+        is None
+        or isinstance(attempt, bool)
+        or not isinstance(attempt, int)
+        or attempt < 1
+        or isinstance(dispatch_sequence, bool)
+        or not isinstance(dispatch_sequence, int)
+        or not 1 <= dispatch_sequence < MAX_PIPELINE_DISPATCHES
+    ):
+        raise PipelineCheckpointError("visual capacity window identity is invalid")
+    return hashlib.sha256(
+        (
+            "video-studio.visual-capacity/v1:"
+            f"{job_id}:a{attempt}:d{dispatch_sequence}"
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def _environment_integer(
@@ -278,6 +403,12 @@ class AllThingsConfig:
     admission_max_jobs: int = DEFAULT_ADMISSION_MAX_JOBS
     worker_lease_seconds: int = DEFAULT_WORKER_LEASE_SECONDS
     visual_panels_per_dispatch: int = DEFAULT_VISUAL_PANELS_PER_DISPATCH
+    visual_successor_delay_seconds: int = DEFAULT_VISUAL_SUCCESSOR_DELAY_SECONDS
+    visual_quota_max_deferrals: int = DEFAULT_VISUAL_QUOTA_MAX_DEFERRALS
+    visual_quota_base_deferral_seconds: int = (
+        DEFAULT_VISUAL_QUOTA_BASE_DEFERRAL_SECONDS
+    )
+    visual_quota_max_deferral_seconds: int = DEFAULT_VISUAL_QUOTA_MAX_DEFERRAL_SECONDS
     job_retention_seconds: int = DEFAULT_JOB_RETENTION_SECONDS
 
     @classmethod
@@ -324,6 +455,26 @@ class AllThingsConfig:
                 "KIRA_ALL_THINGS_VISUAL_PANELS_PER_DISPATCH",
                 DEFAULT_VISUAL_PANELS_PER_DISPATCH,
             ),
+            visual_successor_delay_seconds=_environment_integer(
+                environment,
+                "KIRA_ALL_THINGS_VISUAL_SUCCESSOR_DELAY_SECONDS",
+                DEFAULT_VISUAL_SUCCESSOR_DELAY_SECONDS,
+            ),
+            visual_quota_max_deferrals=_environment_integer(
+                environment,
+                "KIRA_ALL_THINGS_VISUAL_QUOTA_MAX_DEFERRALS",
+                DEFAULT_VISUAL_QUOTA_MAX_DEFERRALS,
+            ),
+            visual_quota_base_deferral_seconds=_environment_integer(
+                environment,
+                "KIRA_ALL_THINGS_VISUAL_QUOTA_BASE_DEFERRAL_SECONDS",
+                DEFAULT_VISUAL_QUOTA_BASE_DEFERRAL_SECONDS,
+            ),
+            visual_quota_max_deferral_seconds=_environment_integer(
+                environment,
+                "KIRA_ALL_THINGS_VISUAL_QUOTA_MAX_DEFERRAL_SECONDS",
+                DEFAULT_VISUAL_QUOTA_MAX_DEFERRAL_SECONDS,
+            ),
             job_retention_seconds=_environment_integer(
                 environment,
                 "KIRA_ALL_THINGS_JOB_RETENTION_SECONDS",
@@ -367,14 +518,65 @@ class AllThingsConfig:
             issues.append("KIRA_ALL_THINGS_ADMISSION_COOLDOWN_SECONDS must be from 0 to 300")
         if not 60 <= self.admission_window_seconds <= 86_400:
             issues.append("KIRA_ALL_THINGS_ADMISSION_WINDOW_SECONDS must be from 60 to 86400")
-        if not 1 <= self.admission_max_jobs <= 500:
-            issues.append("KIRA_ALL_THINGS_ADMISSION_MAX_JOBS must be from 1 to 500")
+        if self.admission_max_jobs != DEFAULT_ADMISSION_MAX_JOBS:
+            issues.append(
+                "KIRA_ALL_THINGS_ADMISSION_MAX_JOBS must be exactly "
+                f"{DEFAULT_ADMISSION_MAX_JOBS}"
+            )
         if not 60 <= self.worker_lease_seconds <= 1_800:
             issues.append("KIRA_ALL_THINGS_WORKER_LEASE_SECONDS must be from 60 to 1800")
-        if not 1 <= self.visual_panels_per_dispatch <= MAX_VISUAL_PANELS_PER_DISPATCH:
+        if self.visual_panels_per_dispatch != DEFAULT_VISUAL_PANELS_PER_DISPATCH:
             issues.append(
-                "KIRA_ALL_THINGS_VISUAL_PANELS_PER_DISPATCH must be from 1 to "
-                f"{MAX_VISUAL_PANELS_PER_DISPATCH}"
+                "KIRA_ALL_THINGS_VISUAL_PANELS_PER_DISPATCH must be exactly "
+                f"{DEFAULT_VISUAL_PANELS_PER_DISPATCH}"
+            )
+        if not (
+            MIN_VISUAL_SUCCESSOR_DELAY_SECONDS
+            <= self.visual_successor_delay_seconds
+            <= MAX_VISUAL_SUCCESSOR_DELAY_SECONDS
+        ):
+            issues.append(
+                "KIRA_ALL_THINGS_VISUAL_SUCCESSOR_DELAY_SECONDS must be from "
+                f"{MIN_VISUAL_SUCCESSOR_DELAY_SECONDS} to "
+                f"{MAX_VISUAL_SUCCESSOR_DELAY_SECONDS}"
+            )
+        if self.visual_successor_delay_seconds != DEFAULT_VISUAL_SUCCESSOR_DELAY_SECONDS:
+            issues.append(
+                "KIRA_ALL_THINGS_VISUAL_SUCCESSOR_DELAY_SECONDS must be exactly "
+                f"{DEFAULT_VISUAL_SUCCESSOR_DELAY_SECONDS}"
+            )
+        if not 0 <= self.visual_quota_max_deferrals <= MAX_VISUAL_QUOTA_MAX_DEFERRALS:
+            issues.append(
+                "KIRA_ALL_THINGS_VISUAL_QUOTA_MAX_DEFERRALS must be from 0 to "
+                f"{MAX_VISUAL_QUOTA_MAX_DEFERRALS}"
+            )
+        if not (
+            MIN_VISUAL_QUOTA_DEFERRAL_SECONDS
+            <= self.visual_quota_base_deferral_seconds
+            <= MAX_VISUAL_QUOTA_DEFERRAL_SECONDS
+        ):
+            issues.append(
+                "KIRA_ALL_THINGS_VISUAL_QUOTA_BASE_DEFERRAL_SECONDS must be from "
+                f"{MIN_VISUAL_QUOTA_DEFERRAL_SECONDS} to "
+                f"{MAX_VISUAL_QUOTA_DEFERRAL_SECONDS}"
+            )
+        if not (
+            MIN_VISUAL_QUOTA_DEFERRAL_SECONDS
+            <= self.visual_quota_max_deferral_seconds
+            <= MAX_VISUAL_QUOTA_DEFERRAL_SECONDS
+        ):
+            issues.append(
+                "KIRA_ALL_THINGS_VISUAL_QUOTA_MAX_DEFERRAL_SECONDS must be from "
+                f"{MIN_VISUAL_QUOTA_DEFERRAL_SECONDS} to "
+                f"{MAX_VISUAL_QUOTA_DEFERRAL_SECONDS}"
+            )
+        if (
+            self.visual_quota_base_deferral_seconds
+            > self.visual_quota_max_deferral_seconds
+        ):
+            issues.append(
+                "KIRA_ALL_THINGS_VISUAL_QUOTA_BASE_DEFERRAL_SECONDS must not "
+                "exceed KIRA_ALL_THINGS_VISUAL_QUOTA_MAX_DEFERRAL_SECONDS"
             )
         if not MIN_JOB_RETENTION_SECONDS <= self.job_retention_seconds <= MAX_JOB_RETENTION_SECONDS:
             issues.append(
@@ -416,11 +618,194 @@ class AllThingsConfig:
             "admission_max_jobs": self.admission_max_jobs,
             "worker_lease_seconds": self.worker_lease_seconds,
             "visual_panels_per_dispatch": self.visual_panels_per_dispatch,
+            "visual_successor_delay_seconds": self.visual_successor_delay_seconds,
+            "visual_quota_max_deferrals": self.visual_quota_max_deferrals,
+            "visual_quota_base_deferral_seconds": self.visual_quota_base_deferral_seconds,
+            "visual_quota_max_deferral_seconds": self.visual_quota_max_deferral_seconds,
             "job_retention_seconds": self.job_retention_seconds,
         }
 
     def target_digest(self) -> str:
         return sha256_json(self.safe_dict())
+
+
+def _visual_quota_delay_seconds(
+    config: AllThingsConfig,
+    *,
+    quota_deferrals_used: int,
+) -> int:
+    """Return the next deterministic, bounded quota delay.
+
+    ``quota_deferrals_used`` is the number already committed in the immutable
+    checkpoint.  A value of zero therefore produces the first/base delay.
+    """
+
+    if (
+        isinstance(quota_deferrals_used, bool)
+        or not isinstance(quota_deferrals_used, int)
+        or not 0 <= quota_deferrals_used < MAX_VISUAL_QUOTA_MAX_DEFERRALS
+    ):
+        raise PipelineCheckpointError("quota-deferral count is outside the bound")
+    return min(
+        config.visual_quota_max_deferral_seconds,
+        config.visual_quota_base_deferral_seconds * (2**quota_deferrals_used),
+    )
+
+
+def _build_pending_dispatch(
+    *,
+    attempt: int,
+    predecessor_dispatch_sequence: int,
+    dispatch_sequence: int,
+    checkpoint_sha256: str,
+    delay_seconds: int,
+    delay_reason: str | None,
+    prepared_at: datetime,
+) -> dict[str, Any]:
+    """Create the private, integrity-bound continuation dispatch outbox."""
+
+    scheduled_epoch_seconds = math.ceil(prepared_at.timestamp()) + delay_seconds
+    body: dict[str, Any] = {
+        "schema": PIPELINE_PENDING_DISPATCH_SCHEMA,
+        "application_attempt": attempt,
+        "predecessor_dispatch_sequence": predecessor_dispatch_sequence,
+        "dispatch_sequence": dispatch_sequence,
+        "checkpoint_sha256": checkpoint_sha256,
+        "delay_seconds": delay_seconds,
+        "delay_reason": delay_reason,
+        "prepared_at": prepared_at.isoformat(),
+        "scheduled_epoch_seconds": scheduled_epoch_seconds,
+    }
+    body["manifest_sha256"] = sha256_json(body)
+    return _validate_pending_dispatch(body)
+
+
+def _validate_pending_dispatch(value: Any) -> dict[str, Any]:
+    expected = {
+        "schema",
+        "application_attempt",
+        "predecessor_dispatch_sequence",
+        "dispatch_sequence",
+        "checkpoint_sha256",
+        "delay_seconds",
+        "delay_reason",
+        "prepared_at",
+        "scheduled_epoch_seconds",
+        "manifest_sha256",
+    }
+    if not isinstance(value, Mapping) or set(value) != expected:
+        raise PipelineCheckpointError("pending dispatch contract is invalid")
+    body = {key: value[key] for key in expected if key != "manifest_sha256"}
+    attempt = value.get("application_attempt")
+    predecessor = value.get("predecessor_dispatch_sequence")
+    sequence = value.get("dispatch_sequence")
+    delay = value.get("delay_seconds")
+    reason = value.get("delay_reason")
+    prepared_at = _parse_time_strict(value.get("prepared_at"))
+    scheduled = value.get("scheduled_epoch_seconds")
+    if (
+        value.get("schema") != PIPELINE_PENDING_DISPATCH_SCHEMA
+        or isinstance(attempt, bool)
+        or not isinstance(attempt, int)
+        or attempt < 1
+        or isinstance(predecessor, bool)
+        or not isinstance(predecessor, int)
+        or predecessor < 0
+        or isinstance(sequence, bool)
+        or not isinstance(sequence, int)
+        or sequence != predecessor + 1
+        or sequence >= MAX_PIPELINE_DISPATCHES
+        or not isinstance(value.get("checkpoint_sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", str(value.get("checkpoint_sha256")))
+        is None
+        or isinstance(delay, bool)
+        or not isinstance(delay, int)
+        or not 0 <= delay <= MAX_TASK_SCHEDULE_DELAY_SECONDS
+        or reason not in {None, "visual_quota", "visual_capacity", "visual_spacing"}
+        or bool(delay) != bool(reason)
+        or prepared_at is None
+        or isinstance(scheduled, bool)
+        or not isinstance(scheduled, int)
+        or scheduled != math.ceil(prepared_at.timestamp()) + delay
+        or value.get("manifest_sha256") != sha256_json(body)
+    ):
+        raise PipelineCheckpointError("pending dispatch integrity validation failed")
+    return dict(value)
+
+
+def _parse_time_strict(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _validate_visual_capacity_result(value: Any) -> tuple[bool, int]:
+    """Validate the redacted result of the transactional project-wide gate."""
+
+    expected = {
+        "schema",
+        "granted",
+        "retry_after_seconds",
+        "window_seconds",
+        "request_limit",
+        "reservation_count",
+        "window_active",
+    }
+    if not isinstance(value, Mapping) or set(value) != expected:
+        raise PipelineCheckpointError("visual capacity reservation is invalid")
+    granted = value.get("granted")
+    retry_after = value.get("retry_after_seconds")
+    reservation_count = value.get("reservation_count")
+    window_active = value.get("window_active")
+    if (
+        value.get("schema") != VISUAL_CAPACITY_SCHEMA
+        or not isinstance(granted, bool)
+        or isinstance(retry_after, bool)
+        or not isinstance(retry_after, int)
+        or isinstance(reservation_count, bool)
+        or not isinstance(reservation_count, int)
+        or not isinstance(window_active, bool)
+        or value.get("window_seconds") != VISUAL_CAPACITY_WINDOW_SECONDS
+        or value.get("request_limit") != VISUAL_CAPACITY_REQUEST_LIMIT
+        or not 0 <= reservation_count <= VISUAL_CAPACITY_REQUEST_LIMIT
+        or (granted and retry_after != 0)
+        or (granted and not window_active)
+        or (not granted and not 1 <= retry_after <= VISUAL_CAPACITY_WINDOW_SECONDS)
+    ):
+        raise PipelineCheckpointError("visual capacity reservation failed validation")
+    return granted, retry_after, window_active
+
+
+def _validate_visual_capacity_window(value: Any) -> dict[str, Any]:
+    expected = {
+        "schema",
+        "reservation_token",
+        "not_before_epoch_seconds",
+        "request_limit",
+        "window_seconds",
+    }
+    if not isinstance(value, Mapping) or set(value) != expected:
+        raise PipelineCheckpointError("visual capacity window is invalid")
+    token = value.get("reservation_token")
+    not_before = value.get("not_before_epoch_seconds")
+    if (
+        value.get("schema") != VISUAL_CAPACITY_WINDOW_SCHEMA
+        or not isinstance(token, str)
+        or re.fullmatch(r"[0-9a-f]{64}", token) is None
+        or isinstance(not_before, bool)
+        or not isinstance(not_before, int)
+        or not_before < 1
+        or value.get("request_limit") != VISUAL_CAPACITY_REQUEST_LIMIT
+        or value.get("window_seconds") != VISUAL_CAPACITY_WINDOW_SECONDS
+    ):
+        raise PipelineCheckpointError("visual capacity window failed validation")
+    return dict(value)
 
 
 @dataclass(frozen=True)
@@ -1670,6 +2055,7 @@ def _generate_external_visual_chunk(
     job_id: str,
     existing_panels: Sequence[Mapping[str, Any]],
     ownership_check: Callable[[], bool] | None = None,
+    capacity_reservation: Callable[[], Mapping[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """Generate at most one configured chunk and fail closed on any missing card."""
 
@@ -1697,6 +2083,36 @@ def _generate_external_visual_chunk(
     for index in range(len(panels), stop):
         if ownership_check is not None and not ownership_check():
             raise PipelineWorkStopped("visual chunk ownership ended")
+        if capacity_reservation is None:
+            raise PipelineCheckpointError(
+                "visual provider call requires the project-wide capacity gate"
+            )
+        try:
+            granted, retry_after, window_active = _validate_visual_capacity_result(
+                capacity_reservation()
+            )
+        except PipelineCheckpointError:
+            raise
+        except Exception:
+            # A gate outage must fail closed before the provider call.  The
+            # durable scheduler gets one bounded capacity deferral rather than
+            # bypassing the project-wide request limit.
+            raise _VisualCapacityDeferred(
+                panels,
+                evidence_origin=evidence_origin,
+                retry_after_seconds=VISUAL_CAPACITY_WINDOW_SECONDS,
+            ) from None
+        if not granted:
+            raise _VisualCapacityDeferred(
+                panels,
+                evidence_origin=evidence_origin,
+                retry_after_seconds=retry_after,
+                window_active=window_active,
+            )
+        # Cancellation after a reservation wastes a bounded slot but cannot
+        # oversubscribe the provider quota or publish partial media.
+        if ownership_check is not None and not ownership_check():
+            raise PipelineWorkStopped("visual chunk ownership ended")
         shot = shots[index]
         if not isinstance(shot, Mapping):
             raise BriefValidationError("visual storyboard shot is invalid")
@@ -1719,7 +2135,19 @@ def _generate_external_visual_chunk(
                 artifact_id=_artifact_id_for_panel(index, shot.get("shot_id")),
                 job_id=job_id,
             )
-        except (VisualPanelGenerationError, PipelineWorkStopped):
+        except VisualPanelGenerationError as exc:
+            # A quota response may arrive after the first panel in this bounded
+            # chunk.  Carry only already validated panel descriptors to the
+            # orchestrator; provider text and exceptions never cross this seam.
+            if exc.code == "quota_or_rate_limited":
+                if ownership_check is not None and not ownership_check():
+                    raise PipelineWorkStopped("visual chunk ownership ended") from None
+                raise _VisualQuotaDeferred(
+                    panels,
+                    evidence_origin=evidence_origin,
+                ) from None
+            raise
+        except PipelineWorkStopped:
             raise
         except Exception:
             raise VisualPanelGenerationError("generation_failed") from None
@@ -1792,6 +2220,9 @@ def _write_pipeline_checkpoint(
     visual_evidence_origin: str,
     previous_checkpoint_sha256: str | None,
     max_dispatches: int,
+    quota_deferrals_used: int,
+    capacity_waits_used: int,
+    visual_capacity_window: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     """Store one content-addressed checkpoint and return its bounded pointer."""
 
@@ -1815,6 +2246,11 @@ def _write_pipeline_checkpoint(
         next_pitch_index=next_pitch_index,
     )
     required_pitch_count = required_panel_count
+    validated_capacity_window = (
+        _validate_visual_capacity_window(visual_capacity_window)
+        if visual_capacity_window is not None
+        else None
+    )
     if (
         phase
         not in {
@@ -1844,6 +2280,17 @@ def _write_pipeline_checkpoint(
             )
         )
         or not 1 <= dispatch_sequence < max_dispatches <= MAX_PIPELINE_DISPATCHES
+        or isinstance(quota_deferrals_used, bool)
+        or not isinstance(quota_deferrals_used, int)
+        or not 0 <= quota_deferrals_used <= MAX_VISUAL_QUOTA_MAX_DEFERRALS
+        or isinstance(capacity_waits_used, bool)
+        or not isinstance(capacity_waits_used, int)
+        or not 0
+        <= capacity_waits_used
+        <= math.ceil(required_panel_count / VISUAL_CAPACITY_REQUEST_LIMIT)
+        + MAX_VISUAL_QUOTA_MAX_DEFERRALS
+        or (phase == "visual_storyboard")
+        != (validated_capacity_window is not None)
         or re.fullmatch(r"[0-9a-f]{64}", request_sha256) is None
         or re.fullmatch(r"[0-9a-f]{64}", target_digest) is None
         or (
@@ -1875,6 +2322,9 @@ def _write_pipeline_checkpoint(
         "required_pitch_count": required_pitch_count,
         "previous_checkpoint_sha256": previous_checkpoint_sha256,
         "max_dispatches": max_dispatches,
+        "quota_deferrals_used": quota_deferrals_used,
+        "capacity_waits_used": capacity_waits_used,
+        "visual_capacity_window": validated_capacity_window,
     }
     body["manifest_sha256"] = sha256_json(body)
     encoded = canonical_json(body).encode("utf-8")
@@ -1910,6 +2360,9 @@ def _write_pipeline_checkpoint(
         "required_pitch_count": required_pitch_count,
         "dispatches_used": dispatch_sequence,
         "max_dispatches": max_dispatches,
+        "quota_deferrals_used": quota_deferrals_used,
+        "capacity_waits_used": capacity_waits_used,
+        "visual_capacity_window": validated_capacity_window,
         "checkpoint_sha256": stored["sha256"],
         "checkpoint": stored,
     }
@@ -1940,6 +2393,9 @@ def _load_pipeline_checkpoint(
         "required_pitch_count",
         "dispatches_used",
         "max_dispatches",
+        "quota_deferrals_used",
+        "capacity_waits_used",
+        "visual_capacity_window",
         "checkpoint_sha256",
         "checkpoint",
         "manifest_sha256",
@@ -1961,6 +2417,14 @@ def _load_pipeline_checkpoint(
         or continuation.get("dispatches_used") != dispatch_sequence
         or not 1 <= dispatch_sequence < int(continuation.get("max_dispatches", 0))
         or int(continuation.get("max_dispatches", 0)) > MAX_PIPELINE_DISPATCHES
+        or isinstance(continuation.get("quota_deferrals_used"), bool)
+        or not isinstance(continuation.get("quota_deferrals_used"), int)
+        or not 0
+        <= int(continuation.get("quota_deferrals_used", -1))
+        <= MAX_VISUAL_QUOTA_MAX_DEFERRALS
+        or isinstance(continuation.get("capacity_waits_used"), bool)
+        or not isinstance(continuation.get("capacity_waits_used"), int)
+        or int(continuation.get("capacity_waits_used", -1)) < 0
     ):
         raise PipelineCheckpointError("continuation pointer failed integrity validation")
     descriptor = _safe_artifact_descriptor(dict(continuation["checkpoint"]))
@@ -2006,6 +2470,9 @@ def _load_pipeline_checkpoint(
         "required_pitch_count",
         "previous_checkpoint_sha256",
         "max_dispatches",
+        "quota_deferrals_used",
+        "capacity_waits_used",
+        "visual_capacity_window",
         "manifest_sha256",
     }
     if not isinstance(raw, Mapping) or set(raw) != expected_checkpoint_fields:
@@ -2030,6 +2497,12 @@ def _load_pipeline_checkpoint(
         or checkpoint.get("required_pitch_count")
         != continuation.get("required_pitch_count")
         or checkpoint.get("max_dispatches") != continuation.get("max_dispatches")
+        or checkpoint.get("quota_deferrals_used")
+        != continuation.get("quota_deferrals_used")
+        or checkpoint.get("capacity_waits_used")
+        != continuation.get("capacity_waits_used")
+        or checkpoint.get("visual_capacity_window")
+        != continuation.get("visual_capacity_window")
         or sha256_json({"message": source_message}) != request_sha256
     ):
         raise PipelineCheckpointError("continuation checkpoint identity is invalid")
@@ -2076,6 +2549,12 @@ def _load_pipeline_checkpoint(
         next_pitch_index=next_pitch_index,
     )
     phase = checkpoint.get("phase")
+    raw_capacity_window = checkpoint.get("visual_capacity_window")
+    capacity_window = (
+        _validate_visual_capacity_window(raw_capacity_window)
+        if raw_capacity_window is not None
+        else None
+    )
     if (
         checkpoint.get("required_panel_count") != required
         or checkpoint.get("required_pitch_count") != required
@@ -2085,6 +2564,10 @@ def _load_pipeline_checkpoint(
             "narrated_pitch",
             "narrated_pitch_finalize",
         }
+        or (phase == "visual_storyboard") != (capacity_window is not None)
+        or int(checkpoint.get("capacity_waits_used", -1))
+        > math.ceil(required / VISUAL_CAPACITY_REQUEST_LIMIT)
+        + MAX_VISUAL_QUOTA_MAX_DEFERRALS
         or (
             phase == "visual_storyboard"
             and (next_panel_index >= required or next_pitch_index != 0)
@@ -2110,6 +2593,7 @@ def _load_pipeline_checkpoint(
     checkpoint["brief_object"] = brief
     checkpoint["panels"] = panels
     checkpoint["pitch_segments"] = pitch_segments
+    checkpoint["visual_capacity_window"] = capacity_window
     return checkpoint
 
 
@@ -2310,6 +2794,7 @@ def validate_visual_storyboard(
 class JobRepository(Protocol):
     def admit_submission(
         self,
+        record: Mapping[str, Any],
         *,
         now: str,
         cooldown_seconds: int,
@@ -2349,6 +2834,59 @@ class JobRepository(Protocol):
     ) -> Mapping[str, Any]:
         ...
 
+    def defer_claimed(
+        self,
+        job_id: str,
+        patch: Mapping[str, Any],
+        *,
+        attempt: int,
+        dispatch_sequence: int,
+        lease_token: str,
+        cancelled_patch: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        ...
+
+    def confirm_continuation_dispatch(
+        self,
+        job_id: str,
+        dispatch: Mapping[str, Any],
+        *,
+        attempt: int,
+        dispatch_sequence: int,
+        pending_manifest_sha256: str,
+    ) -> Mapping[str, Any]:
+        ...
+
+    def reserve_visual_request(
+        self,
+        *,
+        now: str,
+        window_seconds: int,
+        max_requests: int,
+        reservation_token: str,
+    ) -> Mapping[str, Any]:
+        ...
+
+    def prepare_visual_window(
+        self,
+        *,
+        now: str,
+        reservation_token: str,
+        window_seconds: int,
+        max_requests: int,
+    ) -> Mapping[str, Any]:
+        ...
+
+    def complete_visual_window(
+        self,
+        *,
+        now: str,
+        reservation_token: str,
+        window_seconds: int,
+        max_requests: int,
+    ) -> Mapping[str, Any]:
+        ...
+
     def update(self, job_id: str, patch: Mapping[str, Any]) -> Mapping[str, Any]:
         ...
 
@@ -2385,7 +2923,16 @@ class JobRepository(Protocol):
     def request_cancel(self, job_id: str, *, now: str) -> Mapping[str, Any]:
         ...
 
-    def prepare_retry(self, job_id: str, patch: Mapping[str, Any]) -> Mapping[str, Any]:
+    def prepare_retry(
+        self,
+        job_id: str,
+        patch: Mapping[str, Any],
+        *,
+        now: str,
+        cooldown_seconds: int,
+        window_seconds: int,
+        max_jobs: int,
+    ) -> Mapping[str, Any]:
         ...
 
     def recent_success_durations(self, *, limit: int = 20) -> Sequence[float]:
@@ -2399,6 +2946,8 @@ class JobDispatcher(Protocol):
         *,
         attempt: int,
         dispatch_sequence: int,
+        delay_seconds: int = 0,
+        scheduled_epoch_seconds: int | None = None,
     ) -> Mapping[str, Any]:
         ...
 
@@ -2486,6 +3035,8 @@ def public_job(record: Mapping[str, Any]) -> dict[str, Any]:
             "required_pitch_count",
             "dispatches_used",
             "max_dispatches",
+            "quota_deferrals_used",
+            "capacity_waits_used",
         }
         public_continuation = {
             key: continuation[key]
@@ -2601,12 +3152,6 @@ class AllThingsJobService:
         record_expires_at = (
             _parse_time(now) + timedelta(seconds=self.config.job_retention_seconds)
         ).isoformat()
-        self.repository.admit_submission(
-            now=now,
-            cooldown_seconds=self.config.admission_cooldown_seconds,
-            window_seconds=self.config.admission_window_seconds,
-            max_jobs=self.config.admission_max_jobs,
-        )
         job_id = str(uuid4())
         record: dict[str, Any] = {
             "schema": JOB_SCHEMA,
@@ -2641,10 +3186,20 @@ class AllThingsJobService:
             "dispatch_sequence": 0,
             "max_dispatches": None,
             "continuation": None,
+            "pending_dispatch": None,
             "target": self.config.safe_dict(),
             "target_digest": self.config.target_digest(),
         }
-        self.repository.create(record)
+        # Admission and job creation are one repository transaction.  A
+        # process crash can therefore leave neither an orphan active slot nor
+        # an accepted job that bypassed the project-wide four-job bound.
+        self.repository.admit_submission(
+            record,
+            now=now,
+            cooldown_seconds=self.config.admission_cooldown_seconds,
+            window_seconds=self.config.admission_window_seconds,
+            max_jobs=self.config.admission_max_jobs,
+        )
         try:
             dispatch = dict(
                 self.dispatcher.enqueue(job_id, attempt=1, dispatch_sequence=0)
@@ -2712,9 +3267,14 @@ class AllThingsJobService:
                 "dispatch_sequence": 0,
                 "max_dispatches": None,
                 "continuation": None,
+                "pending_dispatch": None,
                 "input_retention": "bounded_retry_until_record_expiry",
                 "record_expires_at": record_expires_at,
             },
+            now=now,
+            cooldown_seconds=self.config.admission_cooldown_seconds,
+            window_seconds=self.config.admission_window_seconds,
+            max_jobs=self.config.admission_max_jobs,
         )
         attempt = int(retried["attempt"])
         try:
@@ -2767,6 +3327,27 @@ class AllThingsJobService:
             or not 0 <= dispatch_sequence < MAX_PIPELINE_DISPATCHES
         ):
             raise JobTransitionError("Cloud Tasks dispatch sequence binding is invalid")
+        before_claim = self.repository.get(job_id)
+        raw_pending = before_claim.get("pending_dispatch")
+        if isinstance(raw_pending, Mapping):
+            pending = _validate_pending_dispatch(raw_pending)
+            if (
+                pending["application_attempt"] == attempt
+                and pending["predecessor_dispatch_sequence"] == dispatch_sequence
+            ):
+                return self._reconcile_pending_dispatch(
+                    job_id,
+                    attempt=attempt,
+                    predecessor_dispatch_sequence=dispatch_sequence,
+                )
+            if (
+                pending["application_attempt"] == attempt
+                and pending["dispatch_sequence"] == dispatch_sequence
+                and before_claim.get("state") != JobState.QUEUED.value
+            ):
+                raise JobDispatchPendingError(
+                    "continuation target is not ready to claim"
+                )
         now_value = utc_now()
         now = now_value.isoformat()
         lease_token = str(uuid4())
@@ -2793,13 +3374,41 @@ class AllThingsJobService:
         if claimed is None:
             current = self.repository.get(job_id)
             current_attempt = int(current.get("attempt", 0))
-            if current_attempt == attempt and current.get("state") in {
+            current_sequence = int(current.get("dispatch_sequence", -1))
+            current_pending = current.get("pending_dispatch")
+            if isinstance(current_pending, Mapping):
+                pending = _validate_pending_dispatch(current_pending)
+                if (
+                    pending["application_attempt"] == attempt
+                    and pending["predecessor_dispatch_sequence"]
+                    == dispatch_sequence
+                ):
+                    return self._reconcile_pending_dispatch(
+                        job_id,
+                        attempt=attempt,
+                        predecessor_dispatch_sequence=dispatch_sequence,
+                    )
+            if current_attempt == attempt and current_sequence > dispatch_sequence:
+                return public_job(current)
+            if (
+                current_attempt == attempt
+                and current_sequence == dispatch_sequence
+                and current.get("state") in {
                 JobState.RUNNING.value,
                 JobState.CANCELLING.value,
-            }:
+                }
+            ):
                 raise JobLeaseBusyError(
                     "worker lease is still active; Cloud Tasks should retry",
                     retry_after_seconds=_lease_retry_after(current.get("lease_expires_at")),
+                )
+            if (
+                current_attempt == attempt
+                and current_sequence == dispatch_sequence
+                and current.get("state") == JobState.QUEUED.value
+            ):
+                raise JobDispatchPendingError(
+                    "continuation target is waiting for durable dispatch"
                 )
             return public_job(current)
         if claimed.get("cancel_requested"):
@@ -2945,33 +3554,29 @@ class AllThingsJobService:
                 brief.ready_for_production
                 and self.artifact_store is not None
                 and isinstance(shots, list)
-                and len(shots) > self.config.visual_panels_per_dispatch
+                and len(shots) >= 1
             ):
                 failure_code = "visual_storyboard_incomplete"
-                panels, evidence_origin = _generate_external_visual_chunk(
-                    brief,
-                    timeline,
-                    provider=self.visual_provider,
-                    artifact_store=self.artifact_store,
-                    config=self.config,
-                    job_id=job_id,
-                    existing_panels=(),
-                    ownership_check=lambda: self._visual_chunk_is_owned(
-                        job_id,
-                        attempt=attempt,
-                        lease_token=lease_token,
-                    ),
+                visual_chunk_count = math.ceil(
+                    len(shots) / self.config.visual_panels_per_dispatch
                 )
                 max_dispatches = (
-                    1
-                    + math.ceil(len(shots) / self.config.visual_panels_per_dispatch)
+                    2
+                    * (
+                        visual_chunk_count
+                        + self.config.visual_quota_max_deferrals
+                    )
                     + len(shots)
-                    + 1
+                    + 2
                 )
                 if max_dispatches > MAX_PIPELINE_DISPATCHES:
                     raise PipelineCheckpointError(
                         "production plan exceeds the continuation dispatch bound"
                     )
+                # The planning dispatch never calls the image provider.  It
+                # durably queues the first FIFO-governed visual chunk, so the
+                # strict 2*(C+D) + N + 2 delivery bound remains exact even when
+                # every visual attempt needs one late-window reconciliation.
                 return self._queue_continuation(
                     job_id,
                     attempt=attempt,
@@ -2983,12 +3588,14 @@ class AllThingsJobService:
                     brief=brief,
                     storyboard_package=storyboard_package,
                     provider_execution=result.execution,
-                    panels=panels,
+                    panels=(),
                     pitch_segments=(),
-                    visual_evidence_origin=evidence_origin,
+                    visual_evidence_origin="not_attempted",
                     previous_checkpoint_sha256=None,
                     max_dispatches=max_dispatches,
                     phase="visual_storyboard",
+                    quota_deferrals_used=0,
+                    capacity_waits_used=0,
                 )
             visual_storyboard = build_visual_storyboard(
                 brief,
@@ -3138,6 +3745,8 @@ class AllThingsJobService:
             ) > MAX_DURABLE_JOB_BYTES:
                 raise BriefValidationError("completed job exceeds the durable document size budget")
         except Exception as exc:
+            if isinstance(exc, JobDispatchPendingError):
+                raise
             if type(exc) is PipelineWorkStopped:
                 current = self.repository.get(job_id)
                 if (
@@ -3167,6 +3776,18 @@ class AllThingsJobService:
                 diagnostic_code = _visual_panel_diagnostic_code(exc)
                 if diagnostic_code is not None:
                     error["diagnostic_code"] = diagnostic_code
+                if diagnostic_code == "quota_or_rate_limited":
+                    error.update(
+                        {
+                            "quota_deferrals_exhausted": (
+                                self.config.visual_quota_max_deferrals == 0
+                            ),
+                            "quota_deferrals_used": 0,
+                            "quota_deferral_limit": (
+                                self.config.visual_quota_max_deferrals
+                            ),
+                        }
+                    )
             elif failure_code == "narrated_pitch_render_failed":
                 diagnostic_code = _narrated_pitch_render_diagnostic_code(exc)
                 if diagnostic_code is not None:
@@ -3228,6 +3849,11 @@ class AllThingsJobService:
         previous_checkpoint_sha256: str | None,
         max_dispatches: int,
         phase: str,
+        quota_deferrals_used: int,
+        capacity_waits_used: int = 0,
+        visual_capacity_window: Mapping[str, Any] | None = None,
+        delay_seconds: int = 0,
+        delay_reason: str | None = None,
     ) -> dict[str, Any]:
         if self.artifact_store is None:
             raise PipelineCheckpointError("continuation requires private artifact storage")
@@ -3235,36 +3861,67 @@ class AllThingsJobService:
             raise PipelineContinuationDispatchError(
                 "continuation requires a Cloud Tasks dispatcher"
             )
+        prepared_at = utc_now()
         next_sequence = dispatch_sequence + 1
-        continuation = _write_pipeline_checkpoint(
-            artifact_store=self.artifact_store,
-            job_id=job_id,
-            attempt=attempt,
-            dispatch_sequence=next_sequence,
-            phase=phase,
-            request_sha256=request_sha256,
-            target_digest=target_digest,
-            brief=brief,
-            storyboard_package=storyboard_package,
-            provider_execution=provider_execution,
-            panels=panels,
-            pitch_segments=pitch_segments,
-            visual_evidence_origin=visual_evidence_origin,
-            previous_checkpoint_sha256=previous_checkpoint_sha256,
-            max_dispatches=max_dispatches,
-        )
-        try:
-            dispatch = dict(
-                self.dispatcher.enqueue(
-                    job_id,
+        if phase == "visual_storyboard":
+            visual_capacity_window = (
+                _validate_visual_capacity_window(visual_capacity_window)
+                if visual_capacity_window is not None
+                else self._prepare_visual_capacity_window(
+                    now=prepared_at,
+                    job_id=job_id,
                     attempt=attempt,
                     dispatch_sequence=next_sequence,
                 )
             )
+            window_delay = max(
+                0,
+                int(visual_capacity_window["not_before_epoch_seconds"])
+                - math.ceil(prepared_at.timestamp()),
+            )
+            if window_delay > delay_seconds:
+                delay_seconds = window_delay
+                delay_reason = "visual_capacity"
+        elif visual_capacity_window is not None:
+            raise PipelineCheckpointError(
+                "non-visual continuation cannot carry a capacity window"
+            )
+        if delay_reason not in {
+            None,
+            "visual_quota",
+            "visual_capacity",
+            "visual_spacing",
+        }:
+            raise PipelineCheckpointError("continuation delay reason is invalid")
+        if bool(delay_seconds) != bool(delay_reason):
+            raise PipelineCheckpointError(
+                "continuation delay and reason must be supplied together"
+            )
+        try:
+            continuation = _write_pipeline_checkpoint(
+                artifact_store=self.artifact_store,
+                job_id=job_id,
+                attempt=attempt,
+                dispatch_sequence=next_sequence,
+                phase=phase,
+                request_sha256=request_sha256,
+                target_digest=target_digest,
+                brief=brief,
+                storyboard_package=storyboard_package,
+                provider_execution=provider_execution,
+                panels=panels,
+                pitch_segments=pitch_segments,
+                visual_evidence_origin=visual_evidence_origin,
+                previous_checkpoint_sha256=previous_checkpoint_sha256,
+                max_dispatches=max_dispatches,
+                quota_deferrals_used=quota_deferrals_used,
+                capacity_waits_used=capacity_waits_used,
+                visual_capacity_window=visual_capacity_window,
+            )
         except Exception:
-            raise PipelineContinuationDispatchError(
-                "continuation task dispatch failed"
-            ) from None
+            if visual_capacity_window is not None:
+                self._complete_visual_capacity_window(visual_capacity_window)
+            raise
         required = int(continuation["required_panel_count"])
         generated = int(continuation["next_panel_index"])
         narrated = int(continuation["next_pitch_index"])
@@ -3274,38 +3931,157 @@ class AllThingsJobService:
             + math.floor(generated / max(1, required))
             + math.floor(narrated / max(1, required)),
         )
-        queued_at = iso_now()
-        queued = self.repository.continue_job(
-            job_id,
-            {
+        try:
+            pending_dispatch = _build_pending_dispatch(
+                attempt=attempt,
+                predecessor_dispatch_sequence=dispatch_sequence,
+                dispatch_sequence=next_sequence,
+                checkpoint_sha256=str(continuation["checkpoint_sha256"]),
+                delay_seconds=delay_seconds,
+                delay_reason=delay_reason,
+                prepared_at=prepared_at,
+            )
+        except Exception:
+            if visual_capacity_window is not None:
+                self._complete_visual_capacity_window(visual_capacity_window)
+            raise
+        queued_at = prepared_at.isoformat()
+        try:
+            queued = self.repository.continue_job(
+                job_id,
+                {
                 "state": JobState.QUEUED.value,
                 "stage": (
-                    "waiting_for_visual_storyboard_continuation"
-                    if phase == "visual_storyboard"
+                    "waiting_for_visual_quota_deferral"
+                    if delay_reason == "visual_quota"
                     else (
-                        "waiting_for_narrated_pitch_card_continuation"
-                        if phase == "narrated_pitch"
-                        else "waiting_for_narrated_pitch_finalization"
+                        "waiting_for_project_visual_capacity"
+                        if delay_reason == "visual_capacity"
+                        else (
+                            "waiting_for_visual_capacity_spacing"
+                            if delay_reason == "visual_spacing"
+                            else (
+                                "waiting_for_visual_storyboard_continuation"
+                                if phase == "visual_storyboard"
+                                else (
+                                    "waiting_for_narrated_pitch_card_continuation"
+                                    if phase == "narrated_pitch"
+                                    else "waiting_for_narrated_pitch_finalization"
+                                )
+                            )
+                        )
                     )
                 ),
                 "progress": progress,
                 "updated_at": queued_at,
                 "eta": eta_payload(self.repository.recent_success_durations(), progress=progress),
-                "dispatch": dispatch,
+                "dispatch": None,
                 "dispatch_sequence": next_sequence,
                 "max_dispatches": max_dispatches,
                 "continuation": continuation,
+                "pending_dispatch": pending_dispatch,
                 "error": None,
-            },
+                },
+                attempt=attempt,
+                dispatch_sequence=dispatch_sequence,
+                lease_token=lease_token,
+                cancelled_patch=_cancelled_patch(
+                    started_at=started_at,
+                    finished_at=utc_now(),
+                ),
+            )
+        except Exception:
+            # The transaction may have committed even when its response was
+            # lost.  Keep both deterministic capacity tokens intact and let
+            # the predecessor task reconcile the exact durable state instead
+            # of risking release of a live successor turn.
+            raise JobDispatchPendingError(
+                "continuation state transition is durably pending"
+            ) from None
+        queued_pending = queued.get("pending_dispatch")
+        if not isinstance(queued_pending, Mapping):
+            # Cancellation, terminal state, or stale lease won the prepare
+            # transaction.  Such a worker must never create a successor task.
+            return public_job(queued)
+        validated = _validate_pending_dispatch(queued_pending)
+        if validated["manifest_sha256"] != pending_dispatch["manifest_sha256"]:
+            return public_job(queued)
+        return self._reconcile_pending_dispatch(
+            job_id,
             attempt=attempt,
-            dispatch_sequence=dispatch_sequence,
-            lease_token=lease_token,
-            cancelled_patch=_cancelled_patch(
-                started_at=started_at,
-                finished_at=utc_now(),
-            ),
+            predecessor_dispatch_sequence=dispatch_sequence,
         )
-        return public_job(queued)
+
+    def _reconcile_pending_dispatch(
+        self,
+        job_id: str,
+        *,
+        attempt: int,
+        predecessor_dispatch_sequence: int,
+    ) -> dict[str, Any]:
+        """Ensure and confirm exactly one named successor from the durable outbox."""
+
+        if self.dispatcher is None:
+            raise JobDispatchPendingError(
+                "continuation dispatch is durably pending"
+            )
+        current = self.repository.get(job_id)
+        raw_pending = current.get("pending_dispatch")
+        if raw_pending is None:
+            return public_job(current)
+        pending = _validate_pending_dispatch(raw_pending)
+        if (
+            pending["application_attempt"] != attempt
+            or pending["predecessor_dispatch_sequence"]
+            != predecessor_dispatch_sequence
+        ):
+            return public_job(current)
+        if (
+            current.get("state") != JobState.QUEUED.value
+            or current.get("cancel_requested")
+            or int(current.get("attempt", 0)) != attempt
+            or int(current.get("dispatch_sequence", -1))
+            != int(pending["dispatch_sequence"])
+        ):
+            return public_job(current)
+        try:
+            dispatch = dict(
+                self.dispatcher.enqueue(
+                    job_id,
+                    attempt=attempt,
+                    dispatch_sequence=int(pending["dispatch_sequence"]),
+                    scheduled_epoch_seconds=int(
+                        pending["scheduled_epoch_seconds"]
+                    ),
+                )
+            )
+            if (
+                dispatch.get("attempt") != attempt
+                or dispatch.get("dispatch_sequence")
+                != pending["dispatch_sequence"]
+                or dispatch.get("scheduled_epoch_seconds")
+                != pending["scheduled_epoch_seconds"]
+                or not isinstance(dispatch.get("task_name"), str)
+                or not str(dispatch["task_name"]).endswith(
+                    f"{job_id}-a{attempt}-d{int(pending['dispatch_sequence']):03d}"
+                )
+            ):
+                raise JobTransitionError("continuation dispatch receipt is invalid")
+            confirmed = self.repository.confirm_continuation_dispatch(
+                job_id,
+                dispatch,
+                attempt=attempt,
+                dispatch_sequence=int(pending["dispatch_sequence"]),
+                pending_manifest_sha256=str(pending["manifest_sha256"]),
+            )
+        except Exception:
+            # The prepared outbox and released lease remain durable.  Returning
+            # a retryable non-success lets the predecessor task reconcile the
+            # same name/schedule without rerunning provider work.
+            raise JobDispatchPendingError(
+                "continuation dispatch is durably pending"
+            ) from None
+        return public_job(confirmed)
 
     def _execute_continuation(
         self,
@@ -3370,6 +4146,12 @@ class AllThingsJobService:
             panels = checkpoint["panels"]
             pitch_segments = checkpoint["pitch_segments"]
             phase = checkpoint["phase"]
+            quota_deferrals_used = int(checkpoint["quota_deferrals_used"])
+            capacity_waits_used = int(checkpoint["capacity_waits_used"])
+            if quota_deferrals_used > self.config.visual_quota_max_deferrals:
+                raise PipelineCheckpointError(
+                    "continuation quota-deferral count exceeds the configured bound"
+                )
             if phase == "visual_storyboard":
                 failure_code = "visual_storyboard_incomplete"
                 owned = self.repository.update_claimed(
@@ -3394,21 +4176,134 @@ class AllThingsJobService:
                             started_at=claimed.get("started_at"),
                         )
                     )
-                panels, new_evidence_origin = _generate_external_visual_chunk(
-                    brief,
-                    timeline,
-                    provider=self.visual_provider,
-                    artifact_store=self.artifact_store,
-                    config=self.config,
-                    job_id=job_id,
-                    existing_panels=panels,
-                    ownership_check=lambda: self._visual_chunk_is_owned(
+                evidence_origin = str(checkpoint["visual_evidence_origin"])
+                capacity_window = _validate_visual_capacity_window(
+                    checkpoint["visual_capacity_window"]
+                )
+                capacity_wait_limit = math.ceil(
+                    int(checkpoint["required_panel_count"])
+                    / self.config.visual_panels_per_dispatch
+                ) + self.config.visual_quota_max_deferrals
+                try:
+                    panels, new_evidence_origin = _generate_external_visual_chunk(
+                        brief,
+                        timeline,
+                        provider=self.visual_provider,
+                        artifact_store=self.artifact_store,
+                        config=self.config,
+                        job_id=job_id,
+                        existing_panels=panels,
+                        ownership_check=lambda: self._visual_chunk_is_owned(
+                            job_id,
+                            attempt=attempt,
+                            lease_token=lease_token,
+                        ),
+                        capacity_reservation=lambda: self._reserve_visual_capacity(
+                            capacity_window
+                        ),
+                    )
+                except _VisualQuotaDeferred as deferred:
+                    if quota_deferrals_used >= self.config.visual_quota_max_deferrals:
+                        raise VisualPanelGenerationError("quota_or_rate_limited") from None
+                    deferred_origin = evidence_origin
+                    if deferred.evidence_origin != "not_attempted":
+                        deferred_origin = deferred.evidence_origin
+                    return self._queue_continuation(
                         job_id,
                         attempt=attempt,
+                        dispatch_sequence=dispatch_sequence,
                         lease_token=lease_token,
-                    ),
-                )
-                evidence_origin = str(checkpoint["visual_evidence_origin"])
+                        started_at=claimed.get("started_at"),
+                        request_sha256=str(claimed.get("request_sha256") or ""),
+                        target_digest=str(claimed.get("target_digest") or ""),
+                        brief=brief,
+                        storyboard_package=storyboard_package,
+                        provider_execution=checkpoint["provider_execution"],
+                        panels=deferred.panels,
+                        pitch_segments=pitch_segments,
+                        visual_evidence_origin=deferred_origin,
+                        previous_checkpoint_sha256=str(
+                            claimed["continuation"]["checkpoint_sha256"]
+                        ),
+                        max_dispatches=int(checkpoint["max_dispatches"]),
+                        phase="visual_storyboard",
+                        quota_deferrals_used=quota_deferrals_used + 1,
+                        capacity_waits_used=capacity_waits_used,
+                        delay_seconds=_visual_quota_delay_seconds(
+                            self.config,
+                            quota_deferrals_used=quota_deferrals_used,
+                        ),
+                        delay_reason="visual_quota",
+                    )
+                except _VisualCapacityDeferred as deferred:
+                    deferred_origin = evidence_origin
+                    if deferred.evidence_origin != "not_attempted":
+                        deferred_origin = deferred.evidence_origin
+                    if deferred.window_active:
+                        # Ordinary FIFO contention is delivery timing, not a
+                        # provider failure and not a new pipeline dispatch.  Put
+                        # this exact fenced sequence back in QUEUED and make the
+                        # same named Cloud Task retry it.  Repeated early wakes
+                        # therefore cannot consume the provider-429 budget or
+                        # violate MAX_PIPELINE_DISPATCHES.
+                        deferred_job = self.repository.defer_claimed(
+                            job_id,
+                            {
+                                "state": JobState.QUEUED.value,
+                                "stage": "waiting_for_project_visual_capacity",
+                                "updated_at": iso_now(),
+                                "eta": eta_payload(durations, progress=98),
+                                "error": None,
+                            },
+                            attempt=attempt,
+                            dispatch_sequence=dispatch_sequence,
+                            lease_token=lease_token,
+                            cancelled_patch=_cancelled_patch(
+                                started_at=claimed.get("started_at"),
+                                finished_at=utc_now(),
+                            ),
+                        )
+                        if (
+                            deferred_job.get("state") == JobState.QUEUED.value
+                            and int(deferred_job.get("attempt", 0)) == attempt
+                            and int(deferred_job.get("dispatch_sequence", -1))
+                            == dispatch_sequence
+                        ):
+                            raise JobVisualCapacityPendingError(
+                                retry_after_seconds=deferred.retry_after_seconds
+                            )
+                        return public_job(deferred_job)
+                    if capacity_waits_used >= capacity_wait_limit:
+                        raise VisualPanelGenerationError(
+                            "project_visual_capacity_unavailable"
+                        ) from None
+                    retry_window: Mapping[str, Any] | None = capacity_window
+                    retry_window = None
+                    return self._queue_continuation(
+                        job_id,
+                        attempt=attempt,
+                        dispatch_sequence=dispatch_sequence,
+                        lease_token=lease_token,
+                        started_at=claimed.get("started_at"),
+                        request_sha256=str(claimed.get("request_sha256") or ""),
+                        target_digest=str(claimed.get("target_digest") or ""),
+                        brief=brief,
+                        storyboard_package=storyboard_package,
+                        provider_execution=checkpoint["provider_execution"],
+                        panels=deferred.panels,
+                        pitch_segments=pitch_segments,
+                        visual_evidence_origin=deferred_origin,
+                        previous_checkpoint_sha256=str(
+                            claimed["continuation"]["checkpoint_sha256"]
+                        ),
+                        max_dispatches=int(checkpoint["max_dispatches"]),
+                        phase="visual_storyboard",
+                        quota_deferrals_used=quota_deferrals_used,
+                        capacity_waits_used=capacity_waits_used + 1,
+                        visual_capacity_window=retry_window,
+                        delay_seconds=deferred.retry_after_seconds,
+                        delay_reason="visual_capacity",
+                    )
                 if new_evidence_origin != "not_attempted":
                     evidence_origin = new_evidence_origin
                 required = int(checkpoint["required_panel_count"])
@@ -3434,6 +4329,8 @@ class AllThingsJobService:
                     ),
                     max_dispatches=int(checkpoint["max_dispatches"]),
                     phase=next_phase,
+                    quota_deferrals_used=quota_deferrals_used,
+                    capacity_waits_used=capacity_waits_used,
                 )
 
             failure_code = "narrated_pitch_render_failed"
@@ -3521,6 +4418,7 @@ class AllThingsJobService:
                     ),
                     max_dispatches=int(checkpoint["max_dispatches"]),
                     phase=next_phase,
+                    quota_deferrals_used=quota_deferrals_used,
                 )
 
             owned = self.repository.update_claimed(
@@ -3570,6 +4468,7 @@ class AllThingsJobService:
                 "dispatch_sequence": dispatch_sequence,
                 "dispatches_used": dispatch_sequence + 1,
                 "max_dispatches": int(checkpoint["max_dispatches"]),
+                "quota_deferrals_used": quota_deferrals_used,
                 "required_panel_count": len(panels),
                 "required_pitch_count": len(pitch_segments),
                 "checkpoint_sha256": str(
@@ -3597,6 +4496,7 @@ class AllThingsJobService:
                     "visual_storyboard_status": "complete",
                     "continuation_schema": PIPELINE_CONTINUATION_SCHEMA,
                     "continuation_dispatches": dispatch_sequence + 1,
+                    "visual_quota_deferrals_used": quota_deferrals_used,
                 },
             }
             success_patch: dict[str, Any] = {
@@ -3639,6 +4539,8 @@ class AllThingsJobService:
             )
             return public_job(succeeded)
         except Exception as exc:
+            if isinstance(exc, JobDispatchPendingError):
+                raise
             if type(exc) is PipelineWorkStopped:
                 current = self.repository.get(job_id)
                 if (
@@ -3682,6 +4584,25 @@ class AllThingsJobService:
                 diagnostic_code = _visual_panel_diagnostic_code(exc)
                 if diagnostic_code is not None:
                     error["diagnostic_code"] = diagnostic_code
+                if diagnostic_code == "quota_or_rate_limited":
+                    continuation_value = claimed.get("continuation")
+                    deferrals_used = (
+                        int(continuation_value.get("quota_deferrals_used", 0))
+                        if isinstance(continuation_value, Mapping)
+                        else 0
+                    )
+                    error.update(
+                        {
+                            "quota_deferrals_exhausted": (
+                                deferrals_used
+                                >= self.config.visual_quota_max_deferrals
+                            ),
+                            "quota_deferrals_used": deferrals_used,
+                            "quota_deferral_limit": (
+                                self.config.visual_quota_max_deferrals
+                            ),
+                        }
+                    )
             elif failure_code == "narrated_pitch_render_failed":
                 diagnostic_code = _narrated_pitch_render_diagnostic_code(exc)
                 if diagnostic_code is not None:
@@ -3734,6 +4655,74 @@ class AllThingsJobService:
             owned.get("lease_token") == lease_token
             and owned.get("state") == JobState.RUNNING.value
             and not owned.get("cancel_requested")
+        )
+
+    def _prepare_visual_capacity_window(
+        self,
+        *,
+        now: datetime | None = None,
+        job_id: str,
+        attempt: int,
+        dispatch_sequence: int,
+    ) -> dict[str, Any]:
+        """Join the FIFO with a retry-stable token for one visual dispatch."""
+
+        selected_now = now or utc_now()
+        # A process can die after reserving the FIFO turn but before advancing
+        # the job.  Deriving the token from the fenced successor identity makes
+        # the predecessor's eventual Cloud Tasks retry rejoin the same turn
+        # instead of leaking a second orphan reservation.
+        token = _visual_capacity_reservation_token(
+            job_id=job_id,
+            attempt=attempt,
+            dispatch_sequence=dispatch_sequence,
+        )
+        result = self.repository.prepare_visual_window(
+            now=selected_now.isoformat(),
+            reservation_token=token,
+            window_seconds=VISUAL_CAPACITY_WINDOW_SECONDS,
+            max_requests=VISUAL_CAPACITY_REQUEST_LIMIT,
+        )
+        return _validate_visual_capacity_window(result)
+
+    def _reserve_visual_capacity(
+        self,
+        window: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        """Reserve one external image request in the shared project window."""
+
+        validated = _validate_visual_capacity_window(window)
+        return self.repository.reserve_visual_request(
+            now=iso_now(),
+            window_seconds=VISUAL_CAPACITY_WINDOW_SECONDS,
+            max_requests=VISUAL_CAPACITY_REQUEST_LIMIT,
+            reservation_token=str(validated["reservation_token"]),
+        )
+
+    @staticmethod
+    def _visual_capacity_window_delay(window: Mapping[str, Any]) -> int:
+        validated = _validate_visual_capacity_window(window)
+        return max(
+            0,
+            min(
+                MAX_TASK_SCHEDULE_DELAY_SECONDS,
+                int(validated["not_before_epoch_seconds"])
+                - math.ceil(utc_now().timestamp()),
+            ),
+        )
+
+    def _complete_visual_capacity_window(
+        self,
+        window: Mapping[str, Any],
+    ) -> None:
+        """Release one FIFO turn after success or any non-capacity failure."""
+
+        validated = _validate_visual_capacity_window(window)
+        self.repository.complete_visual_window(
+            now=iso_now(),
+            window_seconds=VISUAL_CAPACITY_WINDOW_SECONDS,
+            max_requests=VISUAL_CAPACITY_REQUEST_LIMIT,
+            reservation_token=str(validated["reservation_token"]),
         )
 
     @staticmethod
@@ -3807,6 +4796,7 @@ def _cancelled_patch(*, started_at: Any, finished_at: datetime) -> dict[str, Any
         "pitch_preview": None,
         "execution": None,
         "continuation": None,
+        "pending_dispatch": None,
         "error": None,
     }
 
@@ -3871,6 +4861,8 @@ __all__ = [
     "DEFAULT_GEMINI_MODEL",
     "DEFAULT_IMAGE_MODEL",
     "JobLeaseBusyError",
+    "JobDispatchPendingError",
+    "JobVisualCapacityPendingError",
     "JobNotFoundError",
     "JobState",
     "JobTransitionError",
