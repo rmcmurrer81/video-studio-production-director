@@ -51,6 +51,8 @@ $env:AT_REPOSITORY = "video-studio"
 $env:AT_IMAGE = "$($env:AT_REGION)-docker.pkg.dev/$($env:AT_PROJECT)/$($env:AT_REPOSITORY)/all-things-agentic:submission"
 $env:AT_WORKER = "video-studio-agent-worker"
 $env:AT_API = "video-studio-agent-api"
+$env:AT_DATABASE = "(default)"
+$env:AT_JOBS_COLLECTION = "all_things_agentic_jobs"
 $env:AT_WORKER_SA = "video-studio-worker@$($env:AT_PROJECT).iam.gserviceaccount.com"
 $env:AT_API_SA = "video-studio-api@$($env:AT_PROJECT).iam.gserviceaccount.com"
 $env:AT_TASKS_SA = "video-studio-tasks@$($env:AT_PROJECT).iam.gserviceaccount.com"
@@ -135,15 +137,19 @@ Cloud Text-to-Speech uses the worker's attached service-account Application Defa
 
 ## 5. Create Firestore, Artifact Registry, and the queue
 
-Create Firestore in Native mode in an owner-selected supported location. Do this once; the database location cannot be casually changed. Then create Artifact Registry and Cloud Tasks resources:
+Create Firestore in Native mode in an owner-selected supported location. Do this once; the database location cannot be casually changed. Enable Firestore TTL on the job record's native `record_expires_at` timestamp before deploying either role, then create Artifact Registry and Cloud Tasks resources:
 
 ```powershell
+gcloud firestore fields ttls update record_expires_at --project $env:AT_PROJECT --database $env:AT_DATABASE --collection-group $env:AT_JOBS_COLLECTION --enable-ttl
+gcloud firestore fields ttls list --project $env:AT_PROJECT --database $env:AT_DATABASE --collection-group $env:AT_JOBS_COLLECTION --format "json(name,ttlConfig)"
 gcloud artifacts repositories create $env:AT_REPOSITORY --project $env:AT_PROJECT --location $env:AT_REGION --repository-format docker --description "Video Studio contest images"
 gcloud tasks queues create video-studio-production-briefs --project $env:AT_PROJECT --location $env:AT_REGION
 gcloud tasks queues update video-studio-production-briefs --project $env:AT_PROJECT --location $env:AT_REGION --max-attempts 30 --max-retry-duration 3600s --min-backoff 5s --max-backoff 60s --max-concurrent-dispatches 1 --max-dispatches-per-second 1
 ```
 
-Cloud Tasks delivery retry is crash recovery, not an extra owner-visible application retry. The application separately caps a job at three **application attempts**.
+The verification output must show `record_expires_at` with `ttlConfig.state` equal to `ACTIVE`. `CREATING`, missing, disabled, or repair-needed TTL is a deployment **HOLD**. The code stores this one field as a native Firestore timestamp, while API/orchestration records use its stable ISO-8601 form for JSON and canonical hashing. The default job/source retry window is 86,400 seconds (24 hours), configurable only from 3,600 through 604,800 seconds. Successful jobs erase source text immediately; reaching the final application-attempt limit also erases it immediately. Firestore TTL deletes the remaining private job record asynchronously after the bounded deadline.
+
+Cloud Tasks delivery retry is crash recovery, not an extra owner-visible application retry. The application separately caps a job at three **application attempts**. Keep queue concurrency at one: a long screenplay deliberately yields between bounded visual chunks, and its named successor must not start until the current worker request has released its fenced lease and committed the checkpoint pointer.
 
 The previously observed `maxAttempts=3` / `maxRetryDuration=300s` policy is unsafe because it can exhaust crash-recovery delivery before the 1,800-second fenced lease is reclaimable. The queue command above deliberately uses a longer retry window and more delivery attempts; those delivery attempts do not increase the owner-visible application-attempt cap.
 
@@ -165,26 +171,38 @@ gcloud builds submit --project $env:AT_PROJECT --config cloudbuild.yaml --substi
 
 Record the immutable image digest after the build. A successful build is not a live job or media proof.
 
-## 7. Deploy the private worker first
+## 7. Deploy and then bind the private worker
 
-For the all-card image and FFmpeg path, start with 2 CPU, 4 GiB, concurrency 1, and one maximum instance. This is a contest baseline, not a universal performance guarantee.
+The commands in this section are for **first-time provisioning**, when no API revision and no queued jobs exist. They are not a safe rolling-upgrade order for a live installation.
+
+For every upgrade of an existing installation, first pause the Cloud Tasks queue and prove that it is empty. Build one uniquely tagged image, resolve it to an immutable digest, and deploy that same digest to both roles. While the queue remains paused, upgrade the API first so every newly admitted task carries the current payload schema, then upgrade the private worker. Use `--update-env-vars` for an upgrade so an existing access-code digest or other required setting is not erased. Verify both `/health` responses, the worker IAM boundary, the exact 1,740-second request/task timeout, the 1,800-second lease, queue concurrency one, and the two-panel chunk setting before resuming the queue. If the queue is not empty, do not mix revisions: wait for it to drain or roll back the API and worker as a pair.
+
+For the all-card image and FFmpeg path, start with 2 CPU, 4 GiB, concurrency 1, and one maximum instance. This is a contest baseline, not a universal performance guarantee. The first command creates the service so its canonical URL can be discovered. The second command redeploys the same reviewed image with the continuation dispatcher bound to that URL. Do not expose the API until the second worker deployment is healthy.
 
 ```powershell
-gcloud run deploy $env:AT_WORKER --project $env:AT_PROJECT --region $env:AT_REGION --image $env:AT_IMAGE --service-account $env:AT_WORKER_SA --no-allow-unauthenticated --min-instances 0 --max-instances 1 --cpu 2 --memory 4Gi --concurrency 1 --timeout 1740 --set-env-vars "KIRA_ALL_THINGS_SERVICE_ROLE=worker,GOOGLE_CLOUD_PROJECT=$($env:AT_PROJECT),GOOGLE_CLOUD_LOCATION=global,GOOGLE_GENAI_USE_VERTEXAI=True,KIRA_ALL_THINGS_GEMINI_MODEL=gemini-3.5-flash,KIRA_ALL_THINGS_IMAGE_MODEL=gemini-3.1-flash-image,KIRA_ALL_THINGS_ARTIFACTS_BUCKET=$($env:AT_BUCKET),KIRA_ALL_THINGS_TTS_VOICE=en-US-Chirp3-HD-Aoede,KIRA_ALL_THINGS_FIRESTORE_DATABASE=(default),KIRA_ALL_THINGS_JOBS_COLLECTION=all_things_agentic_jobs,KIRA_ALL_THINGS_TASKS_LOCATION=$($env:AT_REGION),KIRA_ALL_THINGS_TASKS_QUEUE=video-studio-production-briefs,KIRA_ALL_THINGS_WORKER_LEASE_SECONDS=1800"
+gcloud run deploy $env:AT_WORKER --project $env:AT_PROJECT --region $env:AT_REGION --image $env:AT_IMAGE --service-account $env:AT_WORKER_SA --no-allow-unauthenticated --min-instances 0 --max-instances 1 --cpu 2 --memory 4Gi --concurrency 1 --timeout 1740 --set-env-vars "KIRA_ALL_THINGS_SERVICE_ROLE=worker,GOOGLE_CLOUD_PROJECT=$($env:AT_PROJECT),GOOGLE_CLOUD_LOCATION=global,GOOGLE_GENAI_USE_VERTEXAI=True,KIRA_ALL_THINGS_GEMINI_MODEL=gemini-3.5-flash,KIRA_ALL_THINGS_IMAGE_MODEL=gemini-3.1-flash-image,KIRA_ALL_THINGS_ARTIFACTS_BUCKET=$($env:AT_BUCKET),KIRA_ALL_THINGS_TTS_VOICE=en-US-Chirp3-HD-Aoede,KIRA_ALL_THINGS_FIRESTORE_DATABASE=(default),KIRA_ALL_THINGS_JOBS_COLLECTION=all_things_agentic_jobs,KIRA_ALL_THINGS_TASKS_LOCATION=$($env:AT_REGION),KIRA_ALL_THINGS_TASKS_QUEUE=video-studio-production-briefs,KIRA_ALL_THINGS_WORKER_LEASE_SECONDS=1800,KIRA_ALL_THINGS_JOB_RETENTION_SECONDS=86400"
 
 $env:AT_WORKER_URL = gcloud run services describe $env:AT_WORKER --project $env:AT_PROJECT --region $env:AT_REGION --format "value(status.url)"
 gcloud run services add-iam-policy-binding $env:AT_WORKER --project $env:AT_PROJECT --region $env:AT_REGION --member "serviceAccount:$($env:AT_TASKS_SA)" --role roles/run.invoker
+
+gcloud run deploy $env:AT_WORKER --project $env:AT_PROJECT --region $env:AT_REGION --image $env:AT_IMAGE --service-account $env:AT_WORKER_SA --no-allow-unauthenticated --min-instances 0 --max-instances 1 --cpu 2 --memory 4Gi --concurrency 1 --timeout 1740 --set-env-vars "KIRA_ALL_THINGS_SERVICE_ROLE=worker,GOOGLE_CLOUD_PROJECT=$($env:AT_PROJECT),GOOGLE_CLOUD_LOCATION=global,GOOGLE_GENAI_USE_VERTEXAI=True,KIRA_ALL_THINGS_GEMINI_MODEL=gemini-3.5-flash,KIRA_ALL_THINGS_IMAGE_MODEL=gemini-3.1-flash-image,KIRA_ALL_THINGS_ARTIFACTS_BUCKET=$($env:AT_BUCKET),KIRA_ALL_THINGS_TTS_VOICE=en-US-Chirp3-HD-Aoede,KIRA_ALL_THINGS_FIRESTORE_DATABASE=(default),KIRA_ALL_THINGS_JOBS_COLLECTION=all_things_agentic_jobs,KIRA_ALL_THINGS_TASKS_LOCATION=$($env:AT_REGION),KIRA_ALL_THINGS_TASKS_QUEUE=video-studio-production-briefs,KIRA_ALL_THINGS_WORKER_URL=$($env:AT_WORKER_URL),KIRA_ALL_THINGS_TASKS_SERVICE_ACCOUNT=$($env:AT_TASKS_SA),KIRA_ALL_THINGS_VISUAL_PANELS_PER_DISPATCH=2,KIRA_ALL_THINGS_WORKER_LEASE_SECONDS=1800,KIRA_ALL_THINGS_JOB_RETENTION_SECONDS=86400"
 ```
 
-Confirm an unauthenticated worker request is rejected by Cloud Run IAM. The corrected dispatcher sets a 1,740-second per-task HTTP deadline, the Cloud Run worker timeout is 1,740 seconds, and the fenced worker lease is 1,800 seconds. Keep those three values aligned in that order. A queue retry window alone does not extend an individual HTTP request.
+Confirm an unauthenticated worker request is rejected by Cloud Run IAM. Confirm `/health` reports `continuation_dispatch_configured: true` on the bound worker revision. The dispatcher sets a 1,740-second per-task HTTP deadline, the Cloud Run worker timeout is 1,740 seconds, and the fenced worker lease is 1,800 seconds. Keep those three values aligned in that order. A queue retry window alone does not extend an individual HTTP request.
+
+The two-panel value is a hard reviewed bound, not a tuning suggestion. A 36-card screenplay uses 18 visual-bearing requests, 36 one-card narrated-pitch requests, and one final concat/probe request. Each successor has the same application attempt but a strictly increasing dispatch sequence. The worker writes an immutable, hashed private checkpoint before yielding; the checkpoint pointer, next sequence, and lease release are fenced transactionally. A stale or duplicate task cannot append a panel or pitch segment, reuse a terminal/failed job, or advance the sequence twice.
+
+Provider and media calls are also hard bounded: 300 seconds per Gemini request, at most two visual attempts with one 5-second backoff, 120 seconds per TTS request, and 600 seconds per FFmpeg/FFprobe subprocess. The resulting worst-case request budgets are 1,510 seconds for sequence zero, 1,210 seconds for a two-panel continuation, 1,320 seconds for one pitch card, and 1,200 seconds for final concat/probe, each below the 1,740-second deadline.
 
 ## 8. Deploy the public API
 
 ```powershell
-gcloud run deploy $env:AT_API --project $env:AT_PROJECT --region $env:AT_REGION --image $env:AT_IMAGE --service-account $env:AT_API_SA --allow-unauthenticated --min-instances 0 --max-instances 1 --cpu 1 --memory 1Gi --concurrency 20 --timeout 60 --set-env-vars "KIRA_ALL_THINGS_SERVICE_ROLE=api,GOOGLE_CLOUD_PROJECT=$($env:AT_PROJECT),GOOGLE_CLOUD_LOCATION=global,GOOGLE_GENAI_USE_VERTEXAI=True,KIRA_ALL_THINGS_GEMINI_MODEL=gemini-3.5-flash,KIRA_ALL_THINGS_IMAGE_MODEL=gemini-3.1-flash-image,KIRA_ALL_THINGS_ARTIFACTS_BUCKET=$($env:AT_BUCKET),KIRA_ALL_THINGS_TTS_VOICE=en-US-Chirp3-HD-Aoede,KIRA_ALL_THINGS_DEMO_ACCESS_SHA256=$($env:AT_ACCESS_SHA256),KIRA_ALL_THINGS_FIRESTORE_DATABASE=(default),KIRA_ALL_THINGS_JOBS_COLLECTION=all_things_agentic_jobs,KIRA_ALL_THINGS_TASKS_LOCATION=$($env:AT_REGION),KIRA_ALL_THINGS_TASKS_QUEUE=video-studio-production-briefs,KIRA_ALL_THINGS_WORKER_URL=$($env:AT_WORKER_URL),KIRA_ALL_THINGS_TASKS_SERVICE_ACCOUNT=$($env:AT_TASKS_SA),KIRA_ALL_THINGS_ADMISSION_COOLDOWN_SECONDS=3,KIRA_ALL_THINGS_ADMISSION_WINDOW_SECONDS=3600,KIRA_ALL_THINGS_ADMISSION_MAX_JOBS=24,KIRA_ALL_THINGS_WORKER_LEASE_SECONDS=1800"
+gcloud run deploy $env:AT_API --project $env:AT_PROJECT --region $env:AT_REGION --image $env:AT_IMAGE --service-account $env:AT_API_SA --allow-unauthenticated --min-instances 0 --max-instances 1 --cpu 1 --memory 1Gi --concurrency 20 --timeout 60 --set-env-vars "KIRA_ALL_THINGS_SERVICE_ROLE=api,GOOGLE_CLOUD_PROJECT=$($env:AT_PROJECT),GOOGLE_CLOUD_LOCATION=global,GOOGLE_GENAI_USE_VERTEXAI=True,KIRA_ALL_THINGS_GEMINI_MODEL=gemini-3.5-flash,KIRA_ALL_THINGS_IMAGE_MODEL=gemini-3.1-flash-image,KIRA_ALL_THINGS_ARTIFACTS_BUCKET=$($env:AT_BUCKET),KIRA_ALL_THINGS_TTS_VOICE=en-US-Chirp3-HD-Aoede,KIRA_ALL_THINGS_DEMO_ACCESS_SHA256=$($env:AT_ACCESS_SHA256),KIRA_ALL_THINGS_FIRESTORE_DATABASE=(default),KIRA_ALL_THINGS_JOBS_COLLECTION=all_things_agentic_jobs,KIRA_ALL_THINGS_TASKS_LOCATION=$($env:AT_REGION),KIRA_ALL_THINGS_TASKS_QUEUE=video-studio-production-briefs,KIRA_ALL_THINGS_WORKER_URL=$($env:AT_WORKER_URL),KIRA_ALL_THINGS_TASKS_SERVICE_ACCOUNT=$($env:AT_TASKS_SA),KIRA_ALL_THINGS_VISUAL_PANELS_PER_DISPATCH=2,KIRA_ALL_THINGS_ADMISSION_COOLDOWN_SECONDS=10,KIRA_ALL_THINGS_ADMISSION_WINDOW_SECONDS=3600,KIRA_ALL_THINGS_ADMISSION_MAX_JOBS=4,KIRA_ALL_THINGS_WORKER_LEASE_SECONDS=1800,KIRA_ALL_THINGS_JOB_RETENTION_SECONDS=86400"
 ```
 
 The API is publicly reachable so judges can load the application, but all job and artifact routes still require the owner/judge code. The private worker remains IAM protected.
+
+The shared contest code is deliberately limited to four new jobs per hour with a ten-second cooldown. Concurrency one limits simultaneous provider work, but it does not cap a queued backlog by itself. Keep the private code private, monitor the queue and billing alerts during judging, and pause the queue if unexpected submissions accumulate.
 
 ## Required non-secret environment values
 
@@ -201,18 +219,20 @@ Both roles require:
 | `KIRA_ALL_THINGS_TTS_VOICE` | A valid Chirp 3 HD voice such as `en-US-Chirp3-HD-Aoede`. |
 | `KIRA_ALL_THINGS_FIRESTORE_DATABASE` | Normally `(default)`. |
 | `KIRA_ALL_THINGS_JOBS_COLLECTION` | Durable jobs collection. |
+| `KIRA_ALL_THINGS_VISUAL_PANELS_PER_DISPATCH` | Hard-bounded visual chunk size; use reviewed value `2` (valid code range 1–2). |
 | `KIRA_ALL_THINGS_WORKER_LEASE_SECONDS` | Longer than worker request timeout; valid code range is 60–1800 seconds. |
+| `KIRA_ALL_THINGS_JOB_RETENTION_SECONDS` | Firestore job/source TTL window; default 86400 seconds, valid range 3600–604800. The `record_expires_at` TTL policy must be ACTIVE. |
 
-The API additionally requires the access-code digest and Cloud Tasks dispatch values. The worker never needs the access-code digest. Do not put plaintext secrets or downloaded service-account keys in environment files; Cloud Run uses attached service identities.
+The API additionally requires the access-code digest and Cloud Tasks dispatch values. The continuation-capable worker also requires `KIRA_ALL_THINGS_WORKER_URL` and `KIRA_ALL_THINGS_TASKS_SERVICE_ACCOUNT`; it never needs the access-code digest. Do not put plaintext secrets or downloaded service-account keys in environment files; Cloud Run uses attached service identities.
 
 ## Realistic time, resource, and cost cautions
 
-- One planning image is requested per card. Three cards per scene means a 12-scene script can require 36 image generations before TTS and encoding.
+- One planning image is requested per card. Three cards per scene means a 12-scene script can require 36 image generations before TTS and encoding. The reviewed worker processes at most two panels per dispatch and resumes from an integrity-validated private checkpoint rather than relying on one 1,740-second request.
 - Provider quota, safety/provider rejection, timeout, or malformed image output must fail the complete-media gate; the system must not silently substitute blank cards and call the job complete.
 - Chirp 3 HD synthesis is billable and runs once per card cue. Vertex text/image calls, Cloud Run CPU/memory time, Cloud Storage bytes/operations, Firestore, Cloud Tasks, Cloud Build, and Artifact Registry can also incur charges.
 - Google Cloud budget alerts notify; they do not stop spending. Keep worker concurrency and max instances at one during judging, watch Billing reports, and remove old artifacts/resources after the evidence window according to an owner-approved retention policy.
 - Cold starts, quota, card count, narration length, and FFmpeg work make elapsed time variable. The first job has no evidence-based ETA. Do not promise a completion time until measured live jobs exist.
-- The pitch renderer is bounded to 60 minutes and 2 GiB. The task/worker request ceiling can be lower. Use the one-minute START HERE test before a TV episode; do not use a feature-length screenplay as the first live proof.
+- The pitch renderer is bounded to 60 minutes and 2 GiB. It renders one independently verified private MP4 segment per card, then validates every segment hash/order before a separate final concat/probe dispatch. Use the one-minute START HERE test before a TV episode; do not use a feature-length screenplay as the first live proof.
 - 4 GiB is a reasonable contest starting point for 1080p FFmpeg work, not proof that every long script fits. Monitor worker memory and CPU before reducing it.
 
 ## Live evidence boundary

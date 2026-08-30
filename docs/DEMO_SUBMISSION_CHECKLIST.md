@@ -35,6 +35,8 @@ This checklist separates local contract verification from evidence that exists o
 - [ ] The worker is private; an unauthenticated request is rejected by Cloud Run IAM.
 - [ ] Both roles have the exact non-secret bucket/voice configuration. Only the API has the access-code digest.
 - [ ] Cloud Tasks dispatch deadline and Cloud Run worker timeout are 1,740 seconds; fenced lease is 1,800 seconds.
+- [ ] Queue concurrency and worker max instances are both one; worker `/health` reports `continuation_dispatch_configured: true`.
+- [ ] API and worker use `KIRA_ALL_THINGS_VISUAL_PANELS_PER_DISPATCH=2`; worker also has its own canonical URL and the task-caller service account configured for successor dispatches.
 - [ ] Worker starts at 2 CPU, 4 GiB, concurrency 1, max instances 1 for the first media acceptance run.
 
 ## 3. Access and boundary smoke tests
@@ -53,6 +55,7 @@ Follow [START_HERE_TEST.md](START_HERE_TEST.md). Do not use a full television ep
 - [ ] A specific one-minute dialogue request is accepted and has a durable job ID.
 - [ ] The first ETA says unavailable rather than inventing a time.
 - [ ] The job progresses through brief, validation, timeline compilation, audit, all-card visual generation, narration, media render, and final verification stages.
+- [ ] For a multi-dispatch test, dispatch sequences advance contiguously within one application attempt; every checkpoint is private/hash-bound and no stale or duplicate task changes the panel count.
 - [ ] Completed job records `execution.evidence_origin = live_google_provider_response` plus actual provider metadata.
 - [ ] `state == succeeded` only after all media gates pass.
 
@@ -94,6 +97,7 @@ Follow [START_HERE_TEST.md](START_HERE_TEST.md). Do not use a full television ep
 - [ ] Confirm direct bucket/object anonymous access fails.
 - [ ] Exercise an ambiguous request and show `ready_for_production: false` with concise questions and no fake finished package.
 - [ ] Exercise queued cancellation and one bounded retry. Do not claim an in-flight external provider call was preempted.
+- [ ] Cancel during a multi-panel run and confirm work stops at a panel boundary without enqueuing another continuation. Repeat during a narrated-pitch card and confirm no successor or finalizer is enqueued. Retry must start a new application attempt at dispatch sequence zero rather than reusing a terminal/failed checkpoint.
 
 If any required panel or MP4 item fails, the release remains on hold. A historical partial test is useful debugging evidence but is not owner-review media.
 

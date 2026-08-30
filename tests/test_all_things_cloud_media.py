@@ -375,6 +375,7 @@ class GoogleCloudNarratedPitchRendererTests(unittest.TestCase):
             tts.requests[0]["request"]["voice"]["name"],  # type: ignore[index]
             DEFAULT_VOICE_NAME,
         )
+        self.assertEqual(tts.requests[0]["timeout"], 120)
         self.assertIn("MARA: Battery C", tts.requests[0]["request"]["input"]["text"])  # type: ignore[index]
         ffmpeg_calls = [call for call in runner.calls if call[0] == "fake-ffmpeg"]
         self.assertEqual(len(ffmpeg_calls), 3)
@@ -407,6 +408,146 @@ class GoogleCloudNarratedPitchRendererTests(unittest.TestCase):
         self.assertNotIn("public_url", serialized)
         with self.assertRaises(TypeError):
             manifest["video"]["sha256"] = "0" * 64
+
+    def test_bounded_card_dispatches_then_integrity_checked_finalization(self) -> None:
+        brief, timeline, source, visuals = pitch_values()
+        renderer, tts, runner, bucket = self.renderer()
+        ownership_checks = 0
+
+        def owned() -> bool:
+            nonlocal ownership_checks
+            ownership_checks += 1
+            return True
+
+        segments: list[dict[str, object]] = []
+        for index in range(2):
+            rendered = renderer.render_segment_chunk(
+                brief=brief,
+                timeline=timeline,
+                source_message=source,
+                visual_storyboard=visuals,
+                job_id="job-123",
+                start_index=index,
+                max_cards=1,
+                ownership_check=owned,
+            )
+            self.assertEqual(len(rendered), 1)
+            segments.append(dict(rendered[0]))
+
+        manifest = renderer.finalize_segments(
+            brief=brief,
+            timeline=timeline,
+            source_message=source,
+            visual_storyboard=visuals,
+            job_id="job-123",
+            segments=segments,
+            ownership_check=owned,
+        )
+
+        self.assertEqual([item["sequence"] for item in segments], [1, 2])
+        self.assertEqual([item["shot_id"] for item in segments], ["SC01-SH01", "SC01-SH02"])
+        self.assertTrue(all(item["content_type"] == "video/mp4" for item in segments))
+        self.assertEqual(len(tts.requests), 2)
+        self.assertTrue(all(request["timeout"] == 120 for request in tts.requests))
+        self.assertEqual(manifest["status"], "complete")
+        self.assertEqual(manifest["card_count"], 2)
+        self.assertGreaterEqual(ownership_checks, 12)
+        self.assertEqual(
+            len([call for call in runner.calls if call[0] == "fake-ffmpeg"]),
+            3,
+        )
+        self.assertEqual(
+            len([call for call in runner.calls if call[0] == "fake-ffprobe"]),
+            3,
+        )
+        self.assertEqual(
+            sum(1 for upload in bucket.uploads if upload["content_type"] == "video/mp4"),
+            3,
+        )
+
+    def test_bounded_card_render_observes_cancellation_before_storage(self) -> None:
+        brief, timeline, source, visuals = pitch_values()
+        renderer, _tts, _runner, bucket = self.renderer()
+        checks = iter((True, True, False))
+        with self.assertRaisesRegex(NarratedPitchRenderError, "work_stopped"):
+            renderer.render_segment_chunk(
+                brief=brief,
+                timeline=timeline,
+                source_message=source,
+                visual_storyboard=visuals,
+                job_id="job-123",
+                start_index=0,
+                max_cards=1,
+                ownership_check=lambda: next(checks),
+            )
+        self.assertEqual(bucket.uploads, [])
+
+    def test_finalization_rejects_a_tampered_private_card_segment(self) -> None:
+        brief, timeline, source, visuals = pitch_values()
+        renderer, _tts, _runner, bucket = self.renderer()
+        segments: list[dict[str, object]] = []
+        for index in range(2):
+            segments.extend(
+                dict(item)
+                for item in renderer.render_segment_chunk(
+                    brief=brief,
+                    timeline=timeline,
+                    source_message=source,
+                    visual_storyboard=visuals,
+                    job_id="job-123",
+                    start_index=index,
+                    max_cards=1,
+                )
+            )
+        bucket.objects[str(segments[0]["object_name"])] += b"tampered"
+
+        with self.assertRaisesRegex(
+            NarratedPitchRenderError, "visual_asset_load_failed"
+        ):
+            renderer.finalize_segments(
+                brief=brief,
+                timeline=timeline,
+                source_message=source,
+                visual_storyboard=visuals,
+                job_id="job-123",
+                segments=segments,
+            )
+        self.assertFalse(
+            any(str(upload["name"]).endswith("/narrated-pitch.mp4") for upload in bucket.uploads)
+        )
+
+    def test_finalization_observes_cancellation_after_probe_before_publication(self) -> None:
+        brief, timeline, source, visuals = pitch_values()
+        renderer, _tts, _runner, bucket = self.renderer()
+        segments: list[dict[str, object]] = []
+        for index in range(2):
+            segments.extend(
+                dict(item)
+                for item in renderer.render_segment_chunk(
+                    brief=brief,
+                    timeline=timeline,
+                    source_message=source,
+                    visual_storyboard=visuals,
+                    job_id="job-123",
+                    start_index=index,
+                    max_cards=1,
+                )
+            )
+        uploads_before_finalization = len(bucket.uploads)
+        checks = iter((True, True, True, True, True, True, False))
+
+        with self.assertRaisesRegex(NarratedPitchRenderError, "work_stopped"):
+            renderer.finalize_segments(
+                brief=brief,
+                timeline=timeline,
+                source_message=source,
+                visual_storyboard=visuals,
+                job_id="job-123",
+                segments=segments,
+                ownership_check=lambda: next(checks),
+            )
+
+        self.assertEqual(len(bucket.uploads), uploads_before_finalization)
 
     def test_uses_measured_encoded_durations_for_final_probe_and_subtitles(self) -> None:
         brief, timeline, source, visuals = pitch_values()
@@ -636,11 +777,14 @@ class GoogleCloudNarratedPitchRendererTests(unittest.TestCase):
         )
         with patch(
             "kira_studio.all_things_cloud_media.subprocess.run",
-            side_effect=subprocess.TimeoutExpired("fake-ffmpeg", 900),
+            side_effect=subprocess.TimeoutExpired("fake-ffmpeg", 600),
         ) as run:
             with self.assertRaisesRegex(NarratedPitchRenderError, "card_render_failed"):
                 renderer.render(brief, timeline, source, visuals, "job-123")
-        self.assertEqual(run.call_args.kwargs["timeout"], 900)
+        # A one-card task is bounded by TTS 120s + FFmpeg 600s + FFprobe
+        # 600s, and the separate final task by two 600s media commands. Both
+        # remain below the reviewed 1,740-second Cloud Tasks/Run envelope.
+        self.assertEqual(run.call_args.kwargs["timeout"], 600)
         self.assertEqual(bucket.uploads, [])
 
     def test_matches_keyword_only_store_protocol_and_voice_language(self) -> None:

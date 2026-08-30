@@ -443,7 +443,8 @@ test("visual and detailed HTML downloads stay separate, escaped, scriptless, and
   assert.equal(elements.get("animaticPlay").disabled, false);
   assert.equal(elements.get("pitchPlay").disabled, false);
   assert.equal(elements.get("downloadPitchScript").disabled, false);
-  assert.match(elements.get("pitchVoiceStatus").textContent, /Natural pitch voice ready: Microsoft Aria Online \(Natural\)/);
+  assert.match(elements.get("pitchVoiceStatus").textContent, /Optional device-voice preview available: Microsoft Aria Online \(Natural\)/);
+  assert.match(elements.get("pitchVoiceStatus").textContent, /not the exported track or production audio.*cloud Chirp 3 HD MP4/i);
   assert.equal(elements.get("animaticImage").src, "data:image/jpeg;base64,/9j/2Q==");
   assert.match(elements.get("animaticShot").textContent, /SC01-SH01/);
   assert.equal(elements.get("animaticTime").textContent, "00:00 / 00:12");
@@ -468,9 +469,9 @@ test("visual and detailed HTML downloads stay separate, escaped, scriptless, and
   ];
   voiceListeners.get("voiceschanged")();
   assert.equal(elements.get("pitchPlay").disabled, true, "robotic/default-only voice inventory cannot enable narration");
-  assert.equal(elements.get("pitchPlay").textContent, "Natural voice unavailable");
+  assert.equal(elements.get("pitchPlay").textContent, "Device preview unavailable");
   assert.equal(elements.get("downloadPitchScript").disabled, false, "the narration script remains available without a qualified voice");
-  assert.match(elements.get("pitchVoiceStatus").textContent, /Natural pitch voice unavailable.*download the pitch narration script instead/);
+  assert.match(elements.get("pitchVoiceStatus").textContent, /Optional device-voice preview unavailable.*cloud Chirp 3 HD MP4.*pitch narration script/i);
   elements.get("downloadDetailedSheet").click();
   elements.get("downloadVisualStoryboard").click();
   elements.get("downloadLocationPlan").click();
@@ -646,7 +647,7 @@ test("pitch narration download uses the authenticated cloud TXT that matches the
     "downloadPackage", "downloadVisualStoryboard", "printVisualStoryboard", "downloadDetailedSheet",
     "downloadLocationPlan", "downloadLocationCsv", "downloadLocationJson", "downloadCharacterHtml", "downloadCharacterText", "downloadCharacterJson", "downloadCharacterCsv", "downloadShotList", "downloadEdl", "accessHelp", "sourceSummary", "attachmentButton",
     "attachmentMenu", "attachStory", "attachFootage", "scriptFile", "footageFiles",
-    "scriptStatus", "footageStatus", "animatic", "animaticPlay", "animaticStop", "pitchPlay", "pitchStop", "pitchVoiceStatus", "downloadPitchScript", "downloadPitchVideo", "pitchVideo",
+    "scriptStatus", "footageStatus", "animatic", "animaticPlay", "animaticStop", "pitchPlay", "pitchStop", "pitchVoiceStatus", "downloadPitchScript", "downloadPitchVideo", "retryPrivateArtifacts", "pitchVideo",
     "animaticImage", "animaticPlaceholder", "animaticOverlay", "animaticShot",
     "animaticAction", "animaticBar", "animaticTime", "animaticTruth", "installApp",
   ];
@@ -755,23 +756,66 @@ test("pitch narration download uses the authenticated cloud TXT that matches the
       duration_seconds: 6,
     },
   };
+  const visualStoryboard = {
+    schema: "video-studio.visual-storyboard/v1",
+    status: "complete",
+    verification_scope: "technical_asset_integrity_only",
+    representation: "private_artifact_route",
+    renderer: {
+      provider: "Google Vertex AI",
+      framework: "google-genai",
+      model: "gemini-3.1-flash-image",
+      location: "global",
+      evidence_origin: "live_google_provider_response",
+    },
+    required_panel_count: 1,
+    available_panel_count: 1,
+    missing_panel_count: 0,
+    panels: [{
+      shot_id: "SC01-SH01",
+      status: "available",
+      missing_reason: null,
+      alt_text: "Planning illustration of Mara checking Battery C while Ilan watches the gauge.",
+      prompt_sha256: "d".repeat(64),
+      mime_type: "image/jpeg",
+      width: 768,
+      height: 432,
+      byte_length: 4,
+      content_sha256: "e".repeat(64),
+      data_base64: null,
+      artifact_id: "panel-1",
+      object_name: "jobs/cloud-pitch-job/panel-1.jpg",
+    }],
+  };
   const queued = job("cloud-pitch-job");
   const completed = {
     ...job("cloud-pitch-job", {questions: [], ready: true}),
     brief: productionBrief,
     storyboard_package: storyboardPackage,
+    visual_storyboard: visualStoryboard,
     pitch_preview: pitchPreview,
   };
   const fetchCalls = [];
-  const artifactBlob = {
+  const narrationArtifactBlob = {
     type: "text/plain; charset=utf-8",
     size: cloudNarration.length,
     async text() { return cloudNarration; },
   };
+  const visualArtifactBlob = {type: "image/jpeg", size: 4};
+  const videoArtifactBlob = {type: "video/mp4", size: 4096};
+  let panelFetchCount = 0;
   async function fetchObject(url, options = {}) {
     fetchCalls.push({url, options});
+    if (url === "/v1/jobs/cloud-pitch-job/artifacts/panel-1") {
+      panelFetchCount += 1;
+      if (panelFetchCount === 1) return {ok: false, status: 503, async blob() { throw new Error("unreachable"); }};
+      return {ok: true, status: 200, async blob() { return visualArtifactBlob; }};
+    }
     if (url === "/v1/jobs/cloud-pitch-job/artifacts/pitch-narration") {
-      return {ok: true, status: 200, async blob() { return artifactBlob; }};
+      return {ok: true, status: 200, async blob() { return narrationArtifactBlob; }};
+    }
+    if (url === "/v1/jobs/cloud-pitch-job/artifacts/pitch-video") {
+      return {ok: true, status: 200, async blob() { return videoArtifactBlob; }};
     }
     const payload = url === "/v1/jobs" ? queued : completed;
     return {ok: true, status: url === "/v1/jobs" ? 202 : 200, async json() { return payload; }};
@@ -781,14 +825,23 @@ test("pitch narration download uses the authenticated cloud TXT that matches the
     constructor(parts, options) { this.parts = parts; this.type = options.type; blobs.push(this); }
   }
   const urlObject = {
-    createObjectURL(blob) { return `blob:cloud-narration-${blobs.indexOf(blob) + 1}`; },
+    createObjectURL(blob) { return blob === videoArtifactBlob ? "blob:verified-cloud-pitch-video" : `blob:cloud-narration-${blobs.indexOf(blob) + 1}`; },
     revokeObjectURL() {},
   };
-  const speechSynthesis = {getVoices() { return []; }, addEventListener() {}, cancel() {}};
+  class FakeFileReader {
+    readAsDataURL() {
+      this.result = "data:image/jpeg;base64,/9j/2Q==";
+      Promise.resolve().then(() => this.onload?.());
+    }
+  }
+  let cloudPlayCount = 0;
+  elements.get("pitchVideo").play = () => { cloudPlayCount += 1; return Promise.resolve(); };
+  const speechSynthesis = {getVoices() { return []; }, addEventListener() {}, cancel() {}, speak() { throw new Error("device speech must not run after the cloud pitch is ready"); }};
   const html = fs.readFileSync(path.join(__dirname, "..", "web", "all-things-agentic.html"), "utf8");
   const script = html.match(/<script>\s*([\s\S]*?)\s*<\/script>/)[1];
   vm.runInNewContext(script, {
     Blob: FakeBlob,
+    FileReader: FakeFileReader,
     URL: urlObject,
     clearTimeout() {},
     console,
@@ -801,6 +854,28 @@ test("pitch narration download uses the authenticated cloud TXT that matches the
   elements.get("message").value = "Build the cloud narration match package.";
   await elements.get("submit").listeners.get("click")();
   await settle();
+  assert.equal(elements.get("pitchPlay").disabled, false);
+  assert.equal(elements.get("pitchPlay").textContent, "Play cloud narrated MP4");
+  assert.equal(elements.get("pitchVideo").src, "blob:verified-cloud-pitch-video");
+  assert.equal(elements.get("pitchVideo").classList.contains("hidden"), false);
+  assert.match(elements.get("pitchVoiceStatus").textContent, /Cloud narrated MP4 ready: 1\/1 cards.*Chirp3-HD-Aoede.*owner listening review/i);
+  const initialArtifactFetches = fetchCalls.filter(call => call.url.includes("/artifacts/")).map(call => call.url);
+  assert.deepEqual(initialArtifactFetches, [
+    "/v1/jobs/cloud-pitch-job/artifacts/pitch-video",
+    "/v1/jobs/cloud-pitch-job/artifacts/panel-1",
+    "/v1/jobs/cloud-pitch-job/artifacts/pitch-narration",
+  ], "the primary MP4 must install before independent panel/TXT hydration");
+  assert.equal(elements.get("retryPrivateArtifacts").disabled, false, "one failed panel enables an explicit media-only retry");
+  assert.match(elements.get("error").textContent, /Retry media load without rerunning production/i);
+  elements.get("pitchPlay").click();
+  await settle();
+  assert.equal(cloudPlayCount, 1, "the primary pitch button must play the verified cloud MP4, not browser speech");
+  await elements.get("retryPrivateArtifacts").listeners.get("click")();
+  await settle();
+  assert.equal(elements.get("retryPrivateArtifacts").disabled, true);
+  assert.equal(panelFetchCount, 2);
+  assert.equal(fetchCalls.filter(call => call.url === "/v1/jobs/cloud-pitch-job/artifacts/pitch-video").length, 1, "media-only retry must keep the already verified MP4 instead of refetching it");
+  assert.equal(fetchCalls.filter(call => call.url === "/v1/jobs/cloud-pitch-job/artifacts/pitch-narration").length, 1, "media-only retry must keep the already hydrated narration TXT");
   assert.equal(elements.get("downloadPitchScript").disabled, false);
   await elements.get("downloadPitchScript").listeners.get("click")();
   await settle();
@@ -921,7 +996,7 @@ test("full-screenplay pitch TXT includes every card while browser playback keeps
     cancel() {},
   };
   const html = fs.readFileSync(path.join(__dirname, "..", "web", "all-things-agentic.html"), "utf8");
-  assert.doesNotMatch(html, /DEVICE VOICE|on this device/i);
+  assert.match(html, /Optional device-voice preview/);
   const script = html.match(/<script>\s*([\s\S]*?)\s*<\/script>/)[1];
   vm.runInNewContext(script, {
     Blob: FakeBlob,

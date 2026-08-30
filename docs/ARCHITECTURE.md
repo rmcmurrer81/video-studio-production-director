@@ -10,7 +10,7 @@ flowchart LR
 
     UI -->|Access header + relative job routes| API[Public Cloud Run API]
     API <--> DB[(Cloud Firestore)]
-    API -->|Named task| Queue[Cloud Tasks]
+    API -->|Named attempt + sequence task| Queue[Cloud Tasks]
     Queue -->|OIDC + 1740s deadline| Worker[Private Cloud Run worker]
 
     Worker -->|Structured brief| Gemini[Vertex AI<br/>Gemini 3.5+]
@@ -37,9 +37,9 @@ flowchart LR
 | Browser UI/PWA | Collect natural chat, locally extract supported story files, inventory raw-video metadata without uploading footage bytes, show durable progress, hydrate authenticated private panels, play/download the cloud-rendered pitch MP4, and export the review package. |
 | Local source boundary | Send extracted creative text as job input. Keep selected raw-video bytes local. Do not claim footage-content analysis or applied editing. |
 | Public Cloud Run API | Validate the owner/judge code, enforce shared admission limits, create/read/cancel/retry jobs, enqueue work, and serve only job-declared artifacts through an authenticated same-origin route. |
-| Firestore | Persist admission state, attempts, cancellation intent, lease/fencing state, execution evidence, deterministic package, visual manifest, narrated-pitch manifest, and measured durations. |
-| Cloud Tasks | Deliver job ID plus application attempt to the private worker with an OIDC token, worker URL audience, deterministic task name, and a 1,740-second dispatch deadline. |
-| Private Cloud Run worker | Claim work transactionally, call the configured providers, compile and audit cards, require all-card visuals, synthesize narration, render/probe the MP4, and finalize only while holding the current 1,800-second lease. |
+| Firestore | Persist admission state, application attempt, dispatch sequence, cancellation intent, lease/fencing state, immutable-checkpoint pointer, execution evidence, deterministic package, visual manifest, narrated-pitch manifest, and measured durations. |
+| Cloud Tasks | Deliver job ID, application attempt, and dispatch sequence to the private worker with an OIDC token, worker URL audience, deterministic task name, and a 1,740-second dispatch deadline. |
+| Private Cloud Run worker | Claim an exact attempt/sequence transactionally, call the configured providers, compile and audit cards, generate a bounded visual chunk, checkpoint and yield when necessary, require all-card visuals, synthesize narration, render/probe the MP4, and finalize only while holding the current 1,800-second lease. |
 | Vertex brief adapter | Look up the configured Gemini 3.5+ model and request the exact structured creative-plan contract through the official Google Gen AI SDK. |
 | Deterministic compiler/auditor | Expand scenes into establishing/primary/continuity cards, allocate contiguous non-drop 24-fps frame ranges, verify coverage/continuity/source guidance, and hash the canonical package. |
 | Vertex visual adapter | Generate a planning illustration for every card, normalize it to a bounded 16:9 JPEG, and reject malformed/unsupported output. It does not alter the deterministic card plan. |
@@ -57,7 +57,7 @@ Objects are content addressed:
 jobs/{job_id}/artifacts/{sha256}/{artifact_id}
 ```
 
-The worker stores panel JPEGs plus `narrated-pitch.mp4`, `narration.txt`, and `subtitles.srt`. A manifest records only safe identifiers, object names inside the adapter-owned prefix, SHA-256, byte count, and content type. It does not expose a bucket URL.
+The worker stores panel JPEGs, immutable continuation checkpoint JSON, `narrated-pitch.mp4`, `narration.txt`, and `subtitles.srt`. A manifest records only safe identifiers, object names inside the adapter-owned prefix, SHA-256, byte count, and content type. It does not expose a bucket URL. Checkpoint objects are internal and are never exposed through the completed-job artifact route.
 
 The browser requests:
 
@@ -92,10 +92,15 @@ A provider/quota/safety rejection, TTS error, FFmpeg timeout, missing image, or 
 
 ## Durable job lifecycle
 
+One application attempt may contain several bounded Cloud Tasks dispatches. Sequence zero creates the brief and deterministic package and generates the first visual chunk. Each successor restores only an immutable checkpoint whose job ID, attempt, sequence, request hash, package hash, prior-checkpoint hash, ordered panel/segment identities, artifact hashes, and next offsets all validate. At most two panels are generated per reviewed deployment dispatch. After all visuals exist, each narrated-pitch successor synthesizes and verifies exactly one private card MP4; a final successor re-reads and re-hashes the exact ordered segment set before concat, FFprobe, and final publication. The original source remains available to the worker throughout this chain and is discarded only after final success.
+
+For a 36-card screenplay, the reviewed schedule uses 18 visual-bearing requests, 36 one-card pitch requests, and one final concat/probe request: 55 requests total within a computed maximum of 56. The brief/visual provider timeout is 300 seconds; visual generation permits at most two attempts with one 5-second backoff. Text-to-Speech is capped at 120 seconds, while each FFmpeg or FFprobe subprocess is capped at 600 seconds. Thus the initial brief-plus-two-panel request is bounded to 1,510 seconds, a visual continuation to 1,210 seconds, a pitch-card request to 1,320 seconds, and final concat/probe to 1,200 seconds, all below the 1,740-second request envelope.
+
 ```mermaid
 stateDiagram-v2
     [*] --> queued
-    queued --> running: worker claims attempt + fencing token
+    queued --> running: worker claims exact attempt + sequence + fencing token
+    running --> queued: immutable checkpoint + named successor
     running --> running: expired lease reclaimed
     queued --> cancelled: cancel before claim
     running --> cancelling: cancel requested
@@ -106,7 +111,7 @@ stateDiagram-v2
     cancelled --> queued: bounded application retry
 ```
 
-The first ETA is unavailable. Ranges appear only after completed live jobs provide measured durations. Cancellation during an external call records intent and discards the eventual result; it does not claim to preempt the provider request. The task deadline and Cloud Run timeout are 1,740 seconds; the fencing lease is 1,800 seconds. Cloud Tasks delivery retry is separate from the three application attempts.
+The first ETA is unavailable. Ranges appear only after completed live jobs provide measured durations. Cancellation is checked before and after every panel-generation/storage boundary, before and after each pitch-card TTS/render/probe boundary, while finalization validates each segment, and again before a continuation or final result is committed. Cancellation during an external call records intent and discards the eventual result; it does not claim to preempt the provider request. Attempt, dispatch sequence, and lease token fence every mutation, so stale delivery cannot add duplicate panels or segments or continue a terminal/failed job. The task deadline and Cloud Run timeout are 1,740 seconds; the fencing lease is 1,800 seconds. Cloud Tasks delivery retry is separate from the three application attempts.
 
 ## Trust boundaries
 

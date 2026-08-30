@@ -23,6 +23,9 @@ from kira_studio.all_things_agentic import (
     MAX_DURABLE_JOB_BYTES,
     MAX_MESSAGE_BYTES,
     MAX_MESSAGE_CHARS,
+    MAX_PIPELINE_DISPATCHES,
+    NARRATED_PITCH_SCHEMA,
+    PIPELINE_CONTINUATION_SCHEMA,
     PRODUCTION_BRIEF_RESPONSE_SCHEMA,
     ProductionBrief,
     STORYBOARD_FRAME_RATE,
@@ -35,6 +38,7 @@ from kira_studio.all_things_agentic import (
     compile_storyboard_timeline,
     eta_payload,
     fit_visual_storyboard_to_job_budget,
+    sha256_json,
     validate_storyboard_package,
     validate_visual_storyboard,
 )
@@ -89,6 +93,34 @@ def brief_mapping(*, ready: bool = True) -> dict[str, object]:
         "clarifying_questions": [] if ready else ["Should the ending feel hopeful or uncertain?"],
         "ready_for_production": ready,
     }
+
+
+def full_screenplay_mapping() -> dict[str, object]:
+    value = brief_mapping()
+    value.update(
+        {
+            "title": "The Thirty-Six Decisions",
+            "summary": (
+                "Twelve linked sequences follow two engineers as they protect a "
+                "failing orbital refuge and decide what future they can still build."
+            ),
+            "duration_seconds": 720,
+            "scenes": [
+                {
+                    "number": number,
+                    "purpose": (
+                        f"Sequence {number} advances the orbital-refuge crisis and "
+                        "preserves the engineers' shared decision across the next beat."
+                    ),
+                    "setting": f"orbital refuge sector {number}",
+                    "characters": ["Mara", "Jon"],
+                    "dialogue_required": True,
+                }
+                for number in range(1, 13)
+            ],
+        }
+    )
+    return value
 
 
 def browser_json_number_roundtrip(value: object) -> object:
@@ -173,12 +205,16 @@ class MemoryRepository:
         patch: dict[str, object],
         *,
         attempt: int,
+        dispatch_sequence: int,
         lease_token: str,
         lease_expires_at: str,
         now: str,
     ) -> dict[str, object] | None:
         record = self.get(job_id)
-        if int(record["attempt"]) != attempt:
+        if (
+            int(record["attempt"]) != attempt
+            or int(record.get("dispatch_sequence", -1)) != dispatch_sequence
+        ):
             return None
         state = record["state"]
         reclaiming = state in {JobState.RUNNING.value, JobState.CANCELLING.value}
@@ -199,6 +235,34 @@ class MemoryRepository:
             if record.get("cancel_requested"):
                 update["state"] = JobState.CANCELLING.value
         return self.update(job_id, update)
+
+    def continue_job(
+        self,
+        job_id: str,
+        patch: dict[str, object],
+        *,
+        attempt: int,
+        dispatch_sequence: int,
+        lease_token: str,
+        cancelled_patch: dict[str, object],
+    ) -> dict[str, object]:
+        record = self.get(job_id)
+        if (
+            int(record["attempt"]) != attempt
+            or int(record.get("dispatch_sequence", -1)) != dispatch_sequence
+            or record.get("lease_token") != lease_token
+        ):
+            return record
+        selected = (
+            cancelled_patch
+            if record.get("cancel_requested")
+            or record["state"] == JobState.CANCELLING.value
+            else patch
+        )
+        return self.update(
+            job_id,
+            {**selected, "lease_token": None, "lease_expires_at": None},
+        )
 
     def update_claimed(
         self,
@@ -303,17 +367,29 @@ class RecordingDispatcher:
     def __init__(self, *, fail: bool = False) -> None:
         self.job_ids: list[str] = []
         self.attempts: list[int] = []
+        self.dispatch_sequences: list[int] = []
         self.fail = fail
 
-    def enqueue(self, job_id: str, *, attempt: int) -> dict[str, object]:
+    def enqueue(
+        self,
+        job_id: str,
+        *,
+        attempt: int,
+        dispatch_sequence: int,
+    ) -> dict[str, object]:
         self.job_ids.append(job_id)
         self.attempts.append(attempt)
+        self.dispatch_sequences.append(dispatch_sequence)
         if self.fail:
             raise RuntimeError("unavailable")
         return {
             "provider": "Google Cloud Tasks",
-            "task_name": f"projects/p/locations/l/queues/q/tasks/{job_id}-a{attempt}",
+            "task_name": (
+                f"projects/p/locations/l/queues/q/tasks/"
+                f"{job_id}-a{attempt}-d{dispatch_sequence:03d}"
+            ),
             "attempt": attempt,
+            "dispatch_sequence": dispatch_sequence,
         }
 
 
@@ -331,6 +407,18 @@ class StaticProvider:
             raise self.error
         return BriefProviderResult(
             brief=ProductionBrief.from_mapping(brief_mapping()),
+            execution={"evidence_origin": "test_double", "provider": "test"},
+        )
+
+
+class FullScreenplayProvider:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def create_brief(self, message: str, *, job_id: str) -> BriefProviderResult:
+        self.calls.append((message, job_id))
+        return BriefProviderResult(
+            brief=ProductionBrief.from_mapping(full_screenplay_mapping()),
             execution={"evidence_origin": "test_double", "provider": "test"},
         )
 
@@ -373,6 +461,9 @@ class FailingVisualProvider:
 
 
 class StaticArtifactStore:
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+
     def put_bytes(
         self,
         *,
@@ -381,13 +472,19 @@ class StaticArtifactStore:
         data: bytes,
         content_type: str,
     ) -> dict[str, object]:
+        digest = hashlib.sha256(data).hexdigest()
+        object_name = f"jobs/{job_id}/artifacts/{digest}/{artifact_id}"
+        self.objects[object_name] = bytes(data)
         return {
             "artifact_id": artifact_id,
-            "object_name": f"jobs/{job_id}/{artifact_id}",
+            "object_name": object_name,
             "content_type": content_type,
-            "sha256": hashlib.sha256(data).hexdigest(),
+            "sha256": digest,
             "bytes": len(data),
         }
+
+    def get_bytes(self, object_name: str) -> bytes:
+        return self.objects[object_name]
 
 
 class FailingNarratedPitchRenderer:
@@ -396,6 +493,114 @@ class FailingNarratedPitchRenderer:
 
     def render(self, **_kwargs: object) -> dict[str, object]:
         raise self.error
+
+    def render_segment_chunk(self, **_kwargs: object) -> list[dict[str, object]]:
+        raise self.error
+
+    def finalize_segments(self, **_kwargs: object) -> dict[str, object]:
+        raise self.error
+
+
+class StaticNarratedPitchRenderer:
+    def __init__(self, artifact_store: StaticArtifactStore) -> None:
+        self.artifact_store = artifact_store
+        self.calls = 0
+        self.segment_calls: list[int] = []
+        self.finalize_calls = 0
+
+    def render(self, **kwargs: object) -> dict[str, object]:
+        self.calls += 1
+        timeline = kwargs["timeline"]
+        job_id = str(kwargs["job_id"])
+        assert isinstance(timeline, dict)
+        shot_count = len(timeline["shots"])
+        stored = self.artifact_store.put_bytes(
+            job_id=job_id,
+            artifact_id="narrated-pitch.mp4",
+            data=b"focused-test-mp4",
+            content_type="video/mp4",
+        )
+        video = {
+            **stored,
+            "video_codec": "h264",
+            "audio_codec": "aac",
+            "width": 1920,
+            "height": 1080,
+        }
+        body: dict[str, object] = {
+            "schema": NARRATED_PITCH_SCHEMA,
+            "status": "complete",
+            "card_count": shot_count,
+            "cue_count": shot_count,
+            "video": video,
+        }
+        body["manifest_sha256"] = sha256_json(body)
+        return body
+
+    def render_segment_chunk(self, **kwargs: object) -> list[dict[str, object]]:
+        start_index = int(kwargs["start_index"])
+        ownership_check = kwargs.get("ownership_check")
+        if callable(ownership_check) and not ownership_check():
+            raise NarratedPitchRenderError("work_stopped")
+        self.segment_calls.append(start_index)
+        timeline = kwargs["timeline"]
+        job_id = str(kwargs["job_id"])
+        assert isinstance(timeline, dict)
+        shot = timeline["shots"][start_index]
+        sequence = start_index + 1
+        stored = self.artifact_store.put_bytes(
+            job_id=job_id,
+            artifact_id=f"pitch-card-{sequence:04d}.mp4",
+            data=f"focused-segment-{sequence}".encode("ascii"),
+            content_type="video/mp4",
+        )
+        return [
+            {
+                "schema": "video-studio.narrated-pitch-segment/v1",
+                "sequence": sequence,
+                "shot_id": shot["shot_id"],
+                "duration_seconds": 1.0,
+                "artifact_id": stored["artifact_id"],
+                "object_name": stored["object_name"],
+                "content_type": stored["content_type"],
+                "sha256": stored["sha256"],
+                "byte_length": stored["bytes"],
+            }
+        ]
+
+    def finalize_segments(self, **kwargs: object) -> dict[str, object]:
+        ownership_check = kwargs.get("ownership_check")
+        if callable(ownership_check) and not ownership_check():
+            raise NarratedPitchRenderError("work_stopped")
+        self.finalize_calls += 1
+        return self.render(**kwargs)
+
+
+class UniqueVisualProvider:
+    def __init__(self, *, cancel_after_call: int | None = None) -> None:
+        self.cancel_after_call = cancel_after_call
+        self.cancel_callback: object | None = None
+        self.calls: list[tuple[str, str, str, bool]] = []
+
+    def create_panel(
+        self,
+        prompt: str,
+        *,
+        shot_id: str,
+        job_id: str,
+        reference_image: bytes | None = None,
+    ) -> VisualPanelProviderResult:
+        self.calls.append((prompt, shot_id, job_id, reference_image is not None))
+        if self.cancel_after_call == len(self.calls) and callable(self.cancel_callback):
+            self.cancel_callback(job_id)
+        image = b"\xff\xd8" + (shot_id.encode("ascii") * 12) + b"\xff\xd9"
+        return VisualPanelProviderResult(
+            image_bytes=image,
+            mime_type="image/jpeg",
+            width=768,
+            height=432,
+            execution={"evidence_origin": "injected_test_client"},
+        )
 
 
 class FakeModels:
@@ -463,7 +668,7 @@ class AllThingsAgenticTests(unittest.TestCase):
         self.assertEqual(failed["error"]["diagnostic_code"], "quota_or_rate_limited")
         self.assertEqual(durable["error"]["diagnostic_code"], "quota_or_rate_limited")
 
-    def test_visual_storyboard_failure_aggregates_mixed_allowlisted_reasons(self) -> None:
+    def test_visual_storyboard_chunk_fails_fast_on_first_allowlisted_reason(self) -> None:
         failed, _durable = self._execute_visual_storyboard_failure(
             FailingVisualProvider(
                 VisualPanelGenerationError("provider_blocked"),
@@ -471,7 +676,7 @@ class AllThingsAgenticTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(failed["error"]["diagnostic_code"], "mixed_panel_failures")
+        self.assertEqual(failed["error"]["diagnostic_code"], "provider_blocked")
 
     def test_visual_storyboard_failure_redacts_arbitrary_exception_and_source_text(self) -> None:
         source_text = "PRIVATE SCREENPLAY: the vault phrase is amber-nine."
@@ -504,7 +709,17 @@ class AllThingsAgenticTests(unittest.TestCase):
             narrated_pitch_renderer=FailingNarratedPitchRenderer(error),
         )
         queued = service.submit(source_message)
-        failed = dict(service.execute(str(queued["job_id"]), attempt=1))
+        job_id = str(queued["job_id"])
+        failed = dict(queued)
+        while failed["state"] == JobState.QUEUED.value:
+            raw = repository.get(job_id)
+            failed = dict(
+                service.execute(
+                    job_id,
+                    attempt=1,
+                    dispatch_sequence=int(raw["dispatch_sequence"]),
+                )
+            )
         return failed, repository.get(str(queued["job_id"]))
 
     def test_narrated_pitch_failure_records_allowlisted_diagnostic_code(self) -> None:
@@ -538,6 +753,8 @@ class AllThingsAgenticTests(unittest.TestCase):
 
     def test_configuration_requires_verified_contest_model_family_and_real_targets(self) -> None:
         self.assertEqual(valid_config().issues(), ())
+        with self.assertRaises(ConfigurationError):
+            valid_config(visual_panels_per_dispatch=3).assert_valid()
         with self.assertRaises(ConfigurationError):
             valid_config(model="gemini-2.5-flash").assert_valid()
         with self.assertRaises(ConfigurationError):
@@ -957,11 +1174,307 @@ class AllThingsAgenticTests(unittest.TestCase):
             with self.subTest(required_contract=required_contract):
                 self.assertIn(required_contract, instruction)
 
+    def test_full_screenplay_completes_36_private_panels_across_bounded_dispatches(
+        self,
+    ) -> None:
+        repository = MemoryRepository()
+        dispatcher = RecordingDispatcher()
+        provider = FullScreenplayProvider()
+        visual_provider = UniqueVisualProvider()
+        artifact_store = StaticArtifactStore()
+        pitch_renderer = StaticNarratedPitchRenderer(artifact_store)
+        service = AllThingsJobService(
+            config=valid_config(visual_panels_per_dispatch=2),
+            repository=repository,
+            dispatcher=dispatcher,
+            provider=provider,
+            visual_provider=visual_provider,
+            artifact_store=artifact_store,
+            narrated_pitch_renderer=pitch_renderer,
+        )
+
+        queued = service.submit("Plan the complete twelve-sequence screenplay.")
+        job_id = str(queued["job_id"])
+        visual_deltas: list[int] = []
+        current = queued
+        while current["state"] == JobState.QUEUED.value:
+            raw_before = repository.get(job_id)
+            self.assertEqual(
+                raw_before["message"],
+                "Plan the complete twelve-sequence screenplay.",
+            )
+            before = len(visual_provider.calls)
+            current = service.execute(
+                job_id,
+                attempt=1,
+                dispatch_sequence=int(raw_before["dispatch_sequence"]),
+            )
+            visual_deltas.append(len(visual_provider.calls) - before)
+
+        self.assertEqual(current["state"], JobState.SUCCEEDED.value)
+        self.assertEqual(current["dispatch_sequence"], 54)
+        self.assertEqual(current["max_dispatches"], 56)
+        self.assertEqual(visual_deltas, ([2] * 18) + ([0] * 37))
+        self.assertEqual(dispatcher.dispatch_sequences, list(range(55)))
+        self.assertEqual(dispatcher.attempts, [1] * 55)
+        self.assertEqual(len(provider.calls), 1)
+        self.assertEqual(pitch_renderer.calls, 1)
+        self.assertEqual(pitch_renderer.segment_calls, list(range(36)))
+        self.assertEqual(pitch_renderer.finalize_calls, 1)
+        continuation = current["continuation"]
+        self.assertEqual(continuation["schema"], PIPELINE_CONTINUATION_SCHEMA)
+        self.assertEqual(continuation["status"], "complete")
+        self.assertEqual(continuation["dispatches_used"], 55)
+        self.assertEqual(continuation["required_pitch_count"], 36)
+
+        visuals = current["visual_storyboard"]
+        self.assertEqual(visuals["status"], "complete")
+        self.assertEqual(visuals["representation"], "private_artifact_route")
+        self.assertEqual(visuals["required_panel_count"], 36)
+        self.assertEqual(visuals["available_panel_count"], 36)
+        self.assertEqual(visuals["missing_panel_count"], 0)
+        panels = visuals["panels"]
+        self.assertEqual(len(panels), 36)
+        self.assertEqual(len({panel["shot_id"] for panel in panels}), 36)
+        self.assertEqual(len({panel["artifact_id"] for panel in panels}), 36)
+        for panel in panels:
+            self.assertEqual(panel["status"], "available")
+            self.assertEqual(panel["mime_type"], "image/jpeg")
+            self.assertIsNone(panel["data_base64"])
+            self.assertIsNone(panel["missing_reason"])
+            image = artifact_store.get_bytes(panel["object_name"])
+            self.assertEqual(hashlib.sha256(image).hexdigest(), panel["content_sha256"])
+
+        durable = repository.get(job_id)
+        self.assertIsNone(durable["message"])
+        self.assertEqual(durable["input_retention"], "discarded_after_provider_use")
+        self.assertEqual(durable["attempt"], 1)
+        self.assertEqual(durable["max_attempts"], 3)
+
+    def test_maximum_40_scene_plan_receives_a_sufficient_finite_dispatch_budget(
+        self,
+    ) -> None:
+        class MaximumScreenplayProvider:
+            def create_brief(self, message: str, *, job_id: str) -> BriefProviderResult:
+                value = brief_mapping()
+                value.update(
+                    {
+                        "duration_seconds": 2_400,
+                        "scenes": [
+                            {
+                                "number": number,
+                                "purpose": f"Advance maximum-size sequence {number}.",
+                                "setting": f"production location {number}",
+                                "characters": ["Mara", "Jon"],
+                                "dialogue_required": True,
+                            }
+                            for number in range(1, 41)
+                        ],
+                    }
+                )
+                return BriefProviderResult(
+                    brief=ProductionBrief.from_mapping(value),
+                    execution={"evidence_origin": "test_double", "provider": "test"},
+                )
+
+        repository = MemoryRepository()
+        dispatcher = RecordingDispatcher()
+        artifact_store = StaticArtifactStore()
+        service = AllThingsJobService(
+            config=valid_config(visual_panels_per_dispatch=2),
+            repository=repository,
+            dispatcher=dispatcher,
+            provider=MaximumScreenplayProvider(),
+            visual_provider=UniqueVisualProvider(),
+            artifact_store=artifact_store,
+            narrated_pitch_renderer=StaticNarratedPitchRenderer(artifact_store),
+        )
+
+        queued = service.submit("Plan every scene in the maximum-size screenplay.")
+        continued = service.execute(
+            str(queued["job_id"]),
+            attempt=1,
+            dispatch_sequence=0,
+        )
+
+        self.assertEqual(continued["state"], JobState.QUEUED.value)
+        self.assertEqual(continued["max_dispatches"], MAX_PIPELINE_DISPATCHES)
+        self.assertEqual(MAX_PIPELINE_DISPATCHES, 182)
+        self.assertEqual(continued["continuation"]["required_panel_count"], 120)
+        self.assertEqual(continued["continuation"]["required_pitch_count"], 120)
+        self.assertEqual(dispatcher.dispatch_sequences, [0, 1])
+
+    def test_stale_dispatch_sequence_cannot_duplicate_checkpointed_panels(self) -> None:
+        repository = MemoryRepository()
+        dispatcher = RecordingDispatcher()
+        visual_provider = UniqueVisualProvider()
+        artifact_store = StaticArtifactStore()
+        service = AllThingsJobService(
+            config=valid_config(visual_panels_per_dispatch=2),
+            repository=repository,
+            dispatcher=dispatcher,
+            provider=FullScreenplayProvider(),
+            visual_provider=visual_provider,
+            artifact_store=artifact_store,
+            narrated_pitch_renderer=StaticNarratedPitchRenderer(artifact_store),
+        )
+        queued = service.submit("Build every card exactly once.")
+        job_id = str(queued["job_id"])
+        continued = service.execute(job_id, attempt=1, dispatch_sequence=0)
+        self.assertEqual(continued["dispatch_sequence"], 1)
+        self.assertEqual(len(visual_provider.calls), 2)
+
+        stale = service.execute(job_id, attempt=1, dispatch_sequence=0)
+        self.assertEqual(stale["state"], JobState.QUEUED.value)
+        self.assertEqual(stale["dispatch_sequence"], 1)
+        self.assertEqual(len(visual_provider.calls), 2)
+        self.assertEqual(dispatcher.dispatch_sequences, [0, 1])
+
+    def test_tampered_checkpoint_fails_closed_and_retry_starts_new_attempt(self) -> None:
+        repository = MemoryRepository()
+        dispatcher = RecordingDispatcher()
+        visual_provider = UniqueVisualProvider()
+        artifact_store = StaticArtifactStore()
+        service = AllThingsJobService(
+            config=valid_config(visual_panels_per_dispatch=2),
+            repository=repository,
+            dispatcher=dispatcher,
+            provider=FullScreenplayProvider(),
+            visual_provider=visual_provider,
+            artifact_store=artifact_store,
+            narrated_pitch_renderer=StaticNarratedPitchRenderer(artifact_store),
+        )
+        queued = service.submit("Reject any modified checkpoint.")
+        job_id = str(queued["job_id"])
+        service.execute(job_id, attempt=1, dispatch_sequence=0)
+        checkpoint = repository.get(job_id)["continuation"]["checkpoint"]
+        object_name = str(checkpoint["object_name"])
+        artifact_store.objects[object_name] += b"tampered"
+
+        failed = service.execute(job_id, attempt=1, dispatch_sequence=1)
+        self.assertEqual(failed["state"], JobState.FAILED.value)
+        self.assertEqual(failed["error"]["code"], "pipeline_checkpoint_invalid")
+        self.assertTrue(failed["error"]["retryable"])
+        self.assertEqual(len(visual_provider.calls), 2)
+        self.assertIsNone(failed["continuation"])
+        self.assertEqual(
+            repository.get(job_id)["message"],
+            "Reject any modified checkpoint.",
+        )
+
+        retried = service.retry(job_id)
+        self.assertEqual(retried["attempt"], 2)
+        self.assertEqual(retried["dispatch_sequence"], 0)
+        self.assertIsNone(retried["continuation"])
+        self.assertEqual(dispatcher.attempts, [1, 1, 2])
+        self.assertEqual(dispatcher.dispatch_sequences, [0, 1, 0])
+
+    def test_visual_chunk_observes_cancellation_between_panels(self) -> None:
+        repository = MemoryRepository()
+        dispatcher = RecordingDispatcher()
+        visual_provider = UniqueVisualProvider(cancel_after_call=2)
+        artifact_store = StaticArtifactStore()
+        service = AllThingsJobService(
+            config=valid_config(visual_panels_per_dispatch=2),
+            repository=repository,
+            dispatcher=dispatcher,
+            provider=FullScreenplayProvider(),
+            visual_provider=visual_provider,
+            artifact_store=artifact_store,
+            narrated_pitch_renderer=StaticNarratedPitchRenderer(artifact_store),
+        )
+        visual_provider.cancel_callback = service.cancel
+        queued = service.submit("Stop promptly when I cancel.")
+        job_id = str(queued["job_id"])
+        cancelled = service.execute(job_id, attempt=1, dispatch_sequence=0)
+
+        self.assertEqual(cancelled["state"], JobState.CANCELLED.value)
+        self.assertEqual(len(visual_provider.calls), 2)
+        self.assertEqual(dispatcher.dispatch_sequences, [0])
+        self.assertIsNone(cancelled["continuation"])
+        self.assertIsNone(cancelled["visual_storyboard"])
+        self.assertEqual(repository.get(job_id)["message"], "Stop promptly when I cancel.")
+
+    def test_narrated_pitch_card_observes_cancellation_without_a_successor(self) -> None:
+        class CancellingPitchRenderer(StaticNarratedPitchRenderer):
+            cancel_callback: object | None = None
+
+            def render_segment_chunk(self, **kwargs: object) -> list[dict[str, object]]:
+                job_id = str(kwargs["job_id"])
+                if callable(self.cancel_callback):
+                    self.cancel_callback(job_id)
+                ownership_check = kwargs.get("ownership_check")
+                if callable(ownership_check):
+                    ownership_check()
+                raise NarratedPitchRenderError("work_stopped")
+
+        repository = MemoryRepository()
+        dispatcher = RecordingDispatcher()
+        artifact_store = StaticArtifactStore()
+        pitch_renderer = CancellingPitchRenderer(artifact_store)
+        service = AllThingsJobService(
+            config=valid_config(visual_panels_per_dispatch=2),
+            repository=repository,
+            dispatcher=dispatcher,
+            provider=StaticProvider(),
+            visual_provider=UniqueVisualProvider(),
+            artifact_store=artifact_store,
+            narrated_pitch_renderer=pitch_renderer,
+        )
+        pitch_renderer.cancel_callback = service.cancel
+        queued = service.submit("Cancel while the first narrated card is running.")
+        job_id = str(queued["job_id"])
+        service.execute(job_id, attempt=1, dispatch_sequence=0)
+        service.execute(job_id, attempt=1, dispatch_sequence=1)
+        cancelled = service.execute(job_id, attempt=1, dispatch_sequence=2)
+
+        self.assertEqual(cancelled["state"], JobState.CANCELLED.value)
+        self.assertEqual(dispatcher.dispatch_sequences, [0, 1, 2])
+        self.assertIsNone(cancelled["continuation"])
+        self.assertIsNone(cancelled["pitch_preview"])
+        self.assertEqual(
+            repository.get(job_id)["message"],
+            "Cancel while the first narrated card is running.",
+        )
+
+    def test_stale_pitch_dispatch_cannot_duplicate_private_card_artifact(self) -> None:
+        repository = MemoryRepository()
+        dispatcher = RecordingDispatcher()
+        artifact_store = StaticArtifactStore()
+        pitch_renderer = StaticNarratedPitchRenderer(artifact_store)
+        service = AllThingsJobService(
+            config=valid_config(visual_panels_per_dispatch=2),
+            repository=repository,
+            dispatcher=dispatcher,
+            provider=StaticProvider(),
+            visual_provider=UniqueVisualProvider(),
+            artifact_store=artifact_store,
+            narrated_pitch_renderer=pitch_renderer,
+        )
+        queued = service.submit("Render each narrated card exactly once.")
+        job_id = str(queued["job_id"])
+        service.execute(job_id, attempt=1, dispatch_sequence=0)
+        service.execute(job_id, attempt=1, dispatch_sequence=1)
+        continued = service.execute(job_id, attempt=1, dispatch_sequence=2)
+
+        self.assertEqual(continued["dispatch_sequence"], 3)
+        self.assertEqual(pitch_renderer.segment_calls, [0])
+        stale = service.execute(job_id, attempt=1, dispatch_sequence=2)
+        self.assertEqual(stale["state"], JobState.QUEUED.value)
+        self.assertEqual(stale["dispatch_sequence"], 3)
+        self.assertEqual(pitch_renderer.segment_calls, [0])
+        segment_names = [
+            name for name in artifact_store.objects if name.endswith("pitch-card-0001.mp4")
+        ]
+        self.assertEqual(len(segment_names), 1)
+
     def test_cloud_tasks_dispatch_is_oidc_bound_to_private_worker(self) -> None:
         client = FakeTasksClient()
         dispatcher = CloudTasksDispatcher(valid_config(), client=client)
         receipt = dispatcher.enqueue(
-            "00000000-0000-0000-0000-000000000001", attempt=1
+            "00000000-0000-0000-0000-000000000001",
+            attempt=1,
+            dispatch_sequence=0,
         )
         self.assertEqual(receipt["provider"], "Google Cloud Tasks")
         task = client.calls[0]["task"]
@@ -969,13 +1482,14 @@ class AllThingsAgenticTests(unittest.TestCase):
         self.assertEqual(task["dispatch_deadline"], {"seconds": 1_740})
         self.assertEqual(
             task["name"],
-            "projects/video-studio-12345/locations/us-central1/queues/video-studio-production-briefs/tasks/00000000-0000-0000-0000-000000000001-a1",
+            "projects/video-studio-12345/locations/us-central1/queues/video-studio-production-briefs/tasks/00000000-0000-0000-0000-000000000001-a1-d000",
         )
         self.assertEqual(
             json.loads(request["body"].decode("utf-8")),
             {
                 "job_id": "00000000-0000-0000-0000-000000000001",
                 "attempt": 1,
+                "dispatch_sequence": 0,
             },
         )
         self.assertEqual(
@@ -987,6 +1501,30 @@ class AllThingsAgenticTests(unittest.TestCase):
             valid_config().tasks_service_account,
         )
         self.assertNotIn("authorization", {key.casefold() for key in request["headers"]})
+
+    def test_cloud_tasks_dispatch_accepts_last_bounded_sequence_and_rejects_beyond_it(
+        self,
+    ) -> None:
+        client = FakeTasksClient()
+        dispatcher = CloudTasksDispatcher(valid_config(), client=client)
+        last_sequence = MAX_PIPELINE_DISPATCHES - 1
+
+        receipt = dispatcher.enqueue(
+            "00000000-0000-0000-0000-000000000001",
+            attempt=3,
+            dispatch_sequence=last_sequence,
+        )
+
+        self.assertEqual(receipt["dispatch_sequence"], last_sequence)
+        self.assertTrue(client.calls[0]["task"]["name"].endswith("-a3-d181"))
+        for invalid in (True, MAX_PIPELINE_DISPATCHES):
+            with self.subTest(dispatch_sequence=invalid):
+                with self.assertRaises(JobTransitionError):
+                    dispatcher.enqueue(
+                        "00000000-0000-0000-0000-000000000001",
+                        attempt=3,
+                        dispatch_sequence=invalid,
+                    )
 
     def test_named_task_reconciles_an_accepted_but_lost_create_response(self) -> None:
         class AlreadyExists(Exception):
@@ -1001,7 +1539,9 @@ class AllThingsAgenticTests(unittest.TestCase):
 
         client = AmbiguousClient()
         receipt = CloudTasksDispatcher(valid_config(), client=client).enqueue(
-            "00000000-0000-0000-0000-000000000001", attempt=2
+            "00000000-0000-0000-0000-000000000001",
+            attempt=2,
+            dispatch_sequence=3,
         )
         self.assertTrue(receipt["deduplicated"])
         self.assertEqual(receipt["attempt"], 2)
@@ -1029,6 +1569,7 @@ class AllThingsAgenticTests(unittest.TestCase):
                 "updated_at": now.isoformat(),
             },
             attempt=1,
+            dispatch_sequence=0,
             lease_token="lost-worker",
             lease_expires_at=(now + timedelta(minutes=6)).isoformat(),
             now=now.isoformat(),
@@ -1089,8 +1630,18 @@ class AllThingsAgenticTests(unittest.TestCase):
         class AcceptedThenLostDispatcher:
             service: AllThingsJobService
 
-            def enqueue(self, job_id: str, *, attempt: int) -> dict[str, object]:
-                self.service.execute(job_id, attempt=attempt)
+            def enqueue(
+                self,
+                job_id: str,
+                *,
+                attempt: int,
+                dispatch_sequence: int,
+            ) -> dict[str, object]:
+                self.service.execute(
+                    job_id,
+                    attempt=attempt,
+                    dispatch_sequence=dispatch_sequence,
+                )
                 raise TimeoutError("task accepted; response lost")
 
         repository = MemoryRepository()

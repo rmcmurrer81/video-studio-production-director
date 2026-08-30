@@ -32,6 +32,7 @@ from .all_things_media import (
 
 
 NARRATED_PITCH_SCHEMA = "video-studio.narrated-pitch/v1"
+NARRATED_PITCH_SEGMENT_SCHEMA = "video-studio.narrated-pitch-segment/v1"
 DEFAULT_LANGUAGE_CODE = "en-US"
 DEFAULT_VOICE_NAME = "en-US-Chirp3-HD-Aoede"
 
@@ -53,7 +54,11 @@ _MAX_AUDIO_SEGMENT_BYTES = 100 * 1024 * 1024
 _MAX_TTS_TEXT_BYTES = 4_800
 _MAX_SEGMENT_SECONDS = 15 * 60
 _MAX_PITCH_SECONDS = 60 * 60
-_DEFAULT_COMMAND_TIMEOUT_SECONDS = 15 * 60
+# A continued pitch task renders one card (FFmpeg + FFprobe), while the final
+# task concatenates and probes.  Two worst-case command timeouts therefore stay
+# below Cloud Run's reviewed 1,740-second request ceiling with useful headroom.
+_DEFAULT_COMMAND_TIMEOUT_SECONDS = 10 * 60
+_TTS_REQUEST_TIMEOUT_SECONDS = 2 * 60
 
 
 class CloudMediaError(RuntimeError):
@@ -581,7 +586,10 @@ class GoogleCloudNarratedPitchRenderer:
             "audio_config": {"audio_encoding": "LINEAR16"},
         }
         try:
-            response = self._client_or_create().synthesize_speech(request=request)
+            response = self._client_or_create().synthesize_speech(
+                request=request,
+                timeout=_TTS_REQUEST_TIMEOUT_SECONDS,
+            )
         except CloudMediaError:
             raise
         except Exception:
@@ -949,20 +957,24 @@ class GoogleCloudNarratedPitchRenderer:
             "byte_length": byte_length,
         }
 
-    def render(
+    def _validated_pitch_inputs(
         self,
         brief: Mapping[str, Any] | Any,
         timeline: Mapping[str, Any],
         source_message: str,
         visual_storyboard: Mapping[str, Any],
         job_id: str,
-    ) -> Mapping[str, Any]:
-        """Render, verify, privately store, and manifest a complete pitch.
-
-        No partial result is returned.  Every planned card must have a matching
-        available visual, valid synthesized audio, a successfully rendered
-        segment, and coverage in the concatenated output.
-        """
+        *,
+        resolve_images: bool,
+    ) -> tuple[
+        str,
+        Mapping[str, Any],
+        Mapping[str, Any],
+        list[dict[str, Any]],
+        list[Mapping[str, Any]],
+        list[bytes],
+    ]:
+        """Validate complete card/cue identity before any pitch side effect."""
 
         safe_job_id = _validated_identifier(job_id, artifact=False)
         safe_brief = self._mapping(brief, code="invalid_pitch_brief")
@@ -1019,7 +1031,350 @@ class GoogleCloudNarratedPitchRenderer:
             if raw_panel.get("status") not in {None, "available", "stored"}:
                 raise NarratedPitchRenderError("incomplete_visual_coverage")
             panels.append(raw_panel)
-            images.append(self._resolve_image(raw_panel, job_id=safe_job_id))
+            if resolve_images:
+                images.append(self._resolve_image(raw_panel, job_id=safe_job_id))
+        return safe_job_id, safe_brief, safe_timeline, cues, panels, images
+
+    @staticmethod
+    def _segment_artifact_id(sequence: int) -> str:
+        return f"pitch-card-{sequence:04d}.mp4"
+
+    def render_segment_chunk(
+        self,
+        *,
+        brief: Mapping[str, Any] | Any,
+        timeline: Mapping[str, Any],
+        source_message: str,
+        visual_storyboard: Mapping[str, Any],
+        job_id: str,
+        start_index: int,
+        max_cards: int = 1,
+        ownership_check: Callable[[], bool] | None = None,
+    ) -> Sequence[Mapping[str, Any]]:
+        """Render a bounded run of independently verified private card MP4s."""
+
+        (
+            safe_job_id,
+            _safe_brief,
+            _safe_timeline,
+            cues,
+            panels,
+            _images,
+        ) = self._validated_pitch_inputs(
+            brief,
+            timeline,
+            source_message,
+            visual_storyboard,
+            job_id,
+            resolve_images=False,
+        )
+        if (
+            isinstance(start_index, bool)
+            or not isinstance(start_index, int)
+            or not 0 <= start_index < len(cues)
+            or max_cards != 1
+        ):
+            raise NarratedPitchRenderError("invalid_narration_input")
+        if ownership_check is not None and not ownership_check():
+            raise NarratedPitchRenderError("work_stopped")
+        cue = cues[start_index]
+        image = self._resolve_image(panels[start_index], job_id=safe_job_id)
+        if ownership_check is not None and not ownership_check():
+            raise NarratedPitchRenderError("work_stopped")
+        sequence = start_index + 1
+        with tempfile.TemporaryDirectory(prefix="kira-pitch-card-") as temp_name:
+            temp = Path(temp_name)
+            image_path = temp / f"card-{sequence:04d}{self._image_extension(image)}"
+            audio_path = temp / f"cue-{sequence:04d}.wav"
+            segment_path = temp / f"segment-{sequence:04d}.mp4"
+            image_path.write_bytes(image)
+            audio = self._synthesize(str(cue.get("narration") or ""), audio_path)
+            if ownership_check is not None and not ownership_check():
+                raise NarratedPitchRenderError("work_stopped")
+            self._render_segment(image_path, audio.path, segment_path)
+            duration = self._probe_segment(segment_path)
+            if ownership_check is not None and not ownership_check():
+                raise NarratedPitchRenderError("work_stopped")
+            segment_bytes = segment_path.read_bytes()
+            artifact_id = self._segment_artifact_id(sequence)
+            stored = self.artifact_store.put_bytes(
+                job_id=safe_job_id,
+                artifact_id=artifact_id,
+                data=segment_bytes,
+                content_type="video/mp4",
+            )
+            artifact = self._artifact_entry(
+                stored,
+                expected_artifact_id=artifact_id,
+                expected_data=segment_bytes,
+                expected_content_type="video/mp4",
+            )
+        if ownership_check is not None and not ownership_check():
+            raise NarratedPitchRenderError("work_stopped")
+        return (
+            {
+                "schema": NARRATED_PITCH_SEGMENT_SCHEMA,
+                "sequence": sequence,
+                "shot_id": str(cue["shot_id"]),
+                "duration_seconds": duration,
+                **artifact,
+            },
+        )
+
+    def finalize_segments(
+        self,
+        *,
+        brief: Mapping[str, Any] | Any,
+        timeline: Mapping[str, Any],
+        source_message: str,
+        visual_storyboard: Mapping[str, Any],
+        job_id: str,
+        segments: Sequence[Mapping[str, Any]],
+        ownership_check: Callable[[], bool] | None = None,
+    ) -> Mapping[str, Any]:
+        """Assemble a complete pitch from integrity-checked card MP4 artifacts."""
+
+        (
+            safe_job_id,
+            safe_brief,
+            _safe_timeline,
+            cues,
+            panels,
+            _images,
+        ) = self._validated_pitch_inputs(
+            brief,
+            timeline,
+            source_message,
+            visual_storyboard,
+            job_id,
+            resolve_images=False,
+        )
+        if (
+            not isinstance(segments, Sequence)
+            or isinstance(segments, (str, bytes))
+            or len(segments) != len(cues)
+        ):
+            raise NarratedPitchRenderError("incomplete_card_render")
+        durations: list[float] = []
+        loaded: list[bytes] = []
+        total_segment_bytes = 0
+        expected_fields = {
+            "schema",
+            "sequence",
+            "shot_id",
+            "duration_seconds",
+            "artifact_id",
+            "object_name",
+            "content_type",
+            "sha256",
+            "byte_length",
+        }
+        for index, (cue, raw_segment) in enumerate(zip(cues, segments), start=1):
+            if ownership_check is not None and not ownership_check():
+                raise NarratedPitchRenderError("work_stopped")
+            if not isinstance(raw_segment, Mapping) or set(raw_segment) != expected_fields:
+                raise NarratedPitchRenderError("invalid_artifact_manifest")
+            duration = raw_segment.get("duration_seconds")
+            object_name = raw_segment.get("object_name")
+            digest = raw_segment.get("sha256")
+            byte_length = raw_segment.get("byte_length")
+            if (
+                raw_segment.get("schema") != NARRATED_PITCH_SEGMENT_SCHEMA
+                or raw_segment.get("sequence") != index
+                or raw_segment.get("shot_id") != cue.get("shot_id")
+                or raw_segment.get("artifact_id") != self._segment_artifact_id(index)
+                or raw_segment.get("content_type") != "video/mp4"
+                or not isinstance(object_name, str)
+                or not object_name.startswith(f"jobs/{safe_job_id}/artifacts/")
+                or not isinstance(digest, str)
+                or _SHA256.fullmatch(digest) is None
+                or isinstance(byte_length, bool)
+                or not isinstance(byte_length, int)
+                or not 0 < byte_length <= _MAX_VIDEO_BYTES
+                or isinstance(duration, bool)
+                or not isinstance(duration, (int, float))
+                or not math.isfinite(float(duration))
+                or not 0 < float(duration) <= _MAX_SEGMENT_SECONDS
+            ):
+                raise NarratedPitchRenderError("invalid_artifact_manifest")
+            total_segment_bytes += byte_length
+            if total_segment_bytes > _MAX_VIDEO_BYTES:
+                raise NarratedPitchRenderError("invalid_artifact_manifest")
+            try:
+                data = self.artifact_store.get_bytes(object_name)
+            except Exception:
+                raise NarratedPitchRenderError("visual_asset_load_failed") from None
+            if (
+                not isinstance(data, bytes)
+                or len(data) != byte_length
+                or sha256(data).hexdigest() != digest
+            ):
+                raise NarratedPitchRenderError("visual_asset_integrity_failed")
+            durations.append(float(duration))
+            loaded.append(data)
+            if ownership_check is not None and not ownership_check():
+                raise NarratedPitchRenderError("work_stopped")
+        if sum(durations) > _MAX_PITCH_SECONDS:
+            raise NarratedPitchRenderError("pitch_duration_exceeded")
+        if ownership_check is not None and not ownership_check():
+            raise NarratedPitchRenderError("work_stopped")
+
+        with tempfile.TemporaryDirectory(prefix="kira-narrated-pitch-final-") as temp_name:
+            temp = Path(temp_name)
+            segment_paths: list[Path] = []
+            for index, data in enumerate(loaded, start=1):
+                path = temp / f"segment-{index:04d}.mp4"
+                path.write_bytes(data)
+                segment_paths.append(path)
+            video_path = temp / "narrated-pitch.mp4"
+            self._concat_segments(segment_paths, video_path)
+            if ownership_check is not None and not ownership_check():
+                raise NarratedPitchRenderError("work_stopped")
+            evidence = self._probe(
+                video_path,
+                expected_duration_seconds=sum(durations),
+                card_count=len(cues),
+            )
+            video_bytes = video_path.read_bytes()
+            if not 0 < len(video_bytes) <= _MAX_VIDEO_BYTES:
+                raise NarratedPitchRenderError("invalid_rendered_video")
+            if ownership_check is not None and not ownership_check():
+                raise NarratedPitchRenderError("work_stopped")
+
+            narration_value: Mapping[str, Any] | None = None
+            narration_bytes: bytes | None = None
+            subtitles_value: Mapping[str, Any] | None = None
+            subtitle_bytes: bytes | None = None
+            if self.include_narration_text:
+                narration_bytes = pitch_narration_text(safe_brief, cues).encode("utf-8")
+                narration_value = self.artifact_store.put_bytes(
+                    job_id=safe_job_id,
+                    artifact_id="narration.txt",
+                    data=narration_bytes,
+                    content_type="text/plain; charset=utf-8",
+                )
+                if ownership_check is not None and not ownership_check():
+                    raise NarratedPitchRenderError("work_stopped")
+            if self.include_subtitles:
+                subtitle_bytes = self._subtitles(cues, durations).encode("utf-8")
+                subtitles_value = self.artifact_store.put_bytes(
+                    job_id=safe_job_id,
+                    artifact_id="subtitles.srt",
+                    data=subtitle_bytes,
+                    content_type="application/x-subrip",
+                )
+                if ownership_check is not None and not ownership_check():
+                    raise NarratedPitchRenderError("work_stopped")
+            video_value = self.artifact_store.put_bytes(
+                job_id=safe_job_id,
+                artifact_id="narrated-pitch.mp4",
+                data=video_bytes,
+                content_type="video/mp4",
+            )
+            if ownership_check is not None and not ownership_check():
+                raise NarratedPitchRenderError("work_stopped")
+
+        video_entry = self._artifact_entry(
+            video_value,
+            expected_artifact_id="narrated-pitch.mp4",
+            expected_data=video_bytes,
+            expected_content_type="video/mp4",
+        )
+        video_entry.update(
+            {
+                "width": evidence.width,
+                "height": evidence.height,
+                "video_codec": evidence.video_codec,
+                "audio_codec": evidence.audio_codec,
+                "duration_seconds": evidence.duration_seconds,
+            }
+        )
+        body: dict[str, Any] = {
+            "schema": NARRATED_PITCH_SCHEMA,
+            "status": "complete",
+            "card_count": len(panels),
+            "cue_count": len(cues),
+            "video": video_entry,
+            "narration_text": (
+                self._artifact_entry(
+                    narration_value,
+                    expected_artifact_id="narration.txt",
+                    expected_data=narration_bytes,
+                    expected_content_type="text/plain; charset=utf-8",
+                )
+                if narration_value is not None and narration_bytes is not None
+                else None
+            ),
+            "subtitles": (
+                self._artifact_entry(
+                    subtitles_value,
+                    expected_artifact_id="subtitles.srt",
+                    expected_data=subtitle_bytes,
+                    expected_content_type="application/x-subrip",
+                )
+                if subtitles_value is not None and subtitle_bytes is not None
+                else None
+            ),
+            "voice": {
+                "provider": "Google Cloud Text-to-Speech",
+                "framework": "google-cloud-texttospeech",
+                "model": "Chirp 3: HD",
+                "name": self.voice_name,
+                "language_code": self.language_code,
+                "audio_encoding": "LINEAR16",
+                "segment_count": len(cues),
+                "evidence_origin": (
+                    "injected_test_client"
+                    if self._tts_injected
+                    else "live_google_provider_response"
+                ),
+            },
+            "verification": {
+                "status": "passed",
+                "tool": "ffprobe",
+                "scope": "container_codecs_dimensions_and_duration",
+                "video_stream_count": evidence.video_stream_count,
+                "audio_stream_count": evidence.audio_stream_count,
+                "video_codec": evidence.video_codec,
+                "audio_codec": evidence.audio_codec,
+                "width": evidence.width,
+                "height": evidence.height,
+                "duration_seconds": evidence.duration_seconds,
+            },
+        }
+        body["manifest_sha256"] = _manifest_sha256(body)
+        return _immutable_manifest(body)
+
+    def render(
+        self,
+        brief: Mapping[str, Any] | Any,
+        timeline: Mapping[str, Any],
+        source_message: str,
+        visual_storyboard: Mapping[str, Any],
+        job_id: str,
+    ) -> Mapping[str, Any]:
+        """Render, verify, privately store, and manifest a complete pitch.
+
+        No partial result is returned.  Every planned card must have a matching
+        available visual, valid synthesized audio, a successfully rendered
+        segment, and coverage in the concatenated output.
+        """
+
+        (
+            safe_job_id,
+            safe_brief,
+            _safe_timeline,
+            cues,
+            panels,
+            images,
+        ) = self._validated_pitch_inputs(
+            brief,
+            timeline,
+            source_message,
+            visual_storyboard,
+            job_id,
+            resolve_images=True,
+        )
 
         with tempfile.TemporaryDirectory(prefix="kira-narrated-pitch-") as temp_name:
             temp = Path(temp_name)

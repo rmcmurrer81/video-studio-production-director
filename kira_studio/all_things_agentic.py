@@ -17,7 +17,7 @@ import json
 import math
 import re
 import statistics
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 from uuid import uuid4
 
 
@@ -28,6 +28,9 @@ STORYBOARD_TIMELINE_SCHEMA = "video-studio.planned-edit-timeline/v1"
 STORYBOARD_AUDIT_SCHEMA = "video-studio.coverage-continuity-audit/v1"
 VISUAL_STORYBOARD_SCHEMA = "video-studio.visual-storyboard/v1"
 NARRATED_PITCH_SCHEMA = "video-studio.narrated-pitch/v1"
+NARRATED_PITCH_SEGMENT_SCHEMA = "video-studio.narrated-pitch-segment/v1"
+PIPELINE_CHECKPOINT_SCHEMA = "video-studio.pipeline-checkpoint/v1"
+PIPELINE_CONTINUATION_SCHEMA = "video-studio.pipeline-continuation/v1"
 STORYBOARD_FRAME_RATE = 24
 # Leaves headroom beneath Firestore's document limit for the separately exposed
 # creative brief, bounded request text, durable state, and provider evidence.
@@ -50,10 +53,27 @@ MAX_MESSAGE_BYTES = 640_000
 # keeps the bound conservative rather than relying on the service's hard error.
 MAX_DURABLE_JOB_BYTES = 900_000
 MAX_ATTEMPTS = 3
-DEFAULT_ADMISSION_COOLDOWN_SECONDS = 3
+# A continued visual request makes at most two provider calls.  Together with
+# provider-side request deadlines this keeps useful headroom beneath Cloud
+# Run/Cloud Tasks' reviewed 1,740-second request envelope.
+DEFAULT_VISUAL_PANELS_PER_DISPATCH = 2
+MAX_VISUAL_PANELS_PER_DISPATCH = 2
+# The production-brief schema permits 40 scenes and the deterministic compiler
+# emits three cards per scene.  With two visual panels per dispatch, the largest
+# valid plan needs an exclusive sequence bound of
+# 1 initial + ceil(120 / 2) visual + 120 pitch-card + 1 final = 182.
+MAX_PIPELINE_DISPATCHES = 182
+DEFAULT_ADMISSION_COOLDOWN_SECONDS = 10
 DEFAULT_ADMISSION_WINDOW_SECONDS = 3_600
-DEFAULT_ADMISSION_MAX_JOBS = 24
+DEFAULT_ADMISSION_MAX_JOBS = 4
 DEFAULT_WORKER_LEASE_SECONDS = 360
+# Firestore TTL deletes the entire private job record after this bounded
+# evidence/retry window.  The source is cleared earlier on success and at the
+# final retry limit.  One day is ample for a judge to inspect or retry a demo
+# job without turning uploaded screenplay text into indefinite storage.
+DEFAULT_JOB_RETENTION_SECONDS = 86_400
+MIN_JOB_RETENTION_SECONDS = 3_600
+MAX_JOB_RETENTION_SECONDS = 604_800
 
 # Canonical, non-sensitive failure codes emitted by NarratedPitchRenderError in
 # all_things_cloud_media.py.  Never persist the exception message as a fallback:
@@ -83,6 +103,7 @@ NARRATED_PITCH_RENDER_DIAGNOSTIC_CODES = frozenset(
         "segment_probe_mismatch",
         "tts_synthesis_failed",
         "unresolved_visual_asset",
+        "work_stopped",
         "unsafe_concat_input",
         "unsafe_media_command",
         "visual_asset_integrity_failed",
@@ -154,6 +175,18 @@ class JobLeaseBusyError(AllThingsError):
     def __init__(self, message: str, *, retry_after_seconds: int) -> None:
         super().__init__(message)
         self.retry_after_seconds = max(1, int(retry_after_seconds))
+
+
+class PipelineCheckpointError(AllThingsError):
+    """A durable continuation checkpoint failed closed validation."""
+
+
+class PipelineContinuationDispatchError(AllThingsError):
+    """The next bounded worker dispatch could not be durably scheduled."""
+
+
+class PipelineWorkStopped(AllThingsError):
+    """Chunk work stopped because cancellation or lease fencing won."""
 
 
 class JobState(str, Enum):
@@ -244,6 +277,8 @@ class AllThingsConfig:
     admission_window_seconds: int = DEFAULT_ADMISSION_WINDOW_SECONDS
     admission_max_jobs: int = DEFAULT_ADMISSION_MAX_JOBS
     worker_lease_seconds: int = DEFAULT_WORKER_LEASE_SECONDS
+    visual_panels_per_dispatch: int = DEFAULT_VISUAL_PANELS_PER_DISPATCH
+    job_retention_seconds: int = DEFAULT_JOB_RETENTION_SECONDS
 
     @classmethod
     def from_environment(cls, environment: Mapping[str, str]) -> "AllThingsConfig":
@@ -283,6 +318,16 @@ class AllThingsConfig:
                 environment,
                 "KIRA_ALL_THINGS_WORKER_LEASE_SECONDS",
                 DEFAULT_WORKER_LEASE_SECONDS,
+            ),
+            visual_panels_per_dispatch=_environment_integer(
+                environment,
+                "KIRA_ALL_THINGS_VISUAL_PANELS_PER_DISPATCH",
+                DEFAULT_VISUAL_PANELS_PER_DISPATCH,
+            ),
+            job_retention_seconds=_environment_integer(
+                environment,
+                "KIRA_ALL_THINGS_JOB_RETENTION_SECONDS",
+                DEFAULT_JOB_RETENTION_SECONDS,
             ),
         )
 
@@ -326,6 +371,16 @@ class AllThingsConfig:
             issues.append("KIRA_ALL_THINGS_ADMISSION_MAX_JOBS must be from 1 to 500")
         if not 60 <= self.worker_lease_seconds <= 1_800:
             issues.append("KIRA_ALL_THINGS_WORKER_LEASE_SECONDS must be from 60 to 1800")
+        if not 1 <= self.visual_panels_per_dispatch <= MAX_VISUAL_PANELS_PER_DISPATCH:
+            issues.append(
+                "KIRA_ALL_THINGS_VISUAL_PANELS_PER_DISPATCH must be from 1 to "
+                f"{MAX_VISUAL_PANELS_PER_DISPATCH}"
+            )
+        if not MIN_JOB_RETENTION_SECONDS <= self.job_retention_seconds <= MAX_JOB_RETENTION_SECONDS:
+            issues.append(
+                "KIRA_ALL_THINGS_JOB_RETENTION_SECONDS must be from "
+                f"{MIN_JOB_RETENTION_SECONDS} to {MAX_JOB_RETENTION_SECONDS}"
+            )
         if require_dispatch:
             if not self.worker_url.startswith("https://"):
                 issues.append("KIRA_ALL_THINGS_WORKER_URL must be an HTTPS Cloud Run URL")
@@ -360,6 +415,8 @@ class AllThingsConfig:
             "admission_window_seconds": self.admission_window_seconds,
             "admission_max_jobs": self.admission_max_jobs,
             "worker_lease_seconds": self.worker_lease_seconds,
+            "visual_panels_per_dispatch": self.visual_panels_per_dispatch,
+            "job_retention_seconds": self.job_retention_seconds,
         }
 
     def target_digest(self) -> str:
@@ -1065,6 +1122,9 @@ class ArtifactStore(Protocol):
     ) -> Mapping[str, Any]:
         ...
 
+    def get_bytes(self, object_name: str) -> bytes:
+        ...
+
 
 class NarratedPitchRenderer(Protocol):
     """Render the complete narrated storyboard pitch or fail closed."""
@@ -1077,6 +1137,33 @@ class NarratedPitchRenderer(Protocol):
         source_message: str,
         visual_storyboard: Mapping[str, Any],
         job_id: str,
+    ) -> Mapping[str, Any]:
+        ...
+
+    def render_segment_chunk(
+        self,
+        *,
+        brief: "ProductionBrief",
+        timeline: Mapping[str, Any],
+        source_message: str,
+        visual_storyboard: Mapping[str, Any],
+        job_id: str,
+        start_index: int,
+        max_cards: int = 1,
+        ownership_check: Callable[[], bool] | None = None,
+    ) -> Sequence[Mapping[str, Any]]:
+        ...
+
+    def finalize_segments(
+        self,
+        *,
+        brief: "ProductionBrief",
+        timeline: Mapping[str, Any],
+        source_message: str,
+        visual_storyboard: Mapping[str, Any],
+        job_id: str,
+        segments: Sequence[Mapping[str, Any]],
+        ownership_check: Callable[[], bool] | None = None,
     ) -> Mapping[str, Any]:
         ...
 
@@ -1374,6 +1461,658 @@ def build_visual_storyboard(
     return body
 
 
+def _checkpoint_artifact_id(attempt: int, dispatch_sequence: int) -> str:
+    return f"pipeline-checkpoint-a{attempt:02d}-d{dispatch_sequence:03d}"
+
+
+def _safe_artifact_descriptor(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize one private immutable artifact descriptor without a URL."""
+
+    expected = {"artifact_id", "object_name", "sha256", "bytes", "content_type"}
+    if set(value) != expected:
+        raise PipelineCheckpointError("checkpoint artifact descriptor is invalid")
+    artifact_id = value.get("artifact_id")
+    object_name = value.get("object_name")
+    digest = value.get("sha256")
+    byte_length = value.get("bytes")
+    content_type = value.get("content_type")
+    if (
+        not isinstance(artifact_id, str)
+        or not _SAFE_ID.fullmatch(artifact_id)
+        or not isinstance(object_name, str)
+        or not object_name.startswith("jobs/")
+        or not isinstance(digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        or isinstance(byte_length, bool)
+        or not isinstance(byte_length, int)
+        or not 1 <= byte_length <= MAX_DURABLE_JOB_BYTES
+        or content_type != "application/json"
+    ):
+        raise PipelineCheckpointError("checkpoint artifact descriptor is invalid")
+    return {
+        "artifact_id": artifact_id,
+        "object_name": object_name,
+        "sha256": digest,
+        "bytes": byte_length,
+        "content_type": content_type,
+    }
+
+
+def _validate_checkpoint_panels(
+    panels: Any,
+    *,
+    brief: ProductionBrief,
+    timeline: Mapping[str, Any],
+    job_id: str,
+    next_panel_index: int,
+) -> list[dict[str, Any]]:
+    shots = timeline.get("shots")
+    if (
+        not isinstance(shots, list)
+        or not isinstance(panels, list)
+        or next_panel_index != len(panels)
+        or not 0 <= next_panel_index <= len(shots)
+    ):
+        raise PipelineCheckpointError("checkpoint panel coverage is invalid")
+    panel_fields = {
+        "shot_id",
+        "status",
+        "alt_text",
+        "prompt_sha256",
+        "mime_type",
+        "width",
+        "height",
+        "byte_length",
+        "content_sha256",
+        "data_base64",
+        "missing_reason",
+        "artifact_id",
+        "object_name",
+    }
+    validated: list[dict[str, Any]] = []
+    for index, raw_panel in enumerate(panels):
+        shot = shots[index]
+        if (
+            not isinstance(shot, Mapping)
+            or not isinstance(raw_panel, Mapping)
+            or set(raw_panel) != panel_fields
+        ):
+            raise PipelineCheckpointError("checkpoint panel manifest is invalid")
+        panel = dict(raw_panel)
+        digest = panel.get("content_sha256")
+        artifact_id = panel.get("artifact_id")
+        object_name = panel.get("object_name")
+        if (
+            panel.get("shot_id") != shot.get("shot_id")
+            or panel.get("status") != "available"
+            or panel.get("alt_text") != _visual_alt_text(brief, shot)
+            or panel.get("prompt_sha256") != _visual_prompt_digest(brief, shot)
+            or panel.get("mime_type") != "image/jpeg"
+            or panel.get("width") != 768
+            or panel.get("height") != 432
+            or isinstance(panel.get("byte_length"), bool)
+            or not isinstance(panel.get("byte_length"), int)
+            or not 100 <= int(panel["byte_length"]) <= MAX_VISUAL_PANEL_BYTES
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            or panel.get("data_base64") is not None
+            or panel.get("missing_reason") is not None
+            or artifact_id != _artifact_id_for_panel(index, shot.get("shot_id"))
+            or not isinstance(object_name, str)
+            or not object_name.startswith(f"jobs/{job_id}/artifacts/{digest}/")
+        ):
+            raise PipelineCheckpointError("checkpoint panel manifest is invalid")
+        validated.append(panel)
+    return validated
+
+
+def _validate_checkpoint_pitch_segments(
+    segments: Any,
+    *,
+    timeline: Mapping[str, Any],
+    job_id: str,
+    next_pitch_index: int,
+) -> list[dict[str, Any]]:
+    """Validate the exact ordered prefix of private narrated-card MP4s."""
+
+    shots = timeline.get("shots")
+    if (
+        not isinstance(shots, list)
+        or not isinstance(segments, list)
+        or next_pitch_index != len(segments)
+        or not 0 <= next_pitch_index <= len(shots)
+    ):
+        raise PipelineCheckpointError("checkpoint pitch coverage is invalid")
+    fields = {
+        "schema",
+        "sequence",
+        "shot_id",
+        "duration_seconds",
+        "artifact_id",
+        "object_name",
+        "content_type",
+        "sha256",
+        "byte_length",
+    }
+    validated: list[dict[str, Any]] = []
+    for index, raw_segment in enumerate(segments, start=1):
+        shot = shots[index - 1]
+        if (
+            not isinstance(shot, Mapping)
+            or not isinstance(raw_segment, Mapping)
+            or set(raw_segment) != fields
+        ):
+            raise PipelineCheckpointError("checkpoint pitch segment is invalid")
+        segment = dict(raw_segment)
+        digest = segment.get("sha256")
+        object_name = segment.get("object_name")
+        duration = segment.get("duration_seconds")
+        byte_length = segment.get("byte_length")
+        if (
+            segment.get("schema") != NARRATED_PITCH_SEGMENT_SCHEMA
+            or segment.get("sequence") != index
+            or segment.get("shot_id") != shot.get("shot_id")
+            or segment.get("artifact_id") != f"pitch-card-{index:04d}.mp4"
+            or segment.get("content_type") != "video/mp4"
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            or not isinstance(object_name, str)
+            or not object_name.startswith(f"jobs/{job_id}/artifacts/{digest}/")
+            or isinstance(byte_length, bool)
+            or not isinstance(byte_length, int)
+            or not 1 <= byte_length <= 2 * 1024 * 1024 * 1024
+            or isinstance(duration, bool)
+            or not isinstance(duration, (int, float))
+            or not math.isfinite(float(duration))
+            or not 0 < float(duration) <= 15 * 60
+        ):
+            raise PipelineCheckpointError("checkpoint pitch segment is invalid")
+        validated.append(segment)
+    return validated
+
+
+def _reference_image_from_checkpoint(
+    panels: Sequence[Mapping[str, Any]],
+    *,
+    artifact_store: ArtifactStore,
+    job_id: str,
+) -> bytes | None:
+    if not panels:
+        return None
+    panel = panels[-1]
+    object_name = panel.get("object_name")
+    if not isinstance(object_name, str) or not object_name.startswith(
+        f"jobs/{job_id}/artifacts/"
+    ):
+        raise PipelineCheckpointError("checkpoint reference image is invalid")
+    try:
+        image = artifact_store.get_bytes(object_name)
+    except Exception:
+        raise PipelineCheckpointError("checkpoint reference image is unavailable") from None
+    if (
+        not isinstance(image, bytes)
+        or len(image) != panel.get("byte_length")
+        or hashlib.sha256(image).hexdigest() != panel.get("content_sha256")
+        or not image.startswith(b"\xff\xd8")
+        or not image.endswith(b"\xff\xd9")
+    ):
+        raise PipelineCheckpointError("checkpoint reference image failed integrity validation")
+    return image
+
+
+def _generate_external_visual_chunk(
+    brief: ProductionBrief,
+    timeline: Mapping[str, Any],
+    *,
+    provider: VisualPanelProvider | None,
+    artifact_store: ArtifactStore,
+    config: AllThingsConfig,
+    job_id: str,
+    existing_panels: Sequence[Mapping[str, Any]],
+    ownership_check: Callable[[], bool] | None = None,
+) -> tuple[list[dict[str, Any]], str]:
+    """Generate at most one configured chunk and fail closed on any missing card."""
+
+    if not brief.ready_for_production or provider is None:
+        raise VisualPanelGenerationError(
+            "renderer_not_configured" if provider is None else "generation_failed"
+        )
+    shots = timeline.get("shots")
+    if not isinstance(shots, list):
+        raise BriefValidationError("visual storyboard requires the compiled shot timeline")
+    panels = _validate_checkpoint_panels(
+        list(existing_panels),
+        brief=brief,
+        timeline=timeline,
+        job_id=job_id,
+        next_panel_index=len(existing_panels),
+    )
+    reference_image = _reference_image_from_checkpoint(
+        panels,
+        artifact_store=artifact_store,
+        job_id=job_id,
+    )
+    stop = min(len(shots), len(panels) + config.visual_panels_per_dispatch)
+    evidence_origin = "not_attempted"
+    for index in range(len(panels), stop):
+        if ownership_check is not None and not ownership_check():
+            raise PipelineWorkStopped("visual chunk ownership ended")
+        shot = shots[index]
+        if not isinstance(shot, Mapping):
+            raise BriefValidationError("visual storyboard shot is invalid")
+        try:
+            result = provider.create_panel(
+                storyboard_panel_prompt(brief, shot),
+                shot_id=str(shot["shot_id"]),
+                job_id=job_id,
+                reference_image=reference_image,
+            )
+            # Provider calls can be slow.  Fence cancellation or a reclaimed
+            # lease again before producing a durable artifact from the result.
+            if ownership_check is not None and not ownership_check():
+                raise PipelineWorkStopped("visual chunk ownership ended")
+            panel = _external_visual_panel(
+                brief,
+                shot,
+                result,
+                artifact_store=artifact_store,
+                artifact_id=_artifact_id_for_panel(index, shot.get("shot_id")),
+                job_id=job_id,
+            )
+        except (VisualPanelGenerationError, PipelineWorkStopped):
+            raise
+        except Exception:
+            raise VisualPanelGenerationError("generation_failed") from None
+        origin = result.execution.get("evidence_origin")
+        if origin in {"injected_test_client", "live_google_provider_response"}:
+            evidence_origin = str(origin)
+        reference_image = result.image_bytes
+        panels.append(panel)
+        if ownership_check is not None and not ownership_check():
+            raise PipelineWorkStopped("visual chunk ownership ended")
+    return panels, evidence_origin
+
+
+def _complete_external_visual_storyboard(
+    brief: ProductionBrief,
+    timeline: Mapping[str, Any],
+    *,
+    panels: Sequence[Mapping[str, Any]],
+    config: AllThingsConfig,
+    job_id: str,
+    evidence_origin: str,
+) -> dict[str, Any]:
+    shots = timeline.get("shots")
+    required = len(shots) if isinstance(shots, list) else -1
+    complete_panels = _validate_checkpoint_panels(
+        list(panels),
+        brief=brief,
+        timeline=timeline,
+        job_id=job_id,
+        next_panel_index=len(panels),
+    )
+    if required < 0 or len(complete_panels) != required:
+        raise PipelineCheckpointError("visual checkpoint is not complete")
+    body: dict[str, Any] = {
+        "schema": VISUAL_STORYBOARD_SCHEMA,
+        "status": "complete",
+        "verification_scope": "technical_asset_integrity_only",
+        "required_panel_count": required,
+        "available_panel_count": required,
+        "missing_panel_count": 0,
+        "representation": "private_artifact_route",
+        "renderer": {
+            "provider": "Vertex AI",
+            "framework": "google-genai",
+            "model": config.image_model,
+            "location": config.location,
+            "evidence_origin": evidence_origin,
+        },
+        "panels": complete_panels,
+    }
+    body["manifest_sha256"] = sha256_json(body)
+    validate_visual_storyboard(body, brief=brief, timeline=timeline)
+    return body
+
+
+def _write_pipeline_checkpoint(
+    *,
+    artifact_store: ArtifactStore,
+    job_id: str,
+    attempt: int,
+    dispatch_sequence: int,
+    phase: str,
+    request_sha256: str,
+    target_digest: str,
+    brief: ProductionBrief,
+    storyboard_package: Mapping[str, Any],
+    provider_execution: Mapping[str, Any],
+    panels: Sequence[Mapping[str, Any]],
+    pitch_segments: Sequence[Mapping[str, Any]],
+    visual_evidence_origin: str,
+    previous_checkpoint_sha256: str | None,
+    max_dispatches: int,
+) -> dict[str, Any]:
+    """Store one content-addressed checkpoint and return its bounded pointer."""
+
+    timeline = storyboard_package.get("timeline")
+    if not isinstance(timeline, Mapping):
+        raise PipelineCheckpointError("checkpoint timeline is invalid")
+    next_panel_index = len(panels)
+    validated_panels = _validate_checkpoint_panels(
+        list(panels),
+        brief=brief,
+        timeline=timeline,
+        job_id=job_id,
+        next_panel_index=next_panel_index,
+    )
+    required_panel_count = len(timeline.get("shots", []))
+    next_pitch_index = len(pitch_segments)
+    validated_pitch_segments = _validate_checkpoint_pitch_segments(
+        list(pitch_segments),
+        timeline=timeline,
+        job_id=job_id,
+        next_pitch_index=next_pitch_index,
+    )
+    required_pitch_count = required_panel_count
+    if (
+        phase
+        not in {
+            "visual_storyboard",
+            "narrated_pitch",
+            "narrated_pitch_finalize",
+        }
+        or (
+            phase == "visual_storyboard"
+            and (
+                next_panel_index >= required_panel_count
+                or next_pitch_index != 0
+            )
+        )
+        or (
+            phase == "narrated_pitch"
+            and (
+                next_panel_index != required_panel_count
+                or next_pitch_index >= required_pitch_count
+            )
+        )
+        or (
+            phase == "narrated_pitch_finalize"
+            and (
+                next_panel_index != required_panel_count
+                or next_pitch_index != required_pitch_count
+            )
+        )
+        or not 1 <= dispatch_sequence < max_dispatches <= MAX_PIPELINE_DISPATCHES
+        or re.fullmatch(r"[0-9a-f]{64}", request_sha256) is None
+        or re.fullmatch(r"[0-9a-f]{64}", target_digest) is None
+        or (
+            previous_checkpoint_sha256 is not None
+            and re.fullmatch(r"[0-9a-f]{64}", previous_checkpoint_sha256) is None
+        )
+    ):
+        raise PipelineCheckpointError("checkpoint bounds are invalid")
+    package = validate_storyboard_package(storyboard_package)
+    body: dict[str, Any] = {
+        "schema": PIPELINE_CHECKPOINT_SCHEMA,
+        "job_id": job_id,
+        "application_attempt": attempt,
+        "dispatch_sequence": dispatch_sequence,
+        "phase": phase,
+        "request_sha256": request_sha256,
+        "target_digest": target_digest,
+        "brief_sha256": sha256_json(brief.to_dict()),
+        "storyboard_manifest_sha256": package["manifest_sha256"],
+        "brief": brief.to_dict(),
+        "storyboard_package": package,
+        "provider_execution": dict(provider_execution),
+        "panels": validated_panels,
+        "pitch_segments": validated_pitch_segments,
+        "visual_evidence_origin": visual_evidence_origin,
+        "next_panel_index": next_panel_index,
+        "required_panel_count": required_panel_count,
+        "next_pitch_index": next_pitch_index,
+        "required_pitch_count": required_pitch_count,
+        "previous_checkpoint_sha256": previous_checkpoint_sha256,
+        "max_dispatches": max_dispatches,
+    }
+    body["manifest_sha256"] = sha256_json(body)
+    encoded = canonical_json(body).encode("utf-8")
+    if len(encoded) > MAX_DURABLE_JOB_BYTES:
+        raise PipelineCheckpointError("checkpoint exceeds its durable size budget")
+    artifact_id = _checkpoint_artifact_id(attempt, dispatch_sequence)
+    stored = _safe_artifact_descriptor(
+        dict(
+            artifact_store.put_bytes(
+                job_id=job_id,
+                artifact_id=artifact_id,
+                data=encoded,
+                content_type="application/json",
+            )
+        )
+    )
+    if (
+        stored["artifact_id"] != artifact_id
+        or stored["sha256"] != hashlib.sha256(encoded).hexdigest()
+        or stored["bytes"] != len(encoded)
+        or not str(stored["object_name"]).startswith(f"jobs/{job_id}/artifacts/")
+    ):
+        raise PipelineCheckpointError("stored checkpoint evidence is invalid")
+    continuation: dict[str, Any] = {
+        "schema": PIPELINE_CONTINUATION_SCHEMA,
+        "status": "pending",
+        "application_attempt": attempt,
+        "dispatch_sequence": dispatch_sequence,
+        "phase": phase,
+        "next_panel_index": next_panel_index,
+        "required_panel_count": required_panel_count,
+        "next_pitch_index": next_pitch_index,
+        "required_pitch_count": required_pitch_count,
+        "dispatches_used": dispatch_sequence,
+        "max_dispatches": max_dispatches,
+        "checkpoint_sha256": stored["sha256"],
+        "checkpoint": stored,
+    }
+    continuation["manifest_sha256"] = sha256_json(continuation)
+    return continuation
+
+
+def _load_pipeline_checkpoint(
+    continuation_value: Any,
+    *,
+    artifact_store: ArtifactStore,
+    job_id: str,
+    attempt: int,
+    dispatch_sequence: int,
+    source_message: str,
+    request_sha256: str,
+    target_digest: str,
+) -> dict[str, Any]:
+    expected_continuation_fields = {
+        "schema",
+        "status",
+        "application_attempt",
+        "dispatch_sequence",
+        "phase",
+        "next_panel_index",
+        "required_panel_count",
+        "next_pitch_index",
+        "required_pitch_count",
+        "dispatches_used",
+        "max_dispatches",
+        "checkpoint_sha256",
+        "checkpoint",
+        "manifest_sha256",
+    }
+    if (
+        not isinstance(continuation_value, Mapping)
+        or set(continuation_value) != expected_continuation_fields
+    ):
+        raise PipelineCheckpointError("continuation pointer is invalid")
+    continuation = dict(continuation_value)
+    supplied_continuation_digest = continuation.pop("manifest_sha256")
+    if (
+        not isinstance(supplied_continuation_digest, str)
+        or supplied_continuation_digest != sha256_json(continuation)
+        or continuation.get("schema") != PIPELINE_CONTINUATION_SCHEMA
+        or continuation.get("status") != "pending"
+        or continuation.get("application_attempt") != attempt
+        or continuation.get("dispatch_sequence") != dispatch_sequence
+        or continuation.get("dispatches_used") != dispatch_sequence
+        or not 1 <= dispatch_sequence < int(continuation.get("max_dispatches", 0))
+        or int(continuation.get("max_dispatches", 0)) > MAX_PIPELINE_DISPATCHES
+    ):
+        raise PipelineCheckpointError("continuation pointer failed integrity validation")
+    descriptor = _safe_artifact_descriptor(dict(continuation["checkpoint"]))
+    if (
+        descriptor["artifact_id"] != _checkpoint_artifact_id(attempt, dispatch_sequence)
+        or descriptor["sha256"] != continuation.get("checkpoint_sha256")
+        or not str(descriptor["object_name"]).startswith(f"jobs/{job_id}/artifacts/")
+    ):
+        raise PipelineCheckpointError("continuation checkpoint binding is invalid")
+    try:
+        encoded = artifact_store.get_bytes(str(descriptor["object_name"]))
+    except Exception:
+        raise PipelineCheckpointError("continuation checkpoint is unavailable") from None
+    if (
+        not isinstance(encoded, bytes)
+        or len(encoded) != descriptor["bytes"]
+        or hashlib.sha256(encoded).hexdigest() != descriptor["sha256"]
+    ):
+        raise PipelineCheckpointError("continuation checkpoint bytes are invalid")
+    try:
+        raw = json.loads(encoded.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise PipelineCheckpointError("continuation checkpoint JSON is invalid") from None
+    expected_checkpoint_fields = {
+        "schema",
+        "job_id",
+        "application_attempt",
+        "dispatch_sequence",
+        "phase",
+        "request_sha256",
+        "target_digest",
+        "brief_sha256",
+        "storyboard_manifest_sha256",
+        "brief",
+        "storyboard_package",
+        "provider_execution",
+        "panels",
+        "pitch_segments",
+        "visual_evidence_origin",
+        "next_panel_index",
+        "required_panel_count",
+        "next_pitch_index",
+        "required_pitch_count",
+        "previous_checkpoint_sha256",
+        "max_dispatches",
+        "manifest_sha256",
+    }
+    if not isinstance(raw, Mapping) or set(raw) != expected_checkpoint_fields:
+        raise PipelineCheckpointError("continuation checkpoint fields are invalid")
+    checkpoint = dict(raw)
+    supplied_checkpoint_digest = checkpoint.pop("manifest_sha256")
+    if (
+        not isinstance(supplied_checkpoint_digest, str)
+        or supplied_checkpoint_digest != sha256_json(checkpoint)
+        or checkpoint.get("schema") != PIPELINE_CHECKPOINT_SCHEMA
+        or checkpoint.get("job_id") != job_id
+        or checkpoint.get("application_attempt") != attempt
+        or checkpoint.get("dispatch_sequence") != dispatch_sequence
+        or checkpoint.get("phase") != continuation.get("phase")
+        or checkpoint.get("request_sha256") != request_sha256
+        or checkpoint.get("target_digest") != target_digest
+        or checkpoint.get("next_panel_index") != continuation.get("next_panel_index")
+        or checkpoint.get("required_panel_count")
+        != continuation.get("required_panel_count")
+        or checkpoint.get("next_pitch_index")
+        != continuation.get("next_pitch_index")
+        or checkpoint.get("required_pitch_count")
+        != continuation.get("required_pitch_count")
+        or checkpoint.get("max_dispatches") != continuation.get("max_dispatches")
+        or sha256_json({"message": source_message}) != request_sha256
+    ):
+        raise PipelineCheckpointError("continuation checkpoint identity is invalid")
+    raw_brief = checkpoint.get("brief")
+    if not isinstance(raw_brief, Mapping) or raw_brief.get("schema") != BRIEF_SCHEMA:
+        raise PipelineCheckpointError("continuation brief is invalid")
+    try:
+        brief = ProductionBrief.from_mapping(
+            {key: value for key, value in raw_brief.items() if key != "schema"}
+        )
+        if sha256_json(brief.to_dict()) != checkpoint.get("brief_sha256"):
+            raise PipelineCheckpointError("continuation brief digest is invalid")
+        storyboard_package = validate_storyboard_package(checkpoint["storyboard_package"])
+    except BriefValidationError:
+        raise PipelineCheckpointError("continuation production plan is invalid") from None
+    if (
+        storyboard_package.get("manifest_sha256")
+        != checkpoint.get("storyboard_manifest_sha256")
+        or storyboard_package.get("manifest_sha256")
+        != build_storyboard_package(brief).get("manifest_sha256")
+    ):
+        raise PipelineCheckpointError("continuation production plan binding is invalid")
+    timeline = storyboard_package.get("timeline")
+    if not isinstance(timeline, Mapping):
+        raise PipelineCheckpointError("continuation timeline is invalid")
+    next_panel_index = checkpoint.get("next_panel_index")
+    if isinstance(next_panel_index, bool) or not isinstance(next_panel_index, int):
+        raise PipelineCheckpointError("continuation panel offset is invalid")
+    panels = _validate_checkpoint_panels(
+        checkpoint.get("panels"),
+        brief=brief,
+        timeline=timeline,
+        job_id=job_id,
+        next_panel_index=next_panel_index,
+    )
+    required = len(timeline.get("shots", []))
+    next_pitch_index = checkpoint.get("next_pitch_index")
+    if isinstance(next_pitch_index, bool) or not isinstance(next_pitch_index, int):
+        raise PipelineCheckpointError("continuation pitch offset is invalid")
+    pitch_segments = _validate_checkpoint_pitch_segments(
+        checkpoint.get("pitch_segments"),
+        timeline=timeline,
+        job_id=job_id,
+        next_pitch_index=next_pitch_index,
+    )
+    phase = checkpoint.get("phase")
+    if (
+        checkpoint.get("required_panel_count") != required
+        or checkpoint.get("required_pitch_count") != required
+        or phase
+        not in {
+            "visual_storyboard",
+            "narrated_pitch",
+            "narrated_pitch_finalize",
+        }
+        or (
+            phase == "visual_storyboard"
+            and (next_panel_index >= required or next_pitch_index != 0)
+        )
+        or (
+            phase == "narrated_pitch"
+            and (next_panel_index != required or next_pitch_index >= required)
+        )
+        or (
+            phase == "narrated_pitch_finalize"
+            and (next_panel_index != required or next_pitch_index != required)
+        )
+        or not isinstance(checkpoint.get("provider_execution"), Mapping)
+        or checkpoint.get("visual_evidence_origin")
+        not in {
+            "not_attempted",
+            "injected_test_client",
+            "live_google_provider_response",
+        }
+    ):
+        raise PipelineCheckpointError("continuation phase is invalid")
+    checkpoint["manifest_sha256"] = supplied_checkpoint_digest
+    checkpoint["brief_object"] = brief
+    checkpoint["panels"] = panels
+    checkpoint["pitch_segments"] = pitch_segments
+    return checkpoint
+
+
 def fit_visual_storyboard_to_job_budget(
     visual_storyboard: Mapping[str, Any],
     *,
@@ -1591,10 +2330,23 @@ class JobRepository(Protocol):
         patch: Mapping[str, Any],
         *,
         attempt: int,
+        dispatch_sequence: int,
         lease_token: str,
         lease_expires_at: str,
         now: str,
     ) -> Mapping[str, Any] | None:
+        ...
+
+    def continue_job(
+        self,
+        job_id: str,
+        patch: Mapping[str, Any],
+        *,
+        attempt: int,
+        dispatch_sequence: int,
+        lease_token: str,
+        cancelled_patch: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
         ...
 
     def update(self, job_id: str, patch: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -1641,7 +2393,13 @@ class JobRepository(Protocol):
 
 
 class JobDispatcher(Protocol):
-    def enqueue(self, job_id: str, *, attempt: int) -> Mapping[str, Any]:
+    def enqueue(
+        self,
+        job_id: str,
+        *,
+        attempt: int,
+        dispatch_sequence: int,
+    ) -> Mapping[str, Any]:
         ...
 
 
@@ -1705,8 +2463,38 @@ def public_job(record: Mapping[str, Any]) -> dict[str, Any]:
         "target",
         "worker_claim_count",
         "lease_expires_at",
+        "dispatch_sequence",
+        "max_dispatches",
+        "continuation",
+        "input_retention",
+        "record_expires_at",
     }
-    return {key: record.get(key) for key in sorted(allowed) if key in record}
+    result = {key: record.get(key) for key in sorted(allowed) if key in record}
+    continuation = result.get("continuation")
+    if isinstance(continuation, Mapping):
+        # Artifact object names and checkpoint digests are internal worker
+        # capabilities, not part of the public polling contract.
+        public_fields = {
+            "schema",
+            "status",
+            "application_attempt",
+            "dispatch_sequence",
+            "phase",
+            "next_panel_index",
+            "required_panel_count",
+            "next_pitch_index",
+            "required_pitch_count",
+            "dispatches_used",
+            "max_dispatches",
+        }
+        public_continuation = {
+            key: continuation[key]
+            for key in sorted(public_fields)
+            if key in continuation
+        }
+        public_continuation["manifest_sha256"] = sha256_json(public_continuation)
+        result["continuation"] = public_continuation
+    return result
 
 
 def _canonical_diagnostic_code(
@@ -1810,6 +2598,9 @@ class AllThingsJobService:
             raise ConfigurationError("the API service has no Cloud Tasks dispatcher")
         cleaned = self._message(message)
         now = iso_now()
+        record_expires_at = (
+            _parse_time(now) + timedelta(seconds=self.config.job_retention_seconds)
+        ).isoformat()
         self.repository.admit_submission(
             now=now,
             cooldown_seconds=self.config.admission_cooldown_seconds,
@@ -1822,6 +2613,8 @@ class AllThingsJobService:
             "job_id": job_id,
             "parent_job_id": None,
             "message": cleaned,
+            "input_retention": "bounded_retry_until_record_expiry",
+            "record_expires_at": record_expires_at,
             "request_sha256": sha256_json({"message": cleaned}),
             "state": JobState.QUEUED.value,
             "stage": "waiting_for_cloud_task",
@@ -1845,12 +2638,17 @@ class AllThingsJobService:
             "worker_claim_count": 0,
             "lease_token": None,
             "lease_expires_at": None,
+            "dispatch_sequence": 0,
+            "max_dispatches": None,
+            "continuation": None,
             "target": self.config.safe_dict(),
             "target_digest": self.config.target_digest(),
         }
         self.repository.create(record)
         try:
-            dispatch = dict(self.dispatcher.enqueue(job_id, attempt=1))
+            dispatch = dict(
+                self.dispatcher.enqueue(job_id, attempt=1, dispatch_sequence=0)
+            )
         except Exception as exc:
             failed = self.repository.mark_dispatch_failed(
                 job_id,
@@ -1885,6 +2683,9 @@ class AllThingsJobService:
         if self.dispatcher is None:
             raise ConfigurationError("the API service has no Cloud Tasks dispatcher")
         now = iso_now()
+        record_expires_at = (
+            _parse_time(now) + timedelta(seconds=self.config.job_retention_seconds)
+        ).isoformat()
         durations = self.repository.recent_success_durations()
         retried = self.repository.prepare_retry(
             job_id,
@@ -1908,11 +2709,22 @@ class AllThingsJobService:
                 "worker_claim_count": 0,
                 "lease_token": None,
                 "lease_expires_at": None,
+                "dispatch_sequence": 0,
+                "max_dispatches": None,
+                "continuation": None,
+                "input_retention": "bounded_retry_until_record_expiry",
+                "record_expires_at": record_expires_at,
             },
         )
         attempt = int(retried["attempt"])
         try:
-            dispatch = dict(self.dispatcher.enqueue(job_id, attempt=attempt))
+            dispatch = dict(
+                self.dispatcher.enqueue(
+                    job_id,
+                    attempt=attempt,
+                    dispatch_sequence=0,
+                )
+            )
         except Exception as exc:
             failed = self.repository.mark_dispatch_failed(
                 job_id,
@@ -1926,6 +2738,7 @@ class AllThingsJobService:
                         "type": type(exc).__name__,
                         "retryable": retried["attempt"] < retried["max_attempts"],
                     },
+                    **_failed_input_retention_patch(retried),
                 },
                 attempt=attempt,
             )
@@ -1936,12 +2749,24 @@ class AllThingsJobService:
         )
         return public_job(saved)
 
-    def execute(self, job_id: str, *, attempt: int) -> dict[str, Any]:
+    def execute(
+        self,
+        job_id: str,
+        *,
+        attempt: int,
+        dispatch_sequence: int = 0,
+    ) -> dict[str, Any]:
         self.config.assert_valid(require_dispatch=False)
         if self.provider is None:
             raise ConfigurationError("the worker service has no Gemini provider")
         if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
             raise JobTransitionError("Cloud Tasks attempt binding is invalid")
+        if (
+            isinstance(dispatch_sequence, bool)
+            or not isinstance(dispatch_sequence, int)
+            or not 0 <= dispatch_sequence < MAX_PIPELINE_DISPATCHES
+        ):
+            raise JobTransitionError("Cloud Tasks dispatch sequence binding is invalid")
         now_value = utc_now()
         now = now_value.isoformat()
         lease_token = str(uuid4())
@@ -1960,6 +2785,7 @@ class AllThingsJobService:
                 "eta": eta_payload(durations, progress=10),
             },
             attempt=attempt,
+            dispatch_sequence=dispatch_sequence,
             lease_token=lease_token,
             lease_expires_at=lease_expires_at,
             now=now,
@@ -1984,6 +2810,15 @@ class AllThingsJobService:
                     lease_token=lease_token,
                     started_at=claimed.get("started_at"),
                 )
+            )
+        if dispatch_sequence > 0:
+            return self._execute_continuation(
+                job_id,
+                attempt=attempt,
+                dispatch_sequence=dispatch_sequence,
+                lease_token=lease_token,
+                claimed=claimed,
+                durations=durations,
             )
         owned = self.repository.update_claimed(
             job_id,
@@ -2104,6 +2939,56 @@ class AllThingsJobService:
                         lease_token=lease_token,
                         started_at=claimed.get("started_at"),
                     )
+                )
+            shots = timeline.get("shots")
+            if (
+                brief.ready_for_production
+                and self.artifact_store is not None
+                and isinstance(shots, list)
+                and len(shots) > self.config.visual_panels_per_dispatch
+            ):
+                failure_code = "visual_storyboard_incomplete"
+                panels, evidence_origin = _generate_external_visual_chunk(
+                    brief,
+                    timeline,
+                    provider=self.visual_provider,
+                    artifact_store=self.artifact_store,
+                    config=self.config,
+                    job_id=job_id,
+                    existing_panels=(),
+                    ownership_check=lambda: self._visual_chunk_is_owned(
+                        job_id,
+                        attempt=attempt,
+                        lease_token=lease_token,
+                    ),
+                )
+                max_dispatches = (
+                    1
+                    + math.ceil(len(shots) / self.config.visual_panels_per_dispatch)
+                    + len(shots)
+                    + 1
+                )
+                if max_dispatches > MAX_PIPELINE_DISPATCHES:
+                    raise PipelineCheckpointError(
+                        "production plan exceeds the continuation dispatch bound"
+                    )
+                return self._queue_continuation(
+                    job_id,
+                    attempt=attempt,
+                    dispatch_sequence=dispatch_sequence,
+                    lease_token=lease_token,
+                    started_at=claimed.get("started_at"),
+                    request_sha256=str(claimed.get("request_sha256") or ""),
+                    target_digest=str(claimed.get("target_digest") or ""),
+                    brief=brief,
+                    storyboard_package=storyboard_package,
+                    provider_execution=result.execution,
+                    panels=panels,
+                    pitch_segments=(),
+                    visual_evidence_origin=evidence_origin,
+                    previous_checkpoint_sha256=None,
+                    max_dispatches=max_dispatches,
+                    phase="visual_storyboard",
                 )
             visual_storyboard = build_visual_storyboard(
                 brief,
@@ -2253,6 +3138,23 @@ class AllThingsJobService:
             ) > MAX_DURABLE_JOB_BYTES:
                 raise BriefValidationError("completed job exceeds the durable document size budget")
         except Exception as exc:
+            if type(exc) is PipelineWorkStopped:
+                current = self.repository.get(job_id)
+                if (
+                    current.get("lease_token") == lease_token
+                    and current.get("cancel_requested")
+                ):
+                    current = self._finish_cancelled(
+                        job_id,
+                        attempt=attempt,
+                        lease_token=lease_token,
+                        started_at=claimed.get("started_at"),
+                    )
+                return public_job(current)
+            if type(exc) is PipelineContinuationDispatchError:
+                failure_code = "pipeline_continuation_dispatch_failed"
+            elif type(exc) is PipelineCheckpointError:
+                failure_code = "pipeline_checkpoint_invalid"
             finished_at = utc_now()
             started_at = _parse_time(claimed.get("started_at"))
             error: dict[str, Any] = {
@@ -2284,6 +3186,8 @@ class AllThingsJobService:
                     "visual_storyboard": None,
                     "pitch_preview": None,
                     "execution": None,
+                    "continuation": None,
+                    **_failed_input_retention_patch(claimed),
                 },
                 attempt=attempt,
                 lease_token=lease_token,
@@ -2304,6 +3208,563 @@ class AllThingsJobService:
             ),
         )
         return public_job(succeeded)
+
+    def _queue_continuation(
+        self,
+        job_id: str,
+        *,
+        attempt: int,
+        dispatch_sequence: int,
+        lease_token: str,
+        started_at: Any,
+        request_sha256: str,
+        target_digest: str,
+        brief: ProductionBrief,
+        storyboard_package: Mapping[str, Any],
+        provider_execution: Mapping[str, Any],
+        panels: Sequence[Mapping[str, Any]],
+        pitch_segments: Sequence[Mapping[str, Any]],
+        visual_evidence_origin: str,
+        previous_checkpoint_sha256: str | None,
+        max_dispatches: int,
+        phase: str,
+    ) -> dict[str, Any]:
+        if self.artifact_store is None:
+            raise PipelineCheckpointError("continuation requires private artifact storage")
+        if self.dispatcher is None:
+            raise PipelineContinuationDispatchError(
+                "continuation requires a Cloud Tasks dispatcher"
+            )
+        next_sequence = dispatch_sequence + 1
+        continuation = _write_pipeline_checkpoint(
+            artifact_store=self.artifact_store,
+            job_id=job_id,
+            attempt=attempt,
+            dispatch_sequence=next_sequence,
+            phase=phase,
+            request_sha256=request_sha256,
+            target_digest=target_digest,
+            brief=brief,
+            storyboard_package=storyboard_package,
+            provider_execution=provider_execution,
+            panels=panels,
+            pitch_segments=pitch_segments,
+            visual_evidence_origin=visual_evidence_origin,
+            previous_checkpoint_sha256=previous_checkpoint_sha256,
+            max_dispatches=max_dispatches,
+        )
+        try:
+            dispatch = dict(
+                self.dispatcher.enqueue(
+                    job_id,
+                    attempt=attempt,
+                    dispatch_sequence=next_sequence,
+                )
+            )
+        except Exception:
+            raise PipelineContinuationDispatchError(
+                "continuation task dispatch failed"
+            ) from None
+        required = int(continuation["required_panel_count"])
+        generated = int(continuation["next_panel_index"])
+        narrated = int(continuation["next_pitch_index"])
+        progress = min(
+            99,
+            97
+            + math.floor(generated / max(1, required))
+            + math.floor(narrated / max(1, required)),
+        )
+        queued_at = iso_now()
+        queued = self.repository.continue_job(
+            job_id,
+            {
+                "state": JobState.QUEUED.value,
+                "stage": (
+                    "waiting_for_visual_storyboard_continuation"
+                    if phase == "visual_storyboard"
+                    else (
+                        "waiting_for_narrated_pitch_card_continuation"
+                        if phase == "narrated_pitch"
+                        else "waiting_for_narrated_pitch_finalization"
+                    )
+                ),
+                "progress": progress,
+                "updated_at": queued_at,
+                "eta": eta_payload(self.repository.recent_success_durations(), progress=progress),
+                "dispatch": dispatch,
+                "dispatch_sequence": next_sequence,
+                "max_dispatches": max_dispatches,
+                "continuation": continuation,
+                "error": None,
+            },
+            attempt=attempt,
+            dispatch_sequence=dispatch_sequence,
+            lease_token=lease_token,
+            cancelled_patch=_cancelled_patch(
+                started_at=started_at,
+                finished_at=utc_now(),
+            ),
+        )
+        return public_job(queued)
+
+    def _execute_continuation(
+        self,
+        job_id: str,
+        *,
+        attempt: int,
+        dispatch_sequence: int,
+        lease_token: str,
+        claimed: Mapping[str, Any],
+        durations: Sequence[float],
+    ) -> dict[str, Any]:
+        failure_code = "pipeline_checkpoint_invalid"
+        try:
+            if self.artifact_store is None:
+                raise PipelineCheckpointError(
+                    "continuation requires private artifact storage"
+                )
+            source_message = claimed.get("message")
+            if not isinstance(source_message, str) or not source_message:
+                raise PipelineCheckpointError(
+                    "continuation source was discarded before completion"
+                )
+            owned = self.repository.update_claimed(
+                job_id,
+                {
+                    "stage": "validating_pipeline_checkpoint",
+                    "progress": 97,
+                    "updated_at": iso_now(),
+                    "eta": eta_payload(durations, progress=97),
+                },
+                attempt=attempt,
+                lease_token=lease_token,
+            )
+            if owned.get("lease_token") != lease_token:
+                return public_job(owned)
+            if owned.get("cancel_requested"):
+                return public_job(
+                    self._finish_cancelled(
+                        job_id,
+                        attempt=attempt,
+                        lease_token=lease_token,
+                        started_at=claimed.get("started_at"),
+                    )
+                )
+            checkpoint = _load_pipeline_checkpoint(
+                claimed.get("continuation"),
+                artifact_store=self.artifact_store,
+                job_id=job_id,
+                attempt=attempt,
+                dispatch_sequence=dispatch_sequence,
+                source_message=source_message,
+                request_sha256=str(claimed.get("request_sha256") or ""),
+                target_digest=str(claimed.get("target_digest") or ""),
+            )
+            brief = checkpoint.pop("brief_object")
+            if not isinstance(brief, ProductionBrief):
+                raise PipelineCheckpointError("continuation brief could not be restored")
+            storyboard_package = checkpoint["storyboard_package"]
+            timeline = storyboard_package.get("timeline")
+            if not isinstance(timeline, Mapping):
+                raise PipelineCheckpointError("continuation timeline could not be restored")
+            panels = checkpoint["panels"]
+            pitch_segments = checkpoint["pitch_segments"]
+            phase = checkpoint["phase"]
+            if phase == "visual_storyboard":
+                failure_code = "visual_storyboard_incomplete"
+                owned = self.repository.update_claimed(
+                    job_id,
+                    {
+                        "stage": "generating_visual_storyboard",
+                        "progress": 98,
+                        "updated_at": iso_now(),
+                        "eta": eta_payload(durations, progress=98),
+                    },
+                    attempt=attempt,
+                    lease_token=lease_token,
+                )
+                if owned.get("lease_token") != lease_token:
+                    return public_job(owned)
+                if owned.get("cancel_requested"):
+                    return public_job(
+                        self._finish_cancelled(
+                            job_id,
+                            attempt=attempt,
+                            lease_token=lease_token,
+                            started_at=claimed.get("started_at"),
+                        )
+                    )
+                panels, new_evidence_origin = _generate_external_visual_chunk(
+                    brief,
+                    timeline,
+                    provider=self.visual_provider,
+                    artifact_store=self.artifact_store,
+                    config=self.config,
+                    job_id=job_id,
+                    existing_panels=panels,
+                    ownership_check=lambda: self._visual_chunk_is_owned(
+                        job_id,
+                        attempt=attempt,
+                        lease_token=lease_token,
+                    ),
+                )
+                evidence_origin = str(checkpoint["visual_evidence_origin"])
+                if new_evidence_origin != "not_attempted":
+                    evidence_origin = new_evidence_origin
+                required = int(checkpoint["required_panel_count"])
+                next_phase = (
+                    "narrated_pitch" if len(panels) == required else "visual_storyboard"
+                )
+                return self._queue_continuation(
+                    job_id,
+                    attempt=attempt,
+                    dispatch_sequence=dispatch_sequence,
+                    lease_token=lease_token,
+                    started_at=claimed.get("started_at"),
+                    request_sha256=str(claimed.get("request_sha256") or ""),
+                    target_digest=str(claimed.get("target_digest") or ""),
+                    brief=brief,
+                    storyboard_package=storyboard_package,
+                    provider_execution=checkpoint["provider_execution"],
+                    panels=panels,
+                    pitch_segments=pitch_segments,
+                    visual_evidence_origin=evidence_origin,
+                    previous_checkpoint_sha256=str(
+                        claimed["continuation"]["checkpoint_sha256"]
+                    ),
+                    max_dispatches=int(checkpoint["max_dispatches"]),
+                    phase=next_phase,
+                )
+
+            failure_code = "narrated_pitch_render_failed"
+            visual_storyboard = _complete_external_visual_storyboard(
+                brief,
+                timeline,
+                panels=panels,
+                config=self.config,
+                job_id=job_id,
+                evidence_origin=str(checkpoint["visual_evidence_origin"]),
+            )
+            if self.narrated_pitch_renderer is None:
+                raise ConfigurationError("the worker service has no narrated pitch renderer")
+
+            if phase == "narrated_pitch":
+                owned = self.repository.update_claimed(
+                    job_id,
+                    {
+                        "stage": "rendering_narrated_pitch_card",
+                        "progress": 99,
+                        "updated_at": iso_now(),
+                        "eta": eta_payload(durations, progress=99),
+                    },
+                    attempt=attempt,
+                    lease_token=lease_token,
+                )
+                if owned.get("lease_token") != lease_token:
+                    return public_job(owned)
+                if owned.get("cancel_requested"):
+                    return public_job(
+                        self._finish_cancelled(
+                            job_id,
+                            attempt=attempt,
+                            lease_token=lease_token,
+                            started_at=claimed.get("started_at"),
+                        )
+                    )
+                new_segments = list(
+                    self.narrated_pitch_renderer.render_segment_chunk(
+                        brief=brief,
+                        timeline=timeline,
+                        source_message=source_message,
+                        visual_storyboard=visual_storyboard,
+                        job_id=job_id,
+                        start_index=len(pitch_segments),
+                        max_cards=1,
+                        ownership_check=lambda: self._visual_chunk_is_owned(
+                            job_id,
+                            attempt=attempt,
+                            lease_token=lease_token,
+                        ),
+                    )
+                )
+                if len(new_segments) != 1:
+                    raise PipelineCheckpointError(
+                        "narrated pitch card chunk is not exactly bounded"
+                    )
+                pitch_segments = _validate_checkpoint_pitch_segments(
+                    [*pitch_segments, *new_segments],
+                    timeline=timeline,
+                    job_id=job_id,
+                    next_pitch_index=len(pitch_segments) + 1,
+                )
+                next_phase = (
+                    "narrated_pitch_finalize"
+                    if len(pitch_segments) == len(timeline.get("shots", []))
+                    else "narrated_pitch"
+                )
+                return self._queue_continuation(
+                    job_id,
+                    attempt=attempt,
+                    dispatch_sequence=dispatch_sequence,
+                    lease_token=lease_token,
+                    started_at=claimed.get("started_at"),
+                    request_sha256=str(claimed.get("request_sha256") or ""),
+                    target_digest=str(claimed.get("target_digest") or ""),
+                    brief=brief,
+                    storyboard_package=storyboard_package,
+                    provider_execution=checkpoint["provider_execution"],
+                    panels=panels,
+                    pitch_segments=pitch_segments,
+                    visual_evidence_origin=str(checkpoint["visual_evidence_origin"]),
+                    previous_checkpoint_sha256=str(
+                        claimed["continuation"]["checkpoint_sha256"]
+                    ),
+                    max_dispatches=int(checkpoint["max_dispatches"]),
+                    phase=next_phase,
+                )
+
+            owned = self.repository.update_claimed(
+                job_id,
+                {
+                    "stage": "finalizing_narrated_pitch",
+                    "progress": 99,
+                    "updated_at": iso_now(),
+                    "eta": eta_payload(durations, progress=99),
+                },
+                attempt=attempt,
+                lease_token=lease_token,
+            )
+            if owned.get("lease_token") != lease_token:
+                return public_job(owned)
+            if owned.get("cancel_requested"):
+                return public_job(
+                    self._finish_cancelled(
+                        job_id,
+                        attempt=attempt,
+                        lease_token=lease_token,
+                        started_at=claimed.get("started_at"),
+                    )
+                )
+            pitch_preview = dict(
+                self.narrated_pitch_renderer.finalize_segments(
+                    brief=brief,
+                    timeline=timeline,
+                    source_message=source_message,
+                    visual_storyboard=visual_storyboard,
+                    job_id=job_id,
+                    segments=pitch_segments,
+                    ownership_check=lambda: self._visual_chunk_is_owned(
+                        job_id,
+                        attempt=attempt,
+                        lease_token=lease_token,
+                    ),
+                )
+            )
+            self._validate_pitch_preview(pitch_preview, timeline=timeline)
+            finished_at = utc_now()
+            started_at = _parse_time(claimed.get("started_at"))
+            continuation_summary: dict[str, Any] = {
+                "schema": PIPELINE_CONTINUATION_SCHEMA,
+                "status": "complete",
+                "application_attempt": attempt,
+                "dispatch_sequence": dispatch_sequence,
+                "dispatches_used": dispatch_sequence + 1,
+                "max_dispatches": int(checkpoint["max_dispatches"]),
+                "required_panel_count": len(panels),
+                "required_pitch_count": len(pitch_segments),
+                "checkpoint_sha256": str(
+                    claimed["continuation"]["checkpoint_sha256"]
+                ),
+            }
+            continuation_summary["manifest_sha256"] = sha256_json(
+                continuation_summary
+            )
+            execution = {
+                **dict(checkpoint["provider_execution"]),
+                "pipeline": {
+                    "steps": [
+                        "gemini_structured_creative_plan",
+                        "deterministic_storyboard_timeline_compile",
+                        "deterministic_coverage_continuity_audit",
+                        "bounded_checkpointed_gemini_visual_storyboard",
+                        "bounded_checkpointed_google_cloud_tts_cards",
+                        "bounded_ffmpeg_narrated_pitch_finalization",
+                    ],
+                    "storyboard_package_schema": STORYBOARD_PACKAGE_SCHEMA,
+                    "manifest_sha256": storyboard_package["manifest_sha256"],
+                    "media_status": "narrated_storyboard_pitch_mp4",
+                    "visual_storyboard_schema": VISUAL_STORYBOARD_SCHEMA,
+                    "visual_storyboard_status": "complete",
+                    "continuation_schema": PIPELINE_CONTINUATION_SCHEMA,
+                    "continuation_dispatches": dispatch_sequence + 1,
+                },
+            }
+            success_patch: dict[str, Any] = {
+                "state": JobState.SUCCEEDED.value,
+                "stage": "production_plan_and_pitch_ready",
+                "progress": 100,
+                "updated_at": finished_at.isoformat(),
+                "completed_at": finished_at.isoformat(),
+                "duration_seconds": _elapsed(started_at, finished_at),
+                "eta": {
+                    "available": True,
+                    "low_seconds": 0,
+                    "high_seconds": 0,
+                    "sample_count": len(durations),
+                    "basis": "complete",
+                },
+                "message": None,
+                "input_retention": "discarded_after_provider_use",
+                "brief": brief.to_dict(),
+                "storyboard_package": storyboard_package,
+                "visual_storyboard": visual_storyboard,
+                "pitch_preview": pitch_preview,
+                "execution": execution,
+                "continuation": continuation_summary,
+                "error": None,
+            }
+            if len(canonical_json({**claimed, **success_patch}).encode("utf-8")) > MAX_DURABLE_JOB_BYTES:
+                raise BriefValidationError(
+                    "completed job exceeds the durable document size budget"
+                )
+            succeeded = self.repository.finalize(
+                job_id,
+                success_patch,
+                attempt=attempt,
+                lease_token=lease_token,
+                cancelled_patch=_cancelled_patch(
+                    started_at=claimed.get("started_at"),
+                    finished_at=finished_at,
+                ),
+            )
+            return public_job(succeeded)
+        except Exception as exc:
+            if type(exc) is PipelineWorkStopped:
+                current = self.repository.get(job_id)
+                if (
+                    current.get("lease_token") == lease_token
+                    and current.get("cancel_requested")
+                ):
+                    current = self._finish_cancelled(
+                        job_id,
+                        attempt=attempt,
+                        lease_token=lease_token,
+                        started_at=claimed.get("started_at"),
+                    )
+                return public_job(current)
+            if _narrated_pitch_render_diagnostic_code(exc) == "work_stopped":
+                current = self.repository.get(job_id)
+                if (
+                    current.get("lease_token") == lease_token
+                    and current.get("cancel_requested")
+                ):
+                    current = self._finish_cancelled(
+                        job_id,
+                        attempt=attempt,
+                        lease_token=lease_token,
+                        started_at=claimed.get("started_at"),
+                    )
+                return public_job(current)
+            if type(exc) is VisualPanelGenerationError:
+                failure_code = "visual_storyboard_incomplete"
+            elif type(exc) is PipelineContinuationDispatchError:
+                failure_code = "pipeline_continuation_dispatch_failed"
+            elif type(exc) is PipelineCheckpointError:
+                failure_code = "pipeline_checkpoint_invalid"
+            finished_at = utc_now()
+            error: dict[str, Any] = {
+                "code": failure_code,
+                "type": type(exc).__name__,
+                "retryable": int(claimed.get("attempt", 1))
+                < int(claimed.get("max_attempts", MAX_ATTEMPTS)),
+            }
+            if failure_code == "visual_storyboard_incomplete":
+                diagnostic_code = _visual_panel_diagnostic_code(exc)
+                if diagnostic_code is not None:
+                    error["diagnostic_code"] = diagnostic_code
+            elif failure_code == "narrated_pitch_render_failed":
+                diagnostic_code = _narrated_pitch_render_diagnostic_code(exc)
+                if diagnostic_code is not None:
+                    error["diagnostic_code"] = diagnostic_code
+            failed = self.repository.finalize(
+                job_id,
+                {
+                    "state": JobState.FAILED.value,
+                    "stage": failure_code,
+                    "updated_at": finished_at.isoformat(),
+                    "completed_at": finished_at.isoformat(),
+                    "duration_seconds": _elapsed(
+                        _parse_time(claimed.get("started_at")), finished_at
+                    ),
+                    "eta": eta_payload(durations, progress=100),
+                    "error": error,
+                    "brief": None,
+                    "storyboard_package": None,
+                    "visual_storyboard": None,
+                    "pitch_preview": None,
+                    "execution": None,
+                    "continuation": None,
+                    **_failed_input_retention_patch(claimed),
+                },
+                attempt=attempt,
+                lease_token=lease_token,
+                cancelled_patch=_cancelled_patch(
+                    started_at=claimed.get("started_at"),
+                    finished_at=finished_at,
+                ),
+            )
+            return public_job(failed)
+
+    def _visual_chunk_is_owned(
+        self,
+        job_id: str,
+        *,
+        attempt: int,
+        lease_token: str,
+    ) -> bool:
+        """Heartbeat and fence every expensive visual-panel boundary."""
+
+        owned = self.repository.update_claimed(
+            job_id,
+            {"updated_at": iso_now()},
+            attempt=attempt,
+            lease_token=lease_token,
+        )
+        return bool(
+            owned.get("lease_token") == lease_token
+            and owned.get("state") == JobState.RUNNING.value
+            and not owned.get("cancel_requested")
+        )
+
+    @staticmethod
+    def _validate_pitch_preview(
+        pitch_preview: Mapping[str, Any],
+        *,
+        timeline: Mapping[str, Any],
+    ) -> None:
+        video = pitch_preview.get("video")
+        pitch_digest = pitch_preview.get("manifest_sha256")
+        pitch_body = {
+            key: value
+            for key, value in pitch_preview.items()
+            if key != "manifest_sha256"
+        }
+        shot_count = len(timeline.get("shots", []))
+        if (
+            pitch_preview.get("schema") != NARRATED_PITCH_SCHEMA
+            or pitch_preview.get("status") != "complete"
+            or pitch_preview.get("card_count") != shot_count
+            or pitch_preview.get("cue_count") != shot_count
+            or not isinstance(pitch_digest, str)
+            or pitch_digest != sha256_json(pitch_body)
+            or not isinstance(video, Mapping)
+            or video.get("content_type") != "video/mp4"
+            or video.get("video_codec") != "h264"
+            or video.get("audio_codec") != "aac"
+            or video.get("width") != 1920
+            or video.get("height") != 1080
+        ):
+            raise BriefValidationError("narrated pitch manifest is incomplete")
 
     def _finish_cancelled(
         self,
@@ -2345,8 +3806,22 @@ def _cancelled_patch(*, started_at: Any, finished_at: datetime) -> dict[str, Any
         "visual_storyboard": None,
         "pitch_preview": None,
         "execution": None,
+        "continuation": None,
         "error": None,
     }
+
+
+def _failed_input_retention_patch(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep retry input only while another bounded application attempt exists."""
+
+    attempt = int(record.get("attempt", 1))
+    maximum = int(record.get("max_attempts", MAX_ATTEMPTS))
+    if attempt >= maximum:
+        return {
+            "message": None,
+            "input_retention": "discarded_at_retry_limit",
+        }
+    return {"input_retention": "bounded_retry_until_record_expiry"}
 
 
 def _lease_retry_after(value: Any) -> int:
@@ -2381,6 +3856,7 @@ __all__ = [
     "MAX_DURABLE_JOB_BYTES",
     "MAX_MESSAGE_BYTES",
     "MAX_MESSAGE_CHARS",
+    "MAX_PIPELINE_DISPATCHES",
     "MAX_STORYBOARD_PACKAGE_BYTES",
     "MAX_VISUAL_PANEL_BYTES",
     "MAX_VISUAL_PANEL_COUNT",

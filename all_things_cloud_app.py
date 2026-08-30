@@ -27,6 +27,7 @@ from kira_studio.all_things_agentic import (
     ConfigurationError,
     JobLeaseBusyError,
     JobNotFoundError,
+    MAX_PIPELINE_DISPATCHES,
 )
 from kira_studio.all_things_google import (
     CloudTasksDispatcher,
@@ -114,6 +115,9 @@ class Runtime:
                 "KIRA_ALL_THINGS_DEMO_ACCESS_SHA256 must be a lowercase SHA-256 hex digest"
             )
         config = AllThingsConfig.from_environment(environment)
+        # A worker also dispatches bounded continuation tasks.  Keep startup
+        # compatible with a bootstrap deployment, but surface the missing
+        # continuation wiring and fail closed if a long job reaches that path.
         config.assert_valid(require_dispatch=role == "api")
         if not config.artifacts_bucket:
             raise ConfigurationError("KIRA_ALL_THINGS_ARTIFACTS_BUCKET is required")
@@ -124,10 +128,16 @@ class Runtime:
         self.demo_access_sha256 = access_hash
         self.config = config
         self.artifact_store = artifact_store
+        continuation_dispatch_configured = not config.issues(require_dispatch=True)
+        self.continuation_dispatch_configured = continuation_dispatch_configured
         self.service = AllThingsJobService(
             config=config,
             repository=repository,
-            dispatcher=CloudTasksDispatcher(config) if role == "api" else None,
+            dispatcher=(
+                CloudTasksDispatcher(config)
+                if role == "api" or continuation_dispatch_configured
+                else None
+            ),
             provider=GoogleGenAIBriefProvider(config) if role == "worker" else None,
             visual_provider=(
                 GoogleGenAIVisualPanelProvider(config) if role == "worker" else None
@@ -154,6 +164,7 @@ class Runtime:
             "visual_storyboard_configured": self.role == "worker",
             "private_artifacts_configured": bool(self.config.artifacts_bucket),
             "narrated_pitch_configured": self.role == "worker",
+            "continuation_dispatch_configured": self.continuation_dispatch_configured,
             "note": "Health verifies configuration only; completed jobs carry live provider evidence.",
         }
 
@@ -460,17 +471,22 @@ class Handler(BaseHTTPRequestHandler):
             if run and self.runtime.role == "worker":
                 payload = self._body()
                 if (
-                    set(payload) != {"job_id", "attempt"}
+                    set(payload) != {"job_id", "attempt", "dispatch_sequence"}
                     or payload["job_id"] != run.group("job_id")
                     or isinstance(payload["attempt"], bool)
                     or not isinstance(payload["attempt"], int)
                     or payload["attempt"] < 1
+                    or isinstance(payload["dispatch_sequence"], bool)
+                    or not isinstance(payload["dispatch_sequence"], int)
+                    or not 0 <= payload["dispatch_sequence"] < MAX_PIPELINE_DISPATCHES
                 ):
                     raise AllThingsError("Cloud Tasks job binding is invalid")
                 self._json(
                     HTTPStatus.OK,
                     self.runtime.service.execute(
-                        run.group("job_id"), attempt=payload["attempt"]
+                        run.group("job_id"),
+                        attempt=payload["attempt"],
+                        dispatch_sequence=payload["dispatch_sequence"],
                     ),
                 )
                 return

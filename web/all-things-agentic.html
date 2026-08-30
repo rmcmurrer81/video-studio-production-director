@@ -118,7 +118,7 @@
     </section>
     <section id="brief" class="panel brief hidden" aria-live="polite"></section>
     <section id="animatic" class="panel animatic hidden" aria-labelledby="animaticTitle">
-      <div class="animatic-head"><div><h2 id="animaticTitle">Narrated storyboard pitch + timed animatic</h2><p>The completed cloud job supplies a downloadable 1920×1080 MP4 with every visual card and its action/dialogue narration. It is previsualization, not final film footage.</p><p id="pitchVoiceStatus" class="pitch-disclosure" aria-live="polite">The natural Google Cloud narration and MP4 appear only after every visual card passes the completion gate.</p></div><div class="animatic-controls"><button id="downloadPitchVideo" type="button" disabled>Download narrated MP4</button><button id="animaticPlay" type="button" disabled>Play timed animatic</button><button id="animaticStop" type="button" disabled>Stop timing</button><button id="pitchPlay" type="button" disabled>Browser voice fallback</button><button id="pitchStop" type="button" disabled>Stop fallback</button><button id="downloadPitchScript" type="button" disabled>Pitch narration script</button></div></div>
+      <div class="animatic-head"><div><h2 id="animaticTitle">Narrated storyboard pitch + timed animatic</h2><p>The completed cloud job supplies a downloadable 1920×1080 MP4 with every visual card and its action/dialogue narration. It is previsualization, not final film footage.</p><p id="pitchVoiceStatus" class="pitch-disclosure" aria-live="polite">The natural Google Cloud narration and MP4 appear only after every visual card passes the completion gate.</p></div><div class="animatic-controls"><button id="pitchPlay" type="button" disabled>Optional device-voice preview</button><button id="downloadPitchVideo" type="button" disabled>Download cloud narrated MP4</button><button id="retryPrivateArtifacts" type="button" disabled>Retry media load</button><button id="animaticPlay" type="button" disabled>Play timed animatic</button><button id="animaticStop" type="button" disabled>Stop timing</button><button id="pitchStop" type="button" disabled>Stop device preview</button><button id="downloadPitchScript" type="button" disabled>Pitch narration script</button></div></div>
       <video id="pitchVideo" class="hidden" controls preload="metadata" playsinline aria-label="Narrated storyboard pitch MP4"></video>
       <div id="animaticStage" class="animatic-stage"><div id="animaticPlaceholder" class="animatic-placeholder">Create a production plan to assemble the timed animatic.</div><img id="animaticImage" class="hidden" alt=""><div id="animaticOverlay" class="animatic-overlay hidden"><strong id="animaticShot">No shot</strong><span id="animaticAction">No planned action.</span></div></div>
       <div class="animatic-progress" aria-hidden="true"><span id="animaticBar"></span></div><div class="animatic-status"><span id="animaticTime">00:00 / 00:00</span><span id="animaticTruth">PREVISUALIZATION · PLANNING ART + NARRATED STORYBOARD VIDEO · NO FINISHED FILM FOOTAGE</span></div>
@@ -147,6 +147,7 @@
   let currentPitchNarrationArtifactId = null;
   let hydratedArtifactJobId = null;
   let hydratingArtifactJobId = null;
+  let privateArtifactHydrationFailed = false;
   let lastBriefMessageJobId = null;
   let clarificationSession = null;
   let activeSubmission = null;
@@ -651,9 +652,21 @@
     download.disabled = !ready;
     $('pitchVoiceStatus').textContent = currentPitchPreview
       ? ready
-        ? `${currentPitchPreview.card_count}/${currentPitchPreview.card_count} cards · natural ${currentPitchPreview.voice.name} narration · verified 1920×1080 H.264/AAC MP4 ready for owner review.`
+        ? `Cloud narrated MP4 ready: ${currentPitchPreview.card_count}/${currentPitchPreview.card_count} cards · natural ${currentPitchPreview.voice.name} narration · verified 1920×1080 H.264/AAC. Use Play cloud narrated MP4 for owner listening review.`
         : 'The complete narrated MP4 is ready in private storage and is loading into the player.'
       : 'The natural Google Cloud narration and MP4 appear only after every visual card passes the completion gate.';
+    renderPrivateArtifactRetry();
+  }
+  function renderPrivateArtifactRetry() {
+    const retry = $('retryPrivateArtifacts');
+    if (!retry) return;
+    const loading = Boolean(currentJob?.job_id && hydratingArtifactJobId === currentJob.job_id);
+    retry.disabled = loading || !(
+      currentJob?.state === 'succeeded'
+      && currentPitchPreview
+      && privateArtifactHydrationFailed
+    );
+    retry.textContent = loading ? 'Loading private media…' : 'Retry media load';
   }
   async function hydratePrivateArtifacts(job) {
     if (!job?.job_id || job.state !== 'succeeded' || hydratedArtifactJobId === job.job_id || hydratingArtifactJobId === job.job_id) return;
@@ -661,23 +674,58 @@
     const pitch = normalizePitchPreview(job.pitch_preview, plannedShots.length);
     if (!visual || visual.representation !== 'private_artifact_route' || visual.status !== 'complete' || !pitch) return;
     hydratingArtifactJobId = job.job_id;
+    privateArtifactHydrationFailed = false;
+    renderPrivateArtifactRetry();
+    const failures = [];
     try {
-      for (const panel of visual.panels) {
-        const blob = await privateArtifactBlob(job.job_id, panel, 'image/jpeg');
-        panel.data_url = await blobDataUrl(blob);
+      // The completed cloud MP4 is the primary owner/judge artifact. Install it
+      // before optional panel/TXT hydration so a JPEG failure cannot hide it.
+      if (!currentPitchVideoUrl) {
+        try {
+          const videoBlob = await privateArtifactBlob(job.job_id, pitch.video, 'video/mp4');
+          if (currentJob?.job_id !== job.job_id) return;
+          currentPitchVideoUrl = URL.createObjectURL(videoBlob);
+          currentPitchPreview = pitch;
+          renderPitchPreview();
+          updatePitchControls();
+        } catch (error) {
+          failures.push(`cloud MP4: ${String(error?.message || error)}`);
+        }
       }
-      const narrationText = await privateArtifactText(job.job_id, pitch.narration_text);
-      const videoBlob = await privateArtifactBlob(job.job_id, pitch.video, 'video/mp4');
+      for (const panel of visual.panels) {
+        if (panel.data_url) continue;
+        try {
+          const blob = await privateArtifactBlob(job.job_id, panel, 'image/jpeg');
+          panel.data_url = await blobDataUrl(blob);
+        } catch (error) {
+          failures.push(`${panel.artifact_id}: ${String(error?.message || error)}`);
+        }
+      }
+      if (!(
+        currentPitchNarrationText
+        && currentPitchNarrationJobId === job.job_id
+        && currentPitchNarrationArtifactId === pitch.narration_text.artifact_id
+      )) {
+        try {
+          const narrationText = await privateArtifactText(job.job_id, pitch.narration_text);
+          cachePitchNarrationText(job.job_id, pitch, narrationText);
+        } catch (error) {
+          failures.push(`narration TXT: ${String(error?.message || error)}`);
+        }
+      }
       if (currentJob?.job_id !== job.job_id) return;
-      if (currentPitchVideoUrl) URL.revokeObjectURL(currentPitchVideoUrl);
-      currentPitchVideoUrl = URL.createObjectURL(videoBlob);
       currentPitchPreview = pitch;
-      cachePitchNarrationText(job.job_id, pitch, narrationText);
-      hydratedArtifactJobId = job.job_id;
       renderBrief(job.brief, job.storyboard_package, visual, job.job_id);
       renderPitchPreview();
+      updatePitchControls();
+      if (failures.length) {
+        privateArtifactHydrationFailed = true;
+        throw new Error(`Some completed private media could not be loaded. The cloud MP4 remains available if its own load passed. Use Retry media load without rerunning production. ${failures.join(' | ')}`);
+      }
+      hydratedArtifactJobId = job.job_id;
     } finally {
       hydratingArtifactJobId = null;
+      renderPrivateArtifactRetry();
     }
   }
   function visualPanelEntries(visualStoryboard, shots) {
@@ -1088,10 +1136,14 @@
   function updatePitchControls() {
     const hasPlan = plannedShots.length > 0;
     if (currentPitchPreview) {
-      $('pitchPlay').disabled = true;
+      const cloudVideoReady = Boolean(currentPitchVideoUrl);
+      $('pitchPlay').disabled = !cloudVideoReady;
       $('pitchStop').disabled = true;
       $('downloadPitchScript').disabled = !hasPlan;
-      $('pitchPlay').textContent = 'Cloud voice in MP4';
+      $('pitchPlay').textContent = cloudVideoReady ? 'Play cloud narrated MP4' : 'Loading cloud narrated MP4…';
+      $('pitchPlay').title = cloudVideoReady
+        ? 'Plays the verified Google Cloud Chirp 3 HD previsualization track. Owner listening review is still required.'
+        : 'The authenticated cloud MP4 is loading.';
       renderPitchPreview();
       return;
     }
@@ -1099,20 +1151,30 @@
     $('pitchPlay').disabled = !hasPlan || !naturalVoiceReady || pitchPlaying;
     $('pitchStop').disabled = !pitchPlaying;
     $('downloadPitchScript').disabled = !hasPlan;
-    $('pitchPlay').textContent = pitchPlaying ? 'Narrating…' : naturalVoiceReady ? 'Narrate investor pitch' : 'Natural voice unavailable';
-    $('pitchPlay').title = naturalVoiceReady ? `Uses ${selectedPitchVoice.name} (${selectedPitchVoice.lang})` : 'No clearly labeled English Natural or Neural browser voice is available.';
+    $('pitchPlay').textContent = pitchPlaying ? 'Device preview playing…' : naturalVoiceReady ? 'Optional device-voice preview' : 'Device preview unavailable';
+    $('pitchPlay').title = naturalVoiceReady ? `Optional device-only preview using ${selectedPitchVoice.name} (${selectedPitchVoice.lang}); this is not the exported cloud track.` : 'No clearly labeled English Natural or Neural browser voice is available.';
     $('pitchVoiceStatus').textContent = naturalVoiceReady
-      ? `Natural pitch voice ready: ${selectedPitchVoice.name} (${selectedPitchVoice.lang}). This browser preview is not embedded in a video file. Dialogue/audio text is planning direction unless explicit lines are shown.`
-      : 'Natural pitch voice unavailable in this browser. Narration playback stays disabled; download the pitch narration script instead. Dialogue/audio text is planning direction unless explicit lines are shown.';
+      ? `Optional device-voice preview available: ${selectedPitchVoice.name} (${selectedPitchVoice.lang}). It is not the exported track or production audio; use the completed cloud Chirp 3 HD MP4 for owner listening review. Dialogue/audio text is planning direction unless explicit lines are shown.`
+      : 'Optional device-voice preview unavailable. Wait for the completed cloud Chirp 3 HD MP4 or download the pitch narration script; this does not block cloud narration. Dialogue/audio text is planning direction unless explicit lines are shown.';
   }
   function stopNarratedPitch({announce = false} = {}) {
     pitchGeneration += 1;
     pitchPlaying = false;
     if (typeof window !== 'undefined' && typeof window.speechSynthesis?.cancel === 'function') window.speechSynthesis.cancel();
     updatePitchControls();
-    if (announce && plannedShots.length) $('animaticTruth').textContent = 'PITCH NARRATION STOPPED · QUALIFIED NATURAL/NEURAL BROWSER VOICE · NO EXPORTED VIDEO';
+    if (announce && plannedShots.length) $('animaticTruth').textContent = 'OPTIONAL DEVICE-VOICE PREVIEW STOPPED · NOT THE EXPORTED CLOUD TRACK';
   }
   function playNarratedPitch() {
+    if (currentPitchPreview) {
+      const video = $('pitchVideo');
+      if (!currentPitchVideoUrl || typeof video?.play !== 'function') return;
+      video.scrollIntoView?.({behavior:'smooth',block:'center'});
+      const playback = video.play();
+      if (playback && typeof playback.catch === 'function') {
+        playback.catch(() => showError('The cloud narrated MP4 is ready, but browser playback was blocked. Use the video controls or download the MP4.'));
+      }
+      return;
+    }
     if (!pitchNarrationAvailable() || !plannedShots.length) return;
     const pitchVoice = selectedPitchVoice;
     let cues;
@@ -1123,13 +1185,13 @@
     const generation = pitchGeneration;
     pitchPlaying = true;
     updatePitchControls();
-    $('animaticTruth').textContent = 'INVESTOR PITCH PREVIEW · QUALIFIED NATURAL/NEURAL BROWSER VOICE · NOT EMBEDDED IN VIDEO';
+    $('animaticTruth').textContent = 'OPTIONAL DEVICE-VOICE PREVIEW · QUALIFIED NATURAL/NEURAL VOICE · NOT THE EXPORTED CLOUD TRACK';
     const speakAt = index => {
       if (!pitchPlaying || generation !== pitchGeneration) return;
       if (index >= cues.length) {
         pitchPlaying = false;
         updatePitchControls();
-        $('animaticTruth').textContent = 'PITCH PREVIEW COMPLETE · STORYBOARD ART + QUALIFIED NATURAL/NEURAL BROWSER VOICE · NOT FINAL FOOTAGE';
+        $('animaticTruth').textContent = 'OPTIONAL DEVICE-VOICE PREVIEW COMPLETE · NOT THE EXPORTED CLOUD TRACK · NOT FINAL FOOTAGE';
         return;
       }
       animaticElapsedSeconds = plannedShots.slice(0, index).reduce((total, shot) => total + Math.max(0.1, Number(shot.planned_duration_seconds) || 0), 0);
@@ -1640,7 +1702,7 @@
     try { message = composeProductionRequest(typedMessage); }
     catch (error) { showError(String(error?.message || error)); updateSubmitState(); return; }
     showError(''); $('brief').classList.add('hidden'); renderStoryboardPackage(null); stopAnimatic();
-    hydratedArtifactJobId = null; hydratingArtifactJobId = null; currentPitchPreview = null;
+    hydratedArtifactJobId = null; hydratingArtifactJobId = null; privateArtifactHydrationFailed = false; currentPitchPreview = null;
     currentPitchNarrationText = null; currentPitchNarrationJobId = null; currentPitchNarrationArtifactId = null;
     if (currentPitchVideoUrl) { URL.revokeObjectURL(currentPitchVideoUrl); currentPitchVideoUrl = null; }
     renderPitchPreview();
@@ -1682,6 +1744,14 @@
   $('pitchStop').addEventListener('click', () => stopNarratedPitch({announce:true}));
   $('downloadPitchScript').addEventListener('click', downloadPitchNarrationScript);
   $('downloadPitchVideo')?.addEventListener('click', downloadPitchVideo);
+  $('retryPrivateArtifacts')?.addEventListener('click', async () => {
+    if (!currentJob || currentJob.state !== 'succeeded') return;
+    showError('');
+    hydratedArtifactJobId = null;
+    privateArtifactHydrationFailed = false;
+    try { await hydratePrivateArtifacts(currentJob); }
+    catch (error) { showError(String(error?.message || error)); }
+  });
   $('cancel').addEventListener('click', async () => { stopNarratedPitch(); try { render(await request(`/v1/jobs/${currentJob.job_id}:cancel`, {method:'POST', body:'{}'})); } catch (error) { if (error.job) render(error.job); showError(error.message); } });
   $('retry').addEventListener('click', async () => { stopNarratedPitch(); showError(''); $('brief').classList.add('hidden'); try { render(await request(`/v1/jobs/${currentJob.job_id}:retry`, {method:'POST', body:'{}'})); poll(); } catch (error) { if (error.job) render(error.job); showError(error.message); } });
   $('timelineFirst').addEventListener('click', () => selectScene(0));

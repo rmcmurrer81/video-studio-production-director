@@ -191,9 +191,6 @@ class GoogleVisualPanelProviderTests(unittest.TestCase):
         source = still_image_bytes()
         client = FakeClient(
             StatusError(429, "private key-like text"),
-            StatusError(503, "private upstream text"),
-            StatusError(500, "private internal text"),
-            StatusError(429, "private quota text"),
             image_response(source),
         )
         provider = GoogleGenAIVisualPanelProvider(valid_config(), client=client)
@@ -203,12 +200,12 @@ class GoogleVisualPanelProviderTests(unittest.TestCase):
                 shot_id="SC01-SH01",
                 job_id="job-3",
             )
-        self.assertEqual(len(client.models.calls), 5)
+        self.assertEqual(len(client.models.calls), 2)
         self.assertEqual(
             [call.args[0] for call in sleep.call_args_list],
-            [5, 10, 20, 30],
+            [5],
         )
-        self.assertEqual(sum(call.args[0] for call in sleep.call_args_list), 65)
+        self.assertEqual(sum(call.args[0] for call in sleep.call_args_list), 5)
 
     def test_exhausted_rate_limit_and_5xx_return_only_allowlisted_codes(self) -> None:
         rate_client = FakeClient(
@@ -231,10 +228,10 @@ class GoogleVisualPanelProviderTests(unittest.TestCase):
         self.assertNotIn("secret", str(caught.exception))
         self.assertIsNone(caught.exception.__cause__)
         self.assertIsNone(caught.exception.__context__)
-        self.assertEqual(len(rate_client.models.calls), 5)
+        self.assertEqual(len(rate_client.models.calls), 2)
         self.assertEqual(
             [call.args[0] for call in rate_sleep.call_args_list],
-            [5, 10, 20, 30],
+            [5],
         )
 
         server_client = FakeClient(
@@ -257,10 +254,10 @@ class GoogleVisualPanelProviderTests(unittest.TestCase):
         self.assertNotIn("secret", str(caught.exception))
         self.assertIsNone(caught.exception.__cause__)
         self.assertIsNone(caught.exception.__context__)
-        self.assertEqual(len(server_client.models.calls), 5)
+        self.assertEqual(len(server_client.models.calls), 2)
         self.assertEqual(
             [call.args[0] for call in server_sleep.call_args_list],
-            [5, 10, 20, 30],
+            [5],
         )
 
     def test_nonretryable_provider_error_is_not_retried(self) -> None:

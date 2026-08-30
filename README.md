@@ -34,6 +34,8 @@ The public Cloud Run API creates and reads durable Firestore jobs and dispatches
 6. uses FFmpeg to assemble the card images, narration, and SRT subtitles into the pitch video; and
 7. uses FFprobe plus manifest/hash checks to require 1920×1080, H.264, AAC, complete card/cue coverage, and job-bound artifact identities before publishing success.
 
+Long plans do not depend on one Cloud Run request. The reviewed configuration generates at most two panels per named Cloud Tasks dispatch, then renders exactly one narrated-pitch card segment per dispatch and concatenates/probes those private segments in one final dispatch. Every transition writes an immutable private integrity-validated checkpoint and resumes under the same application attempt with a strictly increasing dispatch sequence. Attempt/sequence/lease fencing prevents stale delivery from appending duplicate panels or pitch segments, or from reviving a terminal job; cancellation is checked between panels, pitch-card operations, segment loads, concatenation, and final probing.
+
 The browser never receives a `gs://` URL or a public object URL. It requests a declared artifact through the authenticated same-origin route:
 
 ```text
@@ -46,7 +48,7 @@ The API resolves that identifier only from the exact completed job manifest, ver
 
 `succeeded` means the corrected full-media path completed. A production-ready job is not acceptable when it contains `VISUAL PENDING`, a partial panel count, a missing MP4, an absent cue, or a codec/resolution/integrity mismatch. Partial work can be retained in logs or internal state for diagnosis, but it is not a submission pass and must not be presented as the finished feature.
 
-The first ETA is intentionally unavailable. Later estimates can use measured completed-job durations. Panel generation, Text-to-Speech, FFmpeg encoding, Cloud Run, Cloud Storage, Firestore, and Cloud Tasks can all consume time and billable resources. A long screenplay creates many cards and model calls; test with a short dialogue scene before attempting a television episode. The narrated pitch implementation is bounded to 60 minutes and 2 GiB, and Cloud Run/Cloud Tasks timeouts may impose a lower practical limit.
+The first ETA is intentionally unavailable. Later estimates can use measured completed-job durations. Panel generation, Text-to-Speech, FFmpeg encoding, Cloud Run, Cloud Storage, Firestore, and Cloud Tasks can all consume time and billable resources. A long screenplay creates many cards and model calls; test with a short dialogue scene before attempting a television episode. The narrated pitch implementation is bounded to 60 minutes and 2 GiB. It is not rendered in one long request: each card segment and the final concat/probe have separate bounded dispatches under the Cloud Run/Cloud Tasks request ceiling.
 
 ## Evidence status
 

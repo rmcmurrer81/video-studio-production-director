@@ -15,6 +15,7 @@ from kira_studio.all_things_agentic import (
     AdmissionLimitError,
     ConfigurationError,
     JobLeaseBusyError,
+    MAX_PIPELINE_DISPATCHES,
 )
 
 
@@ -74,7 +75,13 @@ class FakeService:
         self.calls.append(("retry", job_id))
         return self._job("queued", stage="waiting_for_worker")
 
-    def execute(self, job_id: str, *, attempt: int) -> dict[str, object]:
+    def execute(
+        self,
+        job_id: str,
+        *,
+        attempt: int,
+        dispatch_sequence: int,
+    ) -> dict[str, object]:
         self.calls.append(("execute", job_id))
         return self._job("succeeded", stage="complete")
 
@@ -727,6 +734,7 @@ class AllThingsCloudAppTests(unittest.TestCase):
                 payload={
                     "job_id": "00000000-0000-0000-0000-000000000002",
                     "attempt": 1,
+                    "dispatch_sequence": 0,
                 },
             )
             self.assertEqual(status, HTTPStatus.BAD_REQUEST)
@@ -736,11 +744,45 @@ class AllThingsCloudAppTests(unittest.TestCase):
                 running,
                 path,
                 method="POST",
-                payload={"job_id": JOB_ID, "attempt": 1},
+                payload={"job_id": JOB_ID, "attempt": 1, "dispatch_sequence": 0},
             )
             self.assertEqual(status, HTTPStatus.OK)
             self.assertEqual(completed["state"], "succeeded")
             self.assertEqual(running.runtime.service.calls, [("execute", JOB_ID)])
+        finally:
+            running.close()
+
+    def test_worker_uses_shared_dispatch_sequence_bound(self) -> None:
+        running = RunningServer("worker")
+        try:
+            path = f"/internal/v1/jobs/{JOB_ID}:run"
+            status, _, completed = request_json(
+                running,
+                path,
+                method="POST",
+                payload={
+                    "job_id": JOB_ID,
+                    "attempt": 1,
+                    "dispatch_sequence": MAX_PIPELINE_DISPATCHES - 1,
+                },
+            )
+            self.assertEqual(status, HTTPStatus.OK)
+            self.assertEqual(completed["state"], "succeeded")
+
+            for invalid in (True, MAX_PIPELINE_DISPATCHES):
+                with self.subTest(dispatch_sequence=invalid):
+                    status, _, error = request_json(
+                        running,
+                        path,
+                        method="POST",
+                        payload={
+                            "job_id": JOB_ID,
+                            "attempt": 1,
+                            "dispatch_sequence": invalid,
+                        },
+                    )
+                    self.assertEqual(status, HTTPStatus.BAD_REQUEST)
+                    self.assertEqual(error["error_type"], "AllThingsError")
         finally:
             running.close()
 
@@ -765,7 +807,12 @@ class AllThingsCloudAppTests(unittest.TestCase):
 
         worker = RunningServer("worker")
         try:
-            def busy(_job_id: str, *, attempt: int) -> dict[str, object]:
+            def busy(
+                _job_id: str,
+                *,
+                attempt: int,
+                dispatch_sequence: int,
+            ) -> dict[str, object]:
                 raise JobLeaseBusyError("worker lease is active", retry_after_seconds=11)
 
             worker.runtime.service.execute = busy  # type: ignore[method-assign]
@@ -773,7 +820,7 @@ class AllThingsCloudAppTests(unittest.TestCase):
                 worker,
                 f"/internal/v1/jobs/{JOB_ID}:run",
                 method="POST",
-                payload={"job_id": JOB_ID, "attempt": 1},
+                payload={"job_id": JOB_ID, "attempt": 1, "dispatch_sequence": 0},
             )
             self.assertEqual(status, HTTPStatus.CONFLICT)
             self.assertEqual(headers["Retry-After"], "11")

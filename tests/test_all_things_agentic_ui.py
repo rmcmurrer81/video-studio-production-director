@@ -259,6 +259,7 @@ class AllThingsAgenticUiTests(unittest.TestCase):
             "animaticStop",
             "pitchVideo",
             "downloadPitchVideo",
+            "retryPrivateArtifacts",
         }
         self.assertTrue(required_ids.issubset(self.parser.ids))
         for marker in (
@@ -338,6 +339,7 @@ class AllThingsAgenticUiTests(unittest.TestCase):
     def test_primary_pitch_requires_complete_verified_cloud_mp4_and_all_private_visuals(self) -> None:
         for marker in (
             'id="downloadPitchVideo" type="button" disabled',
+            'id="retryPrivateArtifacts" type="button" disabled>Retry media load</button>',
             'id="pitchVideo" class="hidden" controls preload="metadata" playsinline',
             "video-studio.narrated-pitch/v1",
             "value.status !== 'complete'",
@@ -357,8 +359,12 @@ class AllThingsAgenticUiTests(unittest.TestCase):
             "value.verification.audio_stream_count !== 1",
             "if (!visual || visual.representation !== 'private_artifact_route' || visual.status !== 'complete' || !pitch) return",
             "The natural Google Cloud narration and MP4 appear only after every visual card passes the completion gate.",
-            "verified 1920×1080 H.264/AAC MP4 ready for owner review",
+            "Cloud narrated MP4 ready:",
+            "verified 1920×1080 H.264/AAC",
+            "Play cloud narrated MP4",
             "function downloadPitchVideo()",
+            "function renderPrivateArtifactRetry()",
+            "The cloud MP4 remains available if its own load passed. Use Retry media load without rerunning production.",
             "-narrated-storyboard-pitch.mp4",
             "async function privateArtifactText(jobId, artifact)",
             "async function loadCurrentPitchNarrationText()",
@@ -375,9 +381,9 @@ class AllThingsAgenticUiTests(unittest.TestCase):
     def test_browser_voice_is_a_secondary_natural_english_fallback(self) -> None:
         for marker in (
             'id="pitchVoiceStatus" class="pitch-disclosure" aria-live="polite"',
-            ">Browser voice fallback</button>",
-            "Natural pitch voice unavailable in this browser.",
-            "download the pitch narration script instead",
+            ">Optional device-voice preview</button>",
+            "Optional device-voice preview unavailable.",
+            "download the pitch narration script; this does not block cloud narration",
             "function naturalPitchVoiceScore(voice)",
             "/\\b(?:natural|neural)\\b/i.test(name)",
             "if (!language.startsWith('en-') && language !== 'en') return -1",
@@ -389,12 +395,13 @@ class AllThingsAgenticUiTests(unittest.TestCase):
             "buildPitchCues('playback')",
             "Complete deterministic text export:",
             "no card text was truncated or omitted",
-            "QUALIFIED NATURAL/NEURAL BROWSER VOICE",
+            "QUALIFIED NATURAL/NEURAL VOICE",
         ):
             self.assertIn(marker, self.html)
         self.assertIn("if (currentPitchPreview) {", self.html)
-        self.assertIn("$('pitchPlay').textContent = 'Cloud voice in MP4'", self.html)
-        self.assertIn("$('pitchPlay').disabled = true", self.html)
+        self.assertIn("$('pitchPlay').disabled = !cloudVideoReady", self.html)
+        self.assertIn("$('pitchPlay').textContent = cloudVideoReady ? 'Play cloud narrated MP4' : 'Loading cloud narrated MP4…'", self.html)
+        self.assertIn("const playback = video.play()", self.html)
         self.assertIn("$('pitchPlay').disabled = !hasPlan || !naturalVoiceReady || pitchPlaying", self.html)
         self.assertIn("$('downloadPitchScript').disabled = !hasPlan", self.html)
         self.assertNotIn("return typeof window !== 'undefined' && typeof window.SpeechSynthesisUtterance", self.html)

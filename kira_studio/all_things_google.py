@@ -28,6 +28,7 @@ from .all_things_agentic import (
     JobNotFoundError,
     JobState,
     JobTransitionError,
+    MAX_PIPELINE_DISPATCHES,
     ProductionBrief,
     PRODUCTION_BRIEF_RESPONSE_SCHEMA,
     TERMINAL_STATES,
@@ -93,11 +94,15 @@ _VISUAL_PANEL_HEIGHT = 432
 _MAX_VISUAL_PANEL_BYTES = 45_000
 _MAX_PROVIDER_IMAGE_BYTES = 12 * 1024 * 1024
 _MAX_PROVIDER_IMAGE_PIXELS = 24_000_000
-_VISUAL_RETRY_DELAYS_SECONDS = (5, 10, 20, 30)
+# Two five-minute provider attempts per panel and two panels per dispatch stay
+# beneath the reviewed 1,740-second task/request envelope, including backoff.
+_GENAI_REQUEST_TIMEOUT_MS = 5 * 60 * 1_000
+_VISUAL_RETRY_DELAYS_SECONDS = (5,)
 _MAX_VISUAL_ATTEMPTS = len(_VISUAL_RETRY_DELAYS_SECONDS) + 1
 _SAFE_EVIDENCE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/=-]{0,159}")
 _SAFE_SHOT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 _SAFE_JOB_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
+_FIRESTORE_TTL_FIELD = "record_expires_at"
 
 
 class GoogleDependencyError(ConfigurationError):
@@ -105,15 +110,42 @@ class GoogleDependencyError(ConfigurationError):
 
 
 def _utc_time(value: Any) -> datetime | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    else:
         return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _firestore_write(values: Mapping[str, Any]) -> dict[str, Any]:
+    """Convert only the TTL field to Firestore's required native timestamp."""
+
+    result = dict(values)
+    if _FIRESTORE_TTL_FIELD in result:
+        expires_at = _utc_time(result[_FIRESTORE_TTL_FIELD])
+        if expires_at is None:
+            raise ConfigurationError("job record expiry timestamp is invalid")
+        result[_FIRESTORE_TTL_FIELD] = expires_at
+    return result
+
+
+def _firestore_read(values: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep orchestration and canonical JSON on stable ISO-8601 strings."""
+
+    result = dict(values)
+    if _FIRESTORE_TTL_FIELD in result:
+        expires_at = _utc_time(result[_FIRESTORE_TTL_FIELD])
+        if expires_at is None:
+            raise ConfigurationError("stored job record expiry timestamp is invalid")
+        result[_FIRESTORE_TTL_FIELD] = expires_at.isoformat()
+    return result
 
 
 class GoogleGenAIBriefProvider:
@@ -141,7 +173,9 @@ class GoogleGenAIBriefProvider:
             vertexai=True,
             project=self.config.project,
             location=self.config.location,
-            http_options=HttpOptions(api_version="v1"),
+            http_options=HttpOptions(
+                api_version="v1", timeout=_GENAI_REQUEST_TIMEOUT_MS
+            ),
         )
         return self._client
 
@@ -377,7 +411,9 @@ class GoogleGenAIVisualPanelProvider:
             vertexai=True,
             project=self.config.project,
             location=self.config.location,
-            http_options=types.HttpOptions(api_version="v1"),
+            http_options=types.HttpOptions(
+                api_version="v1", timeout=_GENAI_REQUEST_TIMEOUT_MS
+            ),
         )
         return self._client
 
@@ -512,11 +548,11 @@ class FirestoreJobRepository:
         value = snapshot.to_dict()
         if not isinstance(value, Mapping):
             raise JobNotFoundError(f"job is unreadable: {job_id}")
-        return dict(value)
+        return _firestore_read(value)
 
     def create(self, record: Mapping[str, Any]) -> Mapping[str, Any]:
         job_id = str(record.get("job_id") or "")
-        self._document(job_id).create(dict(record))
+        self._document(job_id).create(_firestore_write(record))
         return dict(record)
 
     def get(self, job_id: str) -> Mapping[str, Any]:
@@ -524,7 +560,7 @@ class FirestoreJobRepository:
 
     def update(self, job_id: str, patch: Mapping[str, Any]) -> Mapping[str, Any]:
         ref = self._document(job_id)
-        ref.update(dict(patch))
+        ref.update(_firestore_write(patch))
         return self._record(ref.get(), job_id)
 
     def _transactional(self, callback: Any) -> Any:
@@ -596,7 +632,7 @@ class FirestoreJobRepository:
                 "window_seconds": window_seconds,
                 "cooldown_seconds": cooldown_seconds,
             }
-            transaction.set(ref, update)
+            transaction.set(ref, _firestore_write(update))
             return update
 
         return self._transactional(operation)
@@ -607,6 +643,7 @@ class FirestoreJobRepository:
         patch: Mapping[str, Any],
         *,
         attempt: int,
+        dispatch_sequence: int,
         lease_token: str,
         lease_expires_at: str,
         now: str,
@@ -618,7 +655,10 @@ class FirestoreJobRepository:
 
         def operation(transaction: Any) -> Mapping[str, Any] | None:
             record = self._record(ref.get(transaction=transaction), job_id)
-            if int(record.get("attempt", 0)) != attempt:
+            if (
+                int(record.get("attempt", 0)) != attempt
+                or int(record.get("dispatch_sequence", -1)) != dispatch_sequence
+            ):
                 return None
             state = str(record.get("state") or "")
             reclaiming = state in {
@@ -644,8 +684,60 @@ class FirestoreJobRepository:
                     "worker_claim_count": int(record.get("worker_claim_count", 0)) + 1,
                 }
             )
-            transaction.update(ref, update)
+            transaction.update(ref, _firestore_write(update))
             return {**record, **update}
+
+        return self._transactional(operation)
+
+    def continue_job(
+        self,
+        job_id: str,
+        patch: Mapping[str, Any],
+        *,
+        attempt: int,
+        dispatch_sequence: int,
+        lease_token: str,
+        cancelled_patch: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        """Fence one completed chunk before yielding to its named successor.
+
+        The transaction makes the checkpoint pointer, next dispatch sequence,
+        and release of the worker lease one atomic state transition.  A stale
+        or duplicated delivery can therefore never advance the same job twice.
+        """
+
+        ref = self._document(job_id)
+
+        def operation(transaction: Any) -> Mapping[str, Any]:
+            record = self._record(ref.get(transaction=transaction), job_id)
+            if (
+                int(record.get("attempt", 0)) != attempt
+                or int(record.get("dispatch_sequence", -1)) != dispatch_sequence
+                or record.get("lease_token") != lease_token
+            ):
+                return record
+            state = str(record.get("state") or "")
+            if state in TERMINAL_STATES:
+                return record
+            if state not in {JobState.RUNNING.value, JobState.CANCELLING.value}:
+                raise JobTransitionError(
+                    f"worker cannot continue job from state {state!r}"
+                )
+            cancellation_wins = bool(record.get("cancel_requested")) or (
+                state == JobState.CANCELLING.value
+            )
+            selected = dict(cancelled_patch) if cancellation_wins else dict(patch)
+            next_sequence = selected.get("dispatch_sequence")
+            if not cancellation_wins and (
+                isinstance(next_sequence, bool)
+                or not isinstance(next_sequence, int)
+                or next_sequence != dispatch_sequence + 1
+                or next_sequence >= MAX_PIPELINE_DISPATCHES
+            ):
+                raise JobTransitionError("continuation dispatch sequence is invalid")
+            selected.update({"lease_token": None, "lease_expires_at": None})
+            transaction.update(ref, _firestore_write(selected))
+            return {**record, **selected}
 
         return self._transactional(operation)
 
@@ -670,7 +762,7 @@ class FirestoreJobRepository:
             ):
                 return record
             update = dict(patch)
-            transaction.update(ref, update)
+            transaction.update(ref, _firestore_write(update))
             return {**record, **update}
 
         return self._transactional(operation)
@@ -706,7 +798,7 @@ class FirestoreJobRepository:
                 else dict(patch)
             )
             selected.update({"lease_token": None, "lease_expires_at": None})
-            transaction.update(ref, selected)
+            transaction.update(ref, _firestore_write(selected))
             return {**record, **selected}
 
         return self._transactional(operation)
@@ -730,7 +822,7 @@ class FirestoreJobRepository:
             ):
                 return record
             update = dict(patch)
-            transaction.update(ref, update)
+            transaction.update(ref, _firestore_write(update))
             return {**record, **update}
 
         return self._transactional(operation)
@@ -769,7 +861,7 @@ class FirestoreJobRepository:
                 }
             else:
                 raise JobTransitionError(f"job cannot be cancelled from state {state!r}")
-            transaction.update(ref, patch)
+            transaction.update(ref, _firestore_write(patch))
             return {**record, **patch}
 
         return self._transactional(operation)
@@ -789,7 +881,7 @@ class FirestoreJobRepository:
             if attempt >= maximum:
                 raise JobTransitionError("job reached its retry limit")
             update = {**dict(patch), "attempt": attempt + 1}
-            transaction.update(ref, update)
+            transaction.update(ref, _firestore_write(update))
             return {**record, **update}
 
         return self._transactional(operation)
@@ -813,6 +905,7 @@ class CloudTasksDispatch:
     queue: str
     worker_url: str
     attempt: int
+    dispatch_sequence: int
     deduplicated: bool = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -822,6 +915,7 @@ class CloudTasksDispatch:
             "queue": self.queue,
             "worker_url": self.worker_url,
             "attempt": self.attempt,
+            "dispatch_sequence": self.dispatch_sequence,
             "deduplicated": self.deduplicated,
         }
 
@@ -844,17 +938,29 @@ class CloudTasksDispatcher:
             client = tasks_v2.CloudTasksClient()
         self.client = client
 
-    def enqueue(self, job_id: str, *, attempt: int) -> Mapping[str, Any]:
+    def enqueue(
+        self,
+        job_id: str,
+        *,
+        attempt: int,
+        dispatch_sequence: int,
+    ) -> Mapping[str, Any]:
         if not isinstance(job_id, str) or not job_id:
             raise JobNotFoundError("job_id is required")
         if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
             raise JobTransitionError("task attempt must be a positive integer")
+        if (
+            isinstance(dispatch_sequence, bool)
+            or not isinstance(dispatch_sequence, int)
+            or not 0 <= dispatch_sequence < MAX_PIPELINE_DISPATCHES
+        ):
+            raise JobTransitionError("task dispatch sequence is invalid")
         parent = self.client.queue_path(
             self.config.project,
             self.config.tasks_location,
             self.config.tasks_queue,
         )
-        task_name = f"{parent}/tasks/{job_id}-a{attempt}"
+        task_name = f"{parent}/tasks/{job_id}-a{attempt}-d{dispatch_sequence:03d}"
         url = f"{self.config.worker_url}/internal/v1/jobs/{job_id}:run"
         method: Any = "POST"
         if self._tasks is not None:
@@ -873,7 +979,12 @@ class CloudTasksDispatcher:
                 "url": url,
                 "headers": {"Content-Type": "application/json"},
                 "body": json.dumps(
-                    {"job_id": job_id, "attempt": attempt}, separators=(",", ":")
+                    {
+                        "job_id": job_id,
+                        "attempt": attempt,
+                        "dispatch_sequence": dispatch_sequence,
+                    },
+                    separators=(",", ":"),
                 ).encode("utf-8"),
                 "oidc_token": {
                     "service_account_email": self.config.tasks_service_account,
@@ -908,6 +1019,7 @@ class CloudTasksDispatcher:
             queue=parent,
             worker_url=self.config.worker_url,
             attempt=attempt,
+            dispatch_sequence=dispatch_sequence,
             deduplicated=deduplicated,
         ).to_dict()
 
