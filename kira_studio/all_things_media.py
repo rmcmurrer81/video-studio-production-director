@@ -25,7 +25,14 @@ _CHARACTER_CUE = re.compile(
 _FDX_CHARACTER = re.compile(r"^\[Character\]\s+(.+)$", re.IGNORECASE)
 _FDX_DIALOGUE = re.compile(r"^\[Dialogue\]\s+(.+)$", re.IGNORECASE)
 _FDX_SCENE_HEADING = re.compile(r"^\[Scene Heading\]\s+(.+)$", re.IGNORECASE)
-_QUOTED_DIALOGUE = re.compile(r"[\"“]([^\"”\n]{2,500})[\"”]")
+_NATURAL_SCENE_MARKER = re.compile(
+    r"(?<![A-Za-z0-9_])(SCENE\s+\d{1,3}\s*:)",
+    re.IGNORECASE,
+)
+_NATURAL_SCENE_HEADING = re.compile(r"^SCENE\s+\d{1,3}\s*:$", re.IGNORECASE)
+_QUOTED_DIALOGUE = re.compile(
+    r'(?:"([^"\n]{2,500})"|“([^”\n]{2,500})”|‘([^’\n]{2,500})’)'
+)
 
 
 def _clean(value: Any, *, maximum: int = 1_800) -> str:
@@ -63,13 +70,18 @@ def extract_screenplay_dialogue(
     current_speaker: str | None = None
     result: dict[int, list[str]] = {}
     scene_raw_lines: dict[int, list[str]] = {}
-    lines = source.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    normalised_source = source.replace("\r\n", "\n").replace("\r", "\n")
+    # Natural chat often carries several explicit scene beats on one line,
+    # for example ``Scene 1: ... Scene 2: ...``.  Split only bounded numbered
+    # scene markers so quoted dialogue remains tied to the intended scene.
+    normalised_source = _NATURAL_SCENE_MARKER.sub(r"\n\1\n", normalised_source)
+    lines = normalised_source.split("\n")
 
     for raw in lines:
         line = _clean(raw, maximum=1_200)
         fdx_heading = _FDX_SCENE_HEADING.match(line)
         heading = fdx_heading.group(1) if fdx_heading else line
-        if _SCENE_HEADING.match(heading):
+        if _SCENE_HEADING.match(heading) or _NATURAL_SCENE_HEADING.fullmatch(heading):
             scene_number += 1
             current_speaker = None
             if scene_number > maximum_scenes:
@@ -113,7 +125,13 @@ def extract_screenplay_dialogue(
             continue
         for raw_line in raw_lines:
             for match in _QUOTED_DIALOGUE.finditer(raw_line):
-                spoken = _clean(match.group(1), maximum=600)
+                spoken = _clean(
+                    next(
+                        (group for group in match.groups() if group is not None),
+                        "",
+                    ),
+                    maximum=600,
+                )
                 if spoken and len(result[number]) < maximum_lines_per_scene:
                     result[number].append(spoken)
 

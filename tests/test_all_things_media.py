@@ -105,6 +105,62 @@ Elena watches the tide. “We can still turn back,” she says.
             {1: ["We can still turn back,"]},
         )
 
+    def test_extracts_curly_quoted_dialogue_from_inline_natural_chat_scenes(self) -> None:
+        source = (
+            "Create a complete dialogue plan. "
+            "Scene 1: Mara tells Jonah, ‘Battery C will not survive another jump.’ "
+            "Jonah answers, ‘Then we make this one count.’ "
+            "Scene 2: Warning lights rise as Mara grips the silver compass."
+        )
+        self.assertEqual(
+            extract_screenplay_dialogue(source),
+            {
+                1: [
+                    "Battery C will not survive another jump.",
+                    "Then we make this one count.",
+                ]
+            },
+        )
+
+        timeline = {
+            "shots": [
+                {
+                    "shot_id": "SC01-SH01",
+                    "scene_number": 1,
+                    "role": "establishing",
+                    "planned_in_timecode": "00:00:00:00",
+                    "planned_out_timecode": "00:00:03:00",
+                    "storyboard_card": {
+                        "action": "Mara and Jonah inspect Battery C.",
+                        "dialogue_or_audio": "Protect the exchange.",
+                    },
+                },
+                {
+                    "shot_id": "SC02-SH01",
+                    "scene_number": 2,
+                    "role": "establishing",
+                    "planned_in_timecode": "00:00:03:00",
+                    "planned_out_timecode": "00:00:06:00",
+                    "storyboard_card": {
+                        "action": "Mara grips the silver compass.",
+                        "dialogue_or_audio": "Warning chime and room tone.",
+                    },
+                },
+            ]
+        }
+        cues = build_narrated_pitch_cues(
+            {"title": "The Last Jump", "summary": "They choose to leave."},
+            timeline,
+            source_message=source,
+        )
+        self.assertEqual(cues[0]["dialogue_source"], "source_exact")
+        self.assertIn(
+            "Battery C will not survive another jump.",
+            cues[0]["narration"],
+        )
+        self.assertIn("Then we make this one count.", cues[0]["narration"])
+        self.assertEqual(cues[1]["dialogue_source"], "planned_direction")
+
 
 if __name__ == "__main__":
     unittest.main()
