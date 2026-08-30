@@ -59,7 +59,7 @@ Follow [START_HERE_TEST.md](START_HERE_TEST.md). Do not use a full television ep
 - [ ] The job progresses through brief, validation, timeline compilation, audit, all-card visual generation, narration, media render, and final verification stages.
 - [ ] For a multi-dispatch test, dispatch sequences advance contiguously within one application attempt; every checkpoint is private/hash-bound and no stale or duplicate task changes the panel count.
 - [ ] Completed job records `execution.evidence_origin = live_google_provider_response` plus actual provider metadata.
-- [ ] `state == succeeded` only after all media gates pass.
+- [ ] `state == succeeded` only after all technical media gates pass; the visible app still says `technical package ready · owner visual review HOLD` until human visual approval.
 
 ### Required visual gate
 
@@ -68,6 +68,7 @@ Follow [START_HERE_TEST.md](START_HERE_TEST.md). Do not use a full television ep
 - [ ] Every visual card contains a real planning image; none says `VISUAL PENDING`, `partial`, `panel limit reached`, or equivalent.
 - [ ] Each private panel manifest has a safe artifact ID, this job's object prefix, content type, byte count, and SHA-256.
 - [ ] Visual sheet and on-screen grid preserve card order and show matching card IDs/timecodes.
+- [ ] Owner review explicitly passes story match, anatomy/proportions (including attached, proportionate hands and natural digits), identity, continuity, and composition for every panel. Any defect is a HOLD and requires a new generated package; technical JPEG/hash completion is not a visual-quality pass.
 
 ### Required narrated-pitch gate
 

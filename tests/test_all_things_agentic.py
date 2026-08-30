@@ -52,6 +52,8 @@ from kira_studio.all_things_agentic import (
     eta_payload,
     fit_visual_storyboard_to_job_budget,
     sha256_json,
+    storyboard_panel_prompt,
+    visual_owner_review_gate,
     validate_storyboard_package,
     validate_visual_storyboard,
 )
@@ -1450,6 +1452,41 @@ class AllThingsAgenticTests(unittest.TestCase):
                 request_sha256=request_sha256,
                 target_digest=target_digest,
             )
+
+    def test_visual_prompt_and_owner_gate_fail_closed_for_detail_hand_risk(self) -> None:
+        brief = ProductionBrief.from_mapping(brief_mapping())
+        timeline = compile_storyboard_timeline(brief)
+        risky = deepcopy(timeline)
+        risky_card = risky["shots"][2]["storyboard_card"]
+        risky_card["action"] = (
+            "Detail insert: Mara holds a silver compass while pressing the jump button."
+        )
+
+        prompt = storyboard_panel_prompt(brief, risky["shots"][2])
+        self.assertIn("Never depict a detached, disembodied, duplicated, giant, or oversized hand", prompt)
+        self.assertIn("five fingers", prompt)
+        self.assertIn("prefer the prop or environmental detail alone", prompt)
+
+        review = visual_owner_review_gate(risky)
+        self.assertEqual(review["status"], "pending_owner_review")
+        self.assertEqual(review["release_decision"], "hold")
+        self.assertEqual(review["risk_flagged_shot_ids"], ["SC01-SH03"])
+        self.assertEqual(
+            review["risk_flags"],
+            [
+                {
+                    "shot_id": "SC01-SH03",
+                    "code": "detail_hand_or_foreground_anatomy_risk",
+                }
+            ],
+        )
+        body = {key: value for key, value in review.items() if key != "manifest_sha256"}
+        self.assertEqual(review["manifest_sha256"], sha256_json(body))
+        self.assertNotIn("detected_defect", review)
+
+        ordinary = visual_owner_review_gate(timeline)
+        self.assertEqual(ordinary["release_decision"], "hold")
+        self.assertEqual(ordinary["risk_flagged_shot_ids"], [])
 
     def test_visual_storyboard_is_bounded_ordered_and_cryptographically_validated(self) -> None:
         brief = ProductionBrief.from_mapping(brief_mapping())

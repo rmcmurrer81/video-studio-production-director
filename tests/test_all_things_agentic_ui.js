@@ -440,6 +440,8 @@ test("visual and detailed HTML downloads stay separate, escaped, scriptless, and
   elements.get("message").value = "Build the safe storyboard sheet.";
   await elements.get("submit").listeners.get("click")();
   await settle();
+  assert.equal(elements.get("state").textContent, "technical package ready · owner visual review HOLD");
+  assert.match(elements.get("brief").innerHTML, /No validated visual-review manifest was returned, so this package remains on fail-closed HOLD./);
   assert.equal(elements.get("animaticPlay").disabled, false);
   assert.equal(elements.get("pitchPlay").disabled, false);
   assert.equal(elements.get("downloadPitchScript").disabled, false);
@@ -450,13 +452,15 @@ test("visual and detailed HTML downloads stay separate, escaped, scriptless, and
   assert.equal(elements.get("animaticTime").textContent, "00:00 / 00:12");
   elements.get("pitchPlay").click();
   assert.equal(spoken.length, 1);
-  assert.match(spoken[0].text, /^Card 1, primary coverage\./);
+  assert.match(spoken[0].text, /^We begin as repair <engine> together\./i);
+  assert.doesNotMatch(spoken[0].text, /\b(?:canon(?:ical)?|establish(?:ing)?|primary coverage|continuity bridge|card\s+\d+|SC\d{2}-SH\d{2})\b/i);
   assert.equal(spoken[0].voice, naturalVoice, "only the highest-ranked clearly labeled English natural voice is assigned");
   assert.equal(spoken[0].lang, "en-US");
   spoken[0].onend();
   await settle();
   assert.equal(spoken.length, 2);
-  assert.match(spoken[1].text, /^Card 2, reaction coverage\./);
+  assert.match(spoken[1].text, /^Next, alex listens before answering\./i);
+  assert.doesNotMatch(spoken[1].text, /\b(?:canon(?:ical)?|establish(?:ing)?|primary coverage|continuity bridge|card\s+\d+|SC\d{2}-SH\d{2})\b/i);
   elements.get("pitchStop").click();
   spoken[1].onend();
   await settle();
@@ -530,6 +534,8 @@ test("visual and detailed HTML downloads stay separate, escaped, scriptless, and
   assert.match(visual, /img-src data:/);
   assert.match(visual, /PLAN ONLY · GENERATED PLANNING ILLUSTRATIONS/);
   assert.match(visual, /Human visual review required/);
+  assert.match(visual, /technical assets complete · quality hold/i);
+  assert.match(visual, /No validated visual-review manifest was returned; fail-closed quality HOLD remains in force./);
   assert.match(visual, /<img src="data:image\/jpeg;base64,\/9j\/2Q=="/);
   assert.match(visual, /Alex &lt;Lead&gt; repairs the engine; no &lt;script&gt; is trusted\./);
   assert.match(visual, /Repair &lt;engine&gt; together\./);
@@ -589,7 +595,11 @@ test("visual and detailed HTML downloads stay separate, escaped, scriptless, and
   assert.match(pitchScript, /INVESTOR PITCH NARRATION \/ CUE SCRIPT/);
   assert.match(pitchScript, /BROWSER-GENERATED FALLBACK — AUTHENTICATED CLOUD NARRATION ARTIFACT UNAVAILABLE/);
   assert.match(pitchScript, /not guaranteed to match the cloud MP4 narration track/);
-  assert.match(pitchScript, /Dialogue and audio direction: Protect dialogue <clearly>\./);
+  assert.match(pitchScript, /DIRECTION: Protect dialogue <clearly>\./);
+  const fallbackNarrationLines = pitchScript.split("\n").filter(line => line.startsWith("NARRATION: "));
+  assert.equal(fallbackNarrationLines.length, 2);
+  for (const line of fallbackNarrationLines) assert.doesNotMatch(line, /\b(?:canon(?:ical)?|establish(?:ing)?|primary coverage|continuity bridge|card\s+\d+|SC\d{2}-SH\d{2})\b/i);
+  assert.notEqual(fallbackNarrationLines[0].split(".", 1)[0], fallbackNarrationLines[1].split(".", 1)[0]);
   assert.match(pitchScript, /CARD 2 — SC01-SH02/);
   assert.doesNotMatch(detailed + visual + locationHtml + locationCsv + locationJson + characterHtml + characterText + characterJson + characterCsv + shotList + edl + pitchScript, /private-judge-code|package-secret|top-level-secret|nested-secret|visual-secret/);
   assert.doesNotMatch(detailed + visual, /https?:\/\//i);
@@ -858,7 +868,7 @@ test("pitch narration download uses the authenticated cloud TXT that matches the
   assert.equal(elements.get("pitchPlay").textContent, "Play cloud narrated MP4");
   assert.equal(elements.get("pitchVideo").src, "blob:verified-cloud-pitch-video");
   assert.equal(elements.get("pitchVideo").classList.contains("hidden"), false);
-  assert.match(elements.get("pitchVoiceStatus").textContent, /Cloud narrated MP4 ready: 1\/1 cards.*Chirp3-HD-Aoede.*owner listening review/i);
+  assert.match(elements.get("pitchVoiceStatus").textContent, /Technical cloud MP4 ready for owner review.*VISUAL QUALITY HOLD.*1\/1 cards.*Chirp3-HD-Aoede.*owner listening and visual review/i);
   const initialArtifactFetches = fetchCalls.filter(call => call.url.includes("/artifacts/")).map(call => call.url);
   assert.deepEqual(initialArtifactFetches, [
     "/v1/jobs/cloud-pitch-job/artifacts/pitch-video",
@@ -889,6 +899,9 @@ test("pitch narration download uses the authenticated cloud TXT that matches the
   assert.doesNotMatch(blobs[0].parts.join(""), /BROWSER-GENERATED FALLBACK|Complete deterministic text export/);
   assert.equal(appended.length, 1);
   assert.equal(appended[0].download, "cloud-dialogue-match-investor-pitch-narration.txt");
+  elements.get("downloadPitchVideo").click();
+  assert.equal(appended.length, 2);
+  assert.equal(appended[1].download, "cloud-dialogue-match-narrated-storyboard-pitch-owner-review-hold.mp4");
 });
 
 

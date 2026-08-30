@@ -1567,6 +1567,18 @@ _VISUAL_MISSING_REASONS = frozenset(
     }
 )
 
+_VISUAL_DETAIL_FRAMING_PATTERN = re.compile(
+    r"\b(?:detail|insert|close[- ]?up|extreme close|macro|foreground)\b",
+    re.IGNORECASE,
+)
+_VISUAL_HAND_ACTION_PATTERN = re.compile(
+    r"\b(?:hand|hands|finger|fingers|thumb|wrist|forearm|arm|arms|"
+    r"holding|grip|grips|gripping|grasp|grasps|grasping|"
+    r"press|presses|pressing|push|pushes|pushing|touch|touches|touching|"
+    r"reach|reaches|reaching|pick up|picks up|picking up)\b",
+    re.IGNORECASE,
+)
+
 
 def storyboard_panel_prompt(
     brief: ProductionBrief,
@@ -1591,12 +1603,67 @@ def storyboard_panel_prompt(
         "Create one black-and-white professional film storyboard drawing in clean pencil-and-ink "
         "line art, 16:9 landscape. This is a previsualization panel, not a photorealistic frame. "
         "Do not include captions, lettering, timecodes, logos, watermarks, borders, or split panels. "
+        "Keep human anatomy plausible and naturally proportioned. Never depict a detached, "
+        "disembodied, duplicated, giant, or oversized hand. Every visible hand must connect to a "
+        "visible, anatomically plausible wrist and forearm, with natural joints and five fingers. "
+        "Do not place a hand or handheld prop in extreme foreground or make it larger than a "
+        "character's head unless the stated action explicitly requires that scale. For a detail "
+        "or insert, prefer the prop or environmental detail alone; when human contact is essential, "
+        "keep the proportionate hand, wrist, and forearm together in the frame. "
         f"Project: {brief.title}. Overall visual direction: {brief.visual_direction}. "
         f"Scene {scene.number} setting: {scene.setting}. Characters: {characters}. "
         f"Scene purpose: {scene.purpose}. Shot {shot.get('shot_id')}: {card.get('framing')}. "
         f"Camera: {card.get('camera')}. Action: {card.get('action')}. "
         f"Continuity to preserve: {continuity}"
     )
+
+
+def visual_owner_review_gate(timeline: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a truthful manual visual-quality HOLD for a compiled timeline.
+
+    The worker verifies bytes, dimensions, hashes, and ordering. It does not run an
+    anatomy or composition detector. This gate therefore never claims that model
+    output passed subjective visual review. It also identifies prompt patterns that
+    deserve extra attention without claiming that a defect was actually detected.
+    """
+
+    shots = timeline.get("shots")
+    if not isinstance(shots, list) or any(not isinstance(shot, Mapping) for shot in shots):
+        raise BriefValidationError("visual owner review requires the compiled shot timeline")
+    risk_flags: list[dict[str, str]] = []
+    for shot in shots:
+        card = shot.get("storyboard_card")
+        if not isinstance(card, Mapping):
+            raise BriefValidationError("visual owner review shot is missing its card")
+        composition = " ".join(
+            str(card.get(key) or "") for key in ("framing", "camera", "action")
+        )
+        if (
+            _VISUAL_DETAIL_FRAMING_PATTERN.search(composition)
+            and _VISUAL_HAND_ACTION_PATTERN.search(composition)
+        ):
+            risk_flags.append(
+                {
+                    "shot_id": str(shot.get("shot_id") or "unknown-shot"),
+                    "code": "detail_hand_or_foreground_anatomy_risk",
+                }
+            )
+    gate: dict[str, Any] = {
+        "schema": "video-studio.visual-owner-review/v1",
+        "status": "pending_owner_review",
+        "release_decision": "hold",
+        "verification_scope": "manual_story_anatomy_identity_continuity_composition",
+        "risk_flagged_shot_ids": [flag["shot_id"] for flag in risk_flags],
+        "risk_flags": risk_flags,
+        "required_checks": [
+            "story_and_action_match",
+            "human_anatomy_and_proportion",
+            "character_identity_and_continuity",
+            "composition_and_readability",
+        ],
+    }
+    gate["manifest_sha256"] = sha256_json(gate)
+    return gate
 
 
 def _visual_alt_text(brief: ProductionBrief, shot: Mapping[str, Any]) -> str:
@@ -3690,12 +3757,13 @@ class AllThingsJobService:
                     ),
                     "visual_storyboard_schema": VISUAL_STORYBOARD_SCHEMA,
                     "visual_storyboard_status": visual_storyboard["status"],
+                    "visual_owner_review": visual_owner_review_gate(timeline),
                 },
             }
             success_patch: dict[str, Any] = {
                 "state": JobState.SUCCEEDED.value,
                 "stage": (
-                    "production_plan_and_pitch_ready"
+                    "technical_package_ready_owner_visual_review_hold"
                     if brief.ready_for_production
                     else "clarification_required"
                 ),
@@ -4494,6 +4562,7 @@ class AllThingsJobService:
                     "media_status": "narrated_storyboard_pitch_mp4",
                     "visual_storyboard_schema": VISUAL_STORYBOARD_SCHEMA,
                     "visual_storyboard_status": "complete",
+                    "visual_owner_review": visual_owner_review_gate(timeline),
                     "continuation_schema": PIPELINE_CONTINUATION_SCHEMA,
                     "continuation_dispatches": dispatch_sequence + 1,
                     "visual_quota_deferrals_used": quota_deferrals_used,
@@ -4501,7 +4570,7 @@ class AllThingsJobService:
             }
             success_patch: dict[str, Any] = {
                 "state": JobState.SUCCEEDED.value,
-                "stage": "production_plan_and_pitch_ready",
+                "stage": "technical_package_ready_owner_visual_review_hold",
                 "progress": 100,
                 "updated_at": finished_at.isoformat(),
                 "completed_at": finished_at.isoformat(),
@@ -4878,6 +4947,7 @@ __all__ = [
     "compile_storyboard_timeline",
     "public_job",
     "storyboard_panel_prompt",
+    "visual_owner_review_gate",
     "validate_visual_storyboard",
     "validate_storyboard_package",
 ]

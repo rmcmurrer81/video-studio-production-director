@@ -40,7 +40,7 @@ Select **Create production plan** once. Do not repeatedly click it while the job
 
 The first ETA should be unavailable because no completed-job timing basis exists yet. The job should move through brief generation, validation, deterministic timeline/audit, all-card visual generation, narration, MP4 rendering, and final verification.
 
-The completed status must be **succeeded**. If it says failed, copy the safe error code and job ID for troubleshooting; do not call it a pass and do not retry blindly more than the owner-approved limit.
+The backend job must reach **succeeded** for technical completion, but that is not owner approval. The installed Desktop/PWA must display **technical package ready · owner visual review HOLD** until a person reviews every generated panel. If the backend says failed, copy the safe error code and job ID for troubleshooting; do not call it a pass and do not retry blindly more than the owner-approved limit.
 
 ## 5. Check the four things that matter
 
@@ -49,6 +49,8 @@ The completed status must be **succeeded**. If it says failed, copy the safe err
 - The visual card count equals the detailed card count.
 - Every card shows an actual planning illustration.
 - There is no `VISUAL PENDING`, `PARTIAL`, blank striped card, or `panel limit reached` message.
+- Treat technical completion as an owner-review HOLD. Reject the package if any person has detached, duplicated, oversized, missing, fused, or otherwise malformed hands/limbs, or if anatomy, identity, story match, continuity, or composition is visibly wrong.
+- A `detail_hand_or_foreground_anatomy_risk` warning identifies a risky shot description; it is not an image detector and does not prove that the panel passed or failed. Inspect the flagged card and every unflagged card yourself.
 - Card order, IDs, and timecodes match the detailed board.
 
 ### B. The detailed plan is useful
@@ -65,6 +67,7 @@ The completed status must be **succeeded**. If it says failed, copy the safe err
 - Play the full file. It must advance through every visual card in order.
 - The narration must be audible and must cover what is happening plus the dialogue beats.
 - Download the MP4 and open it full screen in Windows Media Player or VLC.
+- The downloaded filename ends in `owner-review-hold.mp4`; the file remains review evidence until you approve every panel.
 - The job manifest must report 1920×1080, H.264 video, and AAC audio.
 - Narration TXT and SRT subtitle downloads are also available.
 

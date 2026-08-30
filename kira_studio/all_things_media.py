@@ -35,6 +35,55 @@ _QUOTED_DIALOGUE = re.compile(
 )
 
 
+_SHOT_ID = re.compile(r"\bSC\d{1,3}-SH\d{1,3}\b", re.IGNORECASE)
+_INTERNAL_SPOKEN_REWRITES = (
+    (re.compile(r"\bprimary[ _-]+coverage\b", re.IGNORECASE), "main moment"),
+    (re.compile(r"\bcontinuity[ _-]+bridge\b", re.IGNORECASE), "transition"),
+    (re.compile(r"\bcanon(?:ical)?\b", re.IGNORECASE), "story continuity"),
+    (re.compile(r"\bestablishing\b", re.IGNORECASE), "opening"),
+    (re.compile(r"\bestablished\b", re.IGNORECASE), "known"),
+    (re.compile(r"\bestablishes\b", re.IGNORECASE), "introduces"),
+    (re.compile(r"\bestablish\b", re.IGNORECASE), "introduce"),
+)
+_ESTABLISH_ACTION = re.compile(
+    r"^Establish\s+(.+?)\s+and the spatial relationship of\s+(.+?)\s+"
+    r"before this scene beat:\s*(.+)$",
+    re.IGNORECASE,
+)
+_PRIMARY_ACTION = re.compile(
+    r"^Stage\s+(.+?)\s+in\s+(.+?)\s+for the primary scene beat:\s*(.+)$",
+    re.IGNORECASE,
+)
+_BRIDGE_ACTION = re.compile(
+    r"^Hold a reaction, prop, or environmental detail in\s+(.+?)\s+"
+    r"that directly supports this beat:\s*(.+)$",
+    re.IGNORECASE,
+)
+_BRIEF_AUDIO = re.compile(r"\bBrief audio direction:\s*(.+)$", re.IGNORECASE)
+
+_ESTABLISH_OPENINGS = (
+    "We begin in {setting}, with {characters} together.",
+    "The story moves to {setting}, where {characters} face the next turn.",
+    "Later, we arrive in {setting} as {characters} move forward.",
+)
+_PRIMARY_OPENINGS = (
+    "The focus shifts to {characters} in {setting}.",
+    "Now {characters} take the lead in {setting}.",
+    "Here, {characters} carry the moment in {setting}.",
+)
+_BRIDGE_OPENINGS = (
+    "A closer detail in {setting} lets the moment sink in.",
+    "One revealing detail in {setting} carries the tension forward.",
+    "The moment lingers on a telling detail in {setting}.",
+)
+_GENERIC_OPENINGS = (
+    "We begin as",
+    "Next,",
+    "From there,",
+    "The story continues as",
+    "Finally,",
+)
+
 def _clean(value: Any, *, maximum: int = 1_800) -> str:
     text = str(value or "").replace("\x00", " ")
     text = re.sub(r"[\t ]+", " ", text)
@@ -44,6 +93,115 @@ def _clean(value: Any, *, maximum: int = 1_800) -> str:
 def _speaker_name(value: str) -> str:
     speaker = re.sub(r"\s*\([^)]*\)\s*$", "", value).strip()
     return _clean(speaker, maximum=80)
+
+
+def _spoken_story_text(value: Any, *, maximum: int = 1_800) -> str:
+    """Remove production-only labels from audience-facing spoken text."""
+
+    text = _SHOT_ID.sub("", _clean(value, maximum=maximum))
+    for pattern, replacement in _INTERNAL_SPOKEN_REWRITES:
+        text = pattern.sub(replacement, text)
+    text = re.sub(r"\bcard\s+\d+\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
+    text = re.sub(r"\s{2,}", " ", text).strip(" ,;-\t")
+    return text[:maximum]
+
+
+def _sentence(value: Any, *, maximum: int = 1_800) -> str:
+    text = _spoken_story_text(value, maximum=maximum).strip()
+    terminal = text.rstrip("\"'")
+    if text and not terminal.endswith((".", "!", "?")):
+        text += "."
+    return text
+
+
+def _spoken_characters(value: Any) -> str:
+    names = [part.strip() for part in _spoken_story_text(value).split(",") if part.strip()]
+    if len(names) < 2:
+        return names[0] if names else "the characters"
+    if len(names) == 2:
+        return f"{names[0]} and {names[1]}"
+    return f"{', '.join(names[:-1])}, and {names[-1]}"
+
+
+def _story_purpose(value: Any) -> str:
+    purpose = _clean(value)
+    purpose = re.sub(r"^Establish\s+", "We learn ", purpose, flags=re.IGNORECASE)
+    purpose = re.sub(r"^Show\s+", "We see ", purpose, flags=re.IGNORECASE)
+    purpose = re.sub(r"^Reveal\s+", "We discover ", purpose, flags=re.IGNORECASE)
+    return _sentence(purpose)
+
+
+def _audience_action(
+    action: str,
+    *,
+    role_occurrence: int,
+    sequence: int,
+) -> str:
+    """Turn deterministic shot-planning templates into story-pitch prose."""
+
+    establish = _ESTABLISH_ACTION.match(action)
+    if establish:
+        setting, characters, purpose = establish.groups()
+        opening = _ESTABLISH_OPENINGS[
+            min(role_occurrence - 1, len(_ESTABLISH_OPENINGS) - 1)
+        ].format(
+            setting=_spoken_story_text(setting),
+            characters=_spoken_characters(characters),
+        )
+        return f"{opening} {_story_purpose(purpose)}".strip()
+
+    primary = _PRIMARY_ACTION.match(action)
+    if primary:
+        characters, setting, purpose = primary.groups()
+        opening = _PRIMARY_OPENINGS[
+            min(role_occurrence - 1, len(_PRIMARY_OPENINGS) - 1)
+        ].format(
+            setting=_spoken_story_text(setting),
+            characters=_spoken_characters(characters),
+        )
+        return f"{opening} {_story_purpose(purpose)}".strip()
+
+    bridge = _BRIDGE_ACTION.match(action)
+    if bridge:
+        setting, purpose = bridge.groups()
+        opening = _BRIDGE_OPENINGS[
+            min(role_occurrence - 1, len(_BRIDGE_OPENINGS) - 1)
+        ].format(setting=_spoken_story_text(setting))
+        return f"{opening} {_story_purpose(purpose)}".strip()
+
+    opening = _GENERIC_OPENINGS[min(sequence - 1, len(_GENERIC_OPENINGS) - 1)]
+    clean_action = _sentence(action)
+    if not clean_action:
+        clean_action = "The next story beat unfolds."
+    if opening.endswith((",", " as")):
+        clean_action = clean_action[0].lower() + clean_action[1:]
+    return f"{opening} {clean_action}".strip()
+
+
+def _audience_dialogue(lines: Sequence[str]) -> str:
+    sentences: list[str] = []
+    for index, line in enumerate(lines):
+        clean_line = _clean(line, maximum=600)
+        match = re.match(r"^([^:]{1,80}):\s*(.+)$", clean_line)
+        if match:
+            speaker = _speaker_name(match.group(1))
+            if speaker.isupper():
+                speaker = speaker.title()
+            verb = "says" if index == 0 else "answers"
+            sentences.append(f'{speaker} {verb}, "{match.group(2).strip()}"')
+        else:
+            lead = "We hear" if index == 0 else "The answer comes back"
+            sentences.append(f'{lead}, "{clean_line}"')
+    return " ".join(_sentence(value, maximum=800) for value in sentences)
+
+
+def _audience_audio(direction: str) -> str:
+    match = _BRIEF_AUDIO.search(direction)
+    if not match:
+        return ""
+    audio = _sentence(match.group(1), maximum=900)
+    return f"Around them, {audio[0].lower() + audio[1:]}" if audio else ""
 
 
 def extract_screenplay_dialogue(
@@ -144,13 +302,15 @@ def build_narrated_pitch_cues(
     *,
     source_message: str,
 ) -> list[dict[str, Any]]:
-    """Return one complete narration cue for every planned storyboard card."""
+    """Return one audience-facing narration cue for every planned card."""
 
     shots = timeline.get("shots")
     if not isinstance(shots, Sequence) or isinstance(shots, (str, bytes)) or not shots:
         raise ValueError("a non-empty planned shot timeline is required")
     dialogue = extract_screenplay_dialogue(source_message)
     dialogue_offsets: dict[int, int] = {}
+    role_counts: dict[str, int] = {}
+    heard_audio: set[str] = set()
     cues: list[dict[str, Any]] = []
 
     for index, raw_shot in enumerate(shots, start=1):
@@ -163,26 +323,46 @@ def build_narrated_pitch_cues(
         if isinstance(scene_number, bool) or not isinstance(scene_number, int):
             raise ValueError("each planned shot must include an integer scene number")
 
-        role = _clean(raw_shot.get("role") or "planned shot", maximum=120).replace("_", " ")
-        action = _clean(card.get("action") or "The planned action is not specified.")
-        direction = _clean(
-            card.get("dialogue_or_audio")
-            or "No dialogue or audio direction is supplied for this card."
-        )
+        raw_role = _clean(raw_shot.get("role") or "planned_shot", maximum=120)
+        role_key = raw_role.lower().replace(" ", "_").replace("-", "_")
+        role = raw_role.replace("_", " ")
+        role_counts[role_key] = role_counts.get(role_key, 0) + 1
+        action = _clean(card.get("action") or "The next story beat unfolds.")
+        direction = _clean(card.get("dialogue_or_audio") or "")
         available_lines = dialogue.get(scene_number, [])
         offset = dialogue_offsets.get(scene_number, 0)
         selected_lines = available_lines[offset : offset + 2]
         if selected_lines:
             dialogue_offsets[scene_number] = offset + len(selected_lines)
-            spoken = " Explicit script line. " + " Next line. ".join(selected_lines)
+            dialogue_text = _audience_dialogue(selected_lines)
             dialogue_source = "source_exact"
         else:
-            spoken = f" Dialogue and audio direction: {direction}"
+            dialogue_text = ""
             dialogue_source = "planned_direction"
+
+        audio_text = _audience_audio(direction)
+        audio_key = audio_text.casefold()
+        if audio_key in heard_audio:
+            audio_text = ""
+        elif audio_key:
+            heard_audio.add(audio_key)
+
+        narration_parts = [
+            _audience_action(
+                action,
+                role_occurrence=role_counts[role_key],
+                sequence=index,
+            ),
+            dialogue_text,
+            audio_text,
+        ]
         narration = _clean(
-            f"Card {index}, {role}. {action}.{spoken}",
+            " ".join(part for part in narration_parts if part),
             maximum=3_600,
         )
+        narration = _spoken_story_text(narration, maximum=3_600)
+        if not narration:
+            raise ValueError("an audience-facing narration cue could not be built")
         cues.append(
             {
                 "sequence": index,

@@ -376,7 +376,7 @@ class GoogleCloudNarratedPitchRendererTests(unittest.TestCase):
             DEFAULT_VOICE_NAME,
         )
         self.assertEqual(tts.requests[0]["timeout"], 120)
-        self.assertIn("MARA: Battery C", tts.requests[0]["request"]["input"]["text"])  # type: ignore[index]
+        self.assertIn('Mara says, "Battery C', tts.requests[0]["request"]["input"]["text"])  # type: ignore[index]
         ffmpeg_calls = [call for call in runner.calls if call[0] == "fake-ffmpeg"]
         self.assertEqual(len(ffmpeg_calls), 3)
         self.assertEqual(len([call for call in runner.calls if call[0] == "fake-ffprobe"]), 3)
