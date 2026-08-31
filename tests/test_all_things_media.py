@@ -189,10 +189,10 @@ INT. HARBOR RADIO WORKSHOP - MOMENTS LATER
 
     def test_rejected_live_visual_variants_strip_framing_and_use_finite_verbs(self) -> None:
         actions = (
-            "Close-up on Lila's hands carefully polishing the copper tuning key.",
-            "Theo checks the receiver schematic.",
+            "Close-up on the intricate copper tuning key in Lila's hands.",
+            "Medium shot of Lila and Theo working over the disassembled storm receiver in the harbor radio workshop at dawn.",
             "Lila tests the tuning dial.",
-            "Lila and Theo climb to the rooftop transmitter.",
+            "Low-angle shot of Lila and Theo carrying the copper tuning key up the stairs to the rooftop antenna platform.",
             "Theo braces the antenna mast against the wind.",
             "Lila reconnecting the cable to the terminal while Theo uses both hands to steady the mast.",
             "Medium shot back in the harbor radio workshop as the storm receiver's vacuum tubes glow warm orange and the device hums back to life.",
@@ -226,7 +226,15 @@ INT. HARBOR RADIO WORKSHOP - MOMENTS LATER
 
         self.assertEqual(
             cues[0]["narration"],
-            "In HARBOR RADIO WORKSHOP, Lila's hands carefully polish the copper tuning key.",
+            "In HARBOR RADIO WORKSHOP, the intricate copper tuning key rests in Lila's hands.",
+        )
+        self.assertEqual(
+            cues[1]["narration"],
+            "Lila and Theo work over the disassembled storm receiver at dawn.",
+        )
+        self.assertEqual(
+            cues[3]["narration"],
+            "In ROOFTOP TRANSMITTER, Lila and Theo carry the copper tuning key up the stairs to the rooftop antenna platform.",
         )
         self.assertEqual(
             cues[5]["narration"],
@@ -239,7 +247,8 @@ INT. HARBOR RADIO WORKSHOP - MOMENTS LATER
         narration = " ".join(cue["narration"] for cue in cues)
         self.assertNotRegex(
             narration,
-            r"(?i)\b(?:close-up|medium shot|wide shot|full-body shot|two-shot|insert)\b",
+            r"(?i)\b(?:close-up|medium shot|wide shot|low-angle shot|high-angle shot|"
+            r"overhead shot|full-body shot|two-shot|insert)\b",
         )
         self.assertEqual(cues[0]["narration"].casefold().count("harbor radio workshop"), 1)
         self.assertEqual(cues[6]["narration"].casefold().count("harbor radio workshop"), 1)

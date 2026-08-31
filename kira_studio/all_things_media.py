@@ -158,7 +158,8 @@ def _finite_framed_action(value: str) -> str:
     text = _clean(value, maximum=1_200).strip()
     match = re.match(
         r"^(?:close[- ]?up|medium(?:\s+tracking)?\s+shot|wide shot|"
-        r"full[- ]?body shot|two[- ]?shot|insert)\s+"
+        r"low[- ]?angle(?:\s+shot)?|high[- ]?angle(?:\s+shot)?|"
+        r"overhead(?:\s+shot)?|full[- ]?body shot|two[- ]?shot|insert)\s+"
         r"(?:(?:back\s+)?in\s+.+?\s+as\s+|(?:of|on|as)\s+)(.+)$",
         text,
         flags=re.IGNORECASE,
@@ -175,12 +176,27 @@ def _finite_framed_action(value: str) -> str:
         r"(?P<adverbs>(?:[A-Za-z'_-]+ly\s+)*)"
         r"(?P<verb>holding|nodding|grabbing|leaning|carrying|standing|walking|running|"
         r"whipping|struggling|fighting|glowing|speaking|exchanging|preparing|hunching|"
-        r"polishing|reconnecting|hunched)\b"
+        r"polishing|reconnecting|working|hunched)\b"
         r"(?P<tail>.*)$",
         clause,
         flags=re.IGNORECASE,
     )
     if subject_match is None:
+        noun_phrase = re.match(
+            r"^(?P<subject>(?:the|a|an)\s+.+?)\s+"
+            r"(?P<preposition>in|on)\s+(?P<object>.+)$",
+            clause,
+            flags=re.IGNORECASE,
+        )
+        if noun_phrase is not None and not re.search(
+            r"\b(?:is|are|was|were|rests?|lies?|sits?|stands?|hangs?|waits?)\b",
+            noun_phrase.group("subject"),
+            flags=re.IGNORECASE,
+        ):
+            clause = (
+                f"{noun_phrase.group('subject')} rests "
+                f"{noun_phrase.group('preposition')} {noun_phrase.group('object')}"
+            )
         if match is not None and clause and clause[0].islower():
             clause = clause[0].upper() + clause[1:]
         return clause
@@ -217,6 +233,7 @@ def _finite_framed_action(value: str) -> str:
         "hunching": "hunch",
         "polishing": "polish",
         "reconnecting": "reconnect",
+        "working": "work",
         "hunched": "hunch",
     }
 
@@ -606,13 +623,14 @@ def _omit_repeated_location(narration: str, location: str) -> str:
         return narration
     escaped = re.escape(location.strip())
     narration = re.sub(
-        rf"^In\s+{escaped},\s*",
+        rf"^In\s+(?:the\s+)?{escaped},\s*",
         "",
         narration,
         flags=re.IGNORECASE,
     )
     narration = re.sub(
-        rf"\s+in\s+{escaped}(?=[,.!?]|$)",
+        rf"\s+in\s+(?:the\s+)?{escaped}"
+        rf"(?=\s+(?:at|by|before|after|during)\b|[,.!?]|$)",
         "",
         narration,
         flags=re.IGNORECASE,
