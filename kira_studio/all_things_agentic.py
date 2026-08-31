@@ -1717,6 +1717,15 @@ def storyboard_panel_prompt(
             "unexplained third person at a rear console, doorway, corridor, or other background "
             "position."
         )
+        body_integrity_contract = (
+            "BODY-INTEGRITY CONTRACT: every visible person must be one complete, anatomically "
+            "connected body (or a natural outer-frame crop of that one body), belonging to one "
+            "allowed named character and counted only once. Never add a spare, disconnected, or "
+            "repeated head, torso, arm, hand, hip, leg, or foot; never show a seated lower body, "
+            "extra legs, or any other body portion separated from its character. Do not place body "
+            "fragments on furniture, consoles, walls, floors, or backgrounds. A crop may exit only "
+            "at the outer frame and must continue naturally from the connected body."
+        )
         full_cast_direction = (
             f"Show all {character_count} named characters exactly once and no other human figure."
         )
@@ -1732,6 +1741,10 @@ def storyboard_panel_prompt(
         cast_contract = (
             "CAST CONTRACT: this scene has no named characters. Show no people, human silhouettes, "
             "partial bodies, faces, mannequins, reflections, or human-like background figures."
+        )
+        body_integrity_contract = (
+            "BODY-INTEGRITY CONTRACT: show no human body or body fragment anywhere, including on "
+            "furniture, consoles, walls, floors, screens, or in the background."
         )
         full_cast_direction = "Show no human figures."
         bridge_cast_direction = "Show no human figures."
@@ -1819,7 +1832,8 @@ def storyboard_panel_prompt(
         "camera distance, blocking, focal subject, or generic two-character pose. If a reference "
         "image is supplied, use it only for character, costume, prop, and line-art continuity. "
         "Do not copy the reference image's camera angle, crop, blocking, pose, background layout, "
-        f"or composition. {cast_contract} {appearance_anchor_contract} {screen_content_contract} "
+        f"or composition. {cast_contract} {body_integrity_contract} "
+        f"{appearance_anchor_contract} {screen_content_contract} "
         f"{role_directions[role]} "
         f"Project: {brief.title}. Overall visual direction: {brief.visual_direction}. "
         f"Scene {scene.number} setting: {scene.setting}. Characters: {characters}. "

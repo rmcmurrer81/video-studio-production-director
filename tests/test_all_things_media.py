@@ -172,8 +172,8 @@ Then we leave before the doors seal.
             self.assertIsNone(forbidden.search(cue["narration"]), cue["narration"])
         openings = [cue["narration"].split(".", 1)[0] for cue in cues]
         self.assertEqual(len(set(openings)), len(openings), openings)
-        self.assertTrue(cues[0]["narration"].startswith("Mara and Jonah enter Quiet orbital repair bay"))
-        self.assertTrue(cues[-1]["narration"].startswith("A reaction carries"))
+        self.assertTrue(cues[0]["narration"].startswith("In Quiet orbital repair bay, Mara and Jonah enter"))
+        self.assertIn("A reaction carries", cues[-1]["narration"])
         self.assertIn("Battery C will not survive another jump.", cues[1]["narration"])
         self.assertEqual(
             sum("low ship hum and warning alarm" in cue["narration"].lower() for cue in cues),
@@ -268,7 +268,7 @@ Then we leave before the doors seal.
         self.assertIn("Then we leave before it learns our plans.", exact[0]["narration"])
         self.assertEqual(
             cues[1]["narration"],
-            "In Orbital Repair Bay, Damaged Space Station, Mara discovers the approaching signal.",
+            "Mara discovers the approaching signal.",
         )
         self.assertEqual(
             cues[7]["narration"],
@@ -341,7 +341,10 @@ Then we leave before the doors seal.
 
         self.assertEqual(
             [cue["narration"] for cue in cues],
-            [expected for _purpose, expected in cases],
+            [
+                "In the orbital repair bay, " + cases[0][1],
+                *[expected for _purpose, expected in cases[1:]],
+            ],
         )
 
     def test_quoted_prose_is_used_only_as_a_fallback(self) -> None:
@@ -408,6 +411,58 @@ Elena watches the tide. “We can still turn back,” she says.
         )
         self.assertIn("Then we make this one count.", cues[0]["narration"])
         self.assertEqual(cues[1]["dialogue_source"], "planned_direction")
+
+
+    def test_speaks_locations_only_on_moves_and_marks_returns(self) -> None:
+        locations = ("Repair Bay", "Repair Bay", "Observation Ring", "Observation Ring", "Repair Bay")
+        shots = []
+        for sequence, location in enumerate(locations, start=1):
+            shots.append(
+                {
+                    "shot_id": f"SC01-SH{sequence:02d}",
+                    "scene_number": 1,
+                    "role": "primary_coverage",
+                    "planned_in_timecode": "00:00:00:00",
+                    "planned_out_timecode": "00:00:03:00",
+                    "storyboard_card": {
+                        "setting": location,
+                        "action": f"Reveal the next decision in {location}.",
+                        "dialogue_or_audio": "Room tone.",
+                    },
+                }
+            )
+
+        cues = build_narrated_pitch_cues({}, {"shots": shots}, source_message="")
+
+        self.assertEqual([cue["sequence"] for cue in cues], [1, 2, 3, 4, 5])
+        self.assertTrue(cues[0]["narration"].startswith("In Repair Bay,"))
+        self.assertNotIn("Repair Bay", cues[1]["narration"])
+        self.assertTrue(cues[2]["narration"].startswith("In Observation Ring,"))
+        self.assertNotIn("Observation Ring", cues[3]["narration"])
+        self.assertTrue(cues[4]["narration"].startswith("Back in Repair Bay,"))
+
+    def test_location_lead_does_not_duplicate_bridge_setting(self) -> None:
+        shots = [
+            {
+                "shot_id": "SC01-SH01",
+                "scene_number": 1,
+                "role": "continuity_bridge",
+                "planned_in_timecode": "00:00:00:00",
+                "planned_out_timecode": "00:00:03:00",
+                "storyboard_card": {
+                    "action": (
+                        "Hold a reaction, prop, or environmental detail in Observation Ring "
+                        "that directly supports this beat: the signal changes."
+                    ),
+                    "dialogue_or_audio": "Room tone.",
+                },
+            }
+        ]
+
+        cue = build_narrated_pitch_cues({}, {"shots": shots}, source_message="")[0]
+
+        self.assertTrue(cue["narration"].startswith("In Observation Ring,"))
+        self.assertEqual(cue["narration"].casefold().count("observation ring"), 1)
 
 
 if __name__ == "__main__":

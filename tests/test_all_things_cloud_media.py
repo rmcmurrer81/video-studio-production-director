@@ -155,19 +155,26 @@ class FakeMediaRunner:
         *,
         video_codec: str = "h264",
         width: int = 1920,
-        duration_seconds: float = 2.0,
+        duration_seconds: float | None = None,
         segment_durations: tuple[float, ...] | None = None,
         segment_video_codec: str = "h264",
         segment_width: int = 1920,
+        segment_audio_durations: tuple[float, ...] | None = None,
+        final_audio_duration: float | None = None,
+        subtitle_stream: bool = False,
         segment_probe_stdout: bytes | None = None,
     ) -> None:
         self.calls: list[tuple[str, ...]] = []
         self.video_codec = video_codec
         self.width = width
         self.duration_seconds = duration_seconds
-        self.segment_durations = segment_durations or (1.0,)
+        self.segment_durations = segment_durations
+        self.rendered_segment_durations: list[float] = []
         self.segment_video_codec = segment_video_codec
         self.segment_width = segment_width
+        self.segment_audio_durations = segment_audio_durations
+        self.final_audio_duration = final_audio_duration
+        self.subtitle_stream = subtitle_stream
         self.segment_probe_stdout = segment_probe_stdout
         self.segment_probe_count = 0
 
@@ -184,39 +191,62 @@ class FakeMediaRunner:
                     stderr=b"private segment probe detail",
                 )
             if is_segment:
+                durations = self.segment_durations or tuple(self.rendered_segment_durations)
                 duration_index = min(
                     self.segment_probe_count,
-                    len(self.segment_durations) - 1,
+                    len(durations) - 1,
                 )
-                probe_duration = self.segment_durations[duration_index]
+                probe_duration = durations[duration_index]
+                audio_durations = self.segment_audio_durations or durations
+                probe_audio_duration = audio_durations[
+                    min(duration_index, len(audio_durations) - 1)
+                ]
                 probe_video_codec = self.segment_video_codec
                 probe_width = self.segment_width
                 self.segment_probe_count += 1
             else:
-                probe_duration = self.duration_seconds
+                probe_duration = (
+                    self.duration_seconds
+                    if self.duration_seconds is not None
+                    else sum(self.rendered_segment_durations)
+                )
+                probe_audio_duration = (
+                    self.final_audio_duration
+                    if self.final_audio_duration is not None
+                    else probe_duration
+                )
                 probe_video_codec = self.video_codec
                 probe_width = self.width
+            streams = [
+                {
+                    "codec_type": "video",
+                    "codec_name": probe_video_codec,
+                    "width": probe_width,
+                    "height": 1080,
+                    "duration": f"{probe_duration:.6f}",
+                },
+                {
+                    "codec_type": "audio",
+                    "codec_name": "aac",
+                    "duration": f"{probe_audio_duration:.6f}",
+                },
+            ]
+            if self.subtitle_stream:
+                streams.append({"codec_type": "subtitle", "codec_name": "mov_text"})
             return SimpleNamespace(
                 returncode=0,
                 stdout=json.dumps(
                     {
-                        "streams": [
-                            {
-                                "codec_type": "video",
-                                "codec_name": probe_video_codec,
-                                "width": probe_width,
-                                "height": 1080,
-                            },
-                            {"codec_type": "audio", "codec_name": "aac"},
-                        ],
+                        "streams": streams,
                         "format": {"duration": f"{probe_duration:.6f}"},
                     }
                 ).encode("utf-8"),
                 stderr=b"",
             )
+        if call[0] == "fake-ffmpeg" and Path(call[-1]).name.startswith("segment-"):
+            self.rendered_segment_durations.append(float(call[call.index("-t") + 1]))
         Path(call[-1]).write_bytes(b"fake-private-mp4-bytes")
         return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
-
 
 def pitch_values() -> tuple[dict[str, object], dict[str, object], str, dict[str, object]]:
     brief: dict[str, object] = {
@@ -550,38 +580,55 @@ class GoogleCloudNarratedPitchRendererTests(unittest.TestCase):
 
         self.assertEqual(len(bucket.uploads), uploads_before_finalization)
 
-    def test_uses_measured_encoded_durations_for_final_probe_and_subtitles(self) -> None:
+    def test_binds_each_card_to_padded_audio_and_exports_external_srt(self) -> None:
         brief, timeline, source, visuals = pitch_values()
-        runner = FakeMediaRunner(
-            duration_seconds=2.8,
-            segment_durations=(1.4, 1.4),
-        )
-        renderer, _tts, _runner, bucket = self.renderer(runner=runner)
+        renderer, _tts, runner, bucket = self.renderer()
 
-        manifest = renderer.render(
-            brief,
-            timeline,
-            source,
-            visuals,
-            "job-123",
-        )
+        manifest = renderer.render(brief, timeline, source, visuals, "job-123")
 
-        # The synthesized WAVs are 1.0 seconds each.  Their 0.8-second total
-        # drift from the encoded segments exceeds the unchanged 0.5s final
-        # tolerance, so this succeeds only when measured MP4 durations are used.
-        self.assertEqual(manifest["video"]["duration_seconds"], 2.8)
+        # Two 1.0-second WAVs each receive a 0.25-second tail, aligned to 24fps.
+        self.assertEqual(manifest["video"]["duration_seconds"], 2.5)
+        card_commands = [
+            call for call in runner.calls
+            if call[0] == "fake-ffmpeg" and Path(call[-1]).name.startswith("segment-")
+        ]
+        self.assertEqual(len(card_commands), 2)
+        for command in card_commands:
+            self.assertIn("-af", command)
+            self.assertIn("apad=whole_dur=1.250000", command)
+            self.assertEqual(command[command.index("-t") + 1], "1.250000")
+            self.assertNotIn("subtitles", " ".join(command).casefold())
         subtitle_upload = next(
             upload
             for upload in bucket.uploads
             if upload["content_type"] == "application/x-subrip"
         )
         subtitles = subtitle_upload["data"].decode("utf-8")  # type: ignore[union-attr]
-        self.assertIn("00:00:00,000 --> 00:00:01,400", subtitles)
-        self.assertIn("00:00:01,400 --> 00:00:02,800", subtitles)
-        serialized = json.dumps(manifest)
-        self.assertNotIn("segment-", serialized)
-        self.assertNotIn("kira-narrated-pitch-", serialized)
+        self.assertIn("00:00:00,000 --> 00:00:01,250", subtitles)
+        self.assertIn("00:00:01,250 --> 00:00:02,500", subtitles)
 
+    def test_rejects_mismatched_audio_or_subtitle_streams(self) -> None:
+        brief, timeline, source, visuals = pitch_values()
+        renderer, _tts, _runner, bucket = self.renderer(
+            runner=FakeMediaRunner(segment_audio_durations=(0.8,))
+        )
+        with self.assertRaisesRegex(NarratedPitchRenderError, "segment_probe_mismatch"):
+            renderer.render(brief, timeline, source, visuals, "job-123")
+        self.assertEqual(bucket.uploads, [])
+
+        renderer, _tts, _runner, bucket = self.renderer(
+            runner=FakeMediaRunner(final_audio_duration=2.0)
+        )
+        with self.assertRaisesRegex(NarratedPitchRenderError, "pitch_probe_mismatch"):
+            renderer.render(brief, timeline, source, visuals, "job-123")
+        self.assertEqual(bucket.uploads, [])
+
+        renderer, _tts, _runner, bucket = self.renderer(
+            runner=FakeMediaRunner(subtitle_stream=True)
+        )
+        with self.assertRaisesRegex(NarratedPitchRenderError, "segment_probe_mismatch"):
+            renderer.render(brief, timeline, source, visuals, "job-123")
+        self.assertEqual(bucket.uploads, [])
     def test_segment_probes_fail_closed_without_exposing_probe_detail(self) -> None:
         private_detail = b"not-json C:\\private\\segment.mp4 PRIVATE SCREENPLAY TEXT"
         cases = (

@@ -1516,6 +1516,27 @@ class AllThingsAgenticTests(unittest.TestCase):
                 "satisfies, replaces, duplicates, or adds a character",
                 prompt,
             )
+            self.assertIn("BODY-INTEGRITY CONTRACT", prompt)
+            self.assertIn(
+                "every visible person must be one complete, anatomically connected body",
+                prompt,
+            )
+            self.assertIn(
+                "Never add a spare, disconnected, or repeated head, torso, arm, hand, hip, leg, or foot",
+                prompt,
+            )
+            self.assertIn(
+                "seated lower body, extra legs, or any other body portion separated from its character",
+                prompt,
+            )
+            self.assertIn(
+                "Do not place body fragments on furniture, consoles, walls, floors, or backgrounds",
+                prompt,
+            )
+            self.assertIn(
+                "A crop may exit only at the outer frame and must continue naturally from the connected body",
+                prompt,
+            )
 
         establishing = prompts["establishing"]
         self.assertIn("Every card in the sequence must have a materially distinct composition", establishing)
@@ -1565,6 +1586,26 @@ class AllThingsAgenticTests(unittest.TestCase):
         self.assertNotIn("unless the stated action explicitly requires that scale", bridge)
 
         self.assertEqual(len(set(prompts.values())), 3)
+
+    def test_visual_prompt_for_empty_cast_bans_anatomy_fragments_everywhere(self) -> None:
+        value = brief_mapping()
+        value["scenes"] = [
+            {
+                "number": 1,
+                "purpose": "An unoccupied console confirms the evacuation route.",
+                "setting": "empty orbital control room",
+                "characters": [],
+                "dialogue_required": False,
+            }
+        ]
+        brief = ProductionBrief.from_mapping(value)
+        prompt = storyboard_panel_prompt(brief, compile_storyboard_timeline(brief)["shots"][0])
+
+        self.assertIn("this scene has no named characters", prompt)
+        self.assertIn(
+            "show no human body or body fragment anywhere, including on furniture, consoles, walls, floors, screens, or in the background",
+            prompt,
+        )
 
     def test_visual_prompts_repeat_project_character_appearance_and_wardrobe_anchors(self) -> None:
         value = brief_mapping()

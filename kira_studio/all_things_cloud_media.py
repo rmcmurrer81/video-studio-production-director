@@ -59,6 +59,9 @@ _MAX_PITCH_SECONDS = 60 * 60
 # below Cloud Run's reviewed 1,740-second request ceiling with useful headroom.
 _DEFAULT_COMMAND_TIMEOUT_SECONDS = 10 * 60
 _TTS_REQUEST_TIMEOUT_SECONDS = 2 * 60
+_CARD_AUDIO_PAD_SECONDS = 0.25
+_FRAME_RATE = 24
+_DURATION_TOLERANCE_SECONDS = 0.125
 
 
 class CloudMediaError(RuntimeError):
@@ -348,6 +351,8 @@ class _AudioSegment:
 @dataclass(frozen=True)
 class _ProbeEvidence:
     duration_seconds: float
+    video_duration_seconds: float
+    audio_duration_seconds: float
     video_codec: str
     audio_codec: str
     width: int
@@ -673,11 +678,29 @@ class GoogleCloudNarratedPitchRenderer:
             raise NarratedPitchRenderError(code)
         return result
 
+    @staticmethod
+    def _display_duration_seconds(audio_duration_seconds: float) -> float:
+        """Add the card's short tail and align its still image to 24 fps."""
+
+        if (
+            not math.isfinite(audio_duration_seconds)
+            or not 0 < audio_duration_seconds <= _MAX_SEGMENT_SECONDS
+        ):
+            raise NarratedPitchRenderError("invalid_tts_audio")
+        duration = math.ceil(
+            (audio_duration_seconds + _CARD_AUDIO_PAD_SECONDS) * _FRAME_RATE - 1e-9
+        ) / _FRAME_RATE
+        if not 0 < duration <= _MAX_SEGMENT_SECONDS:
+            raise NarratedPitchRenderError("pitch_duration_exceeded")
+        return duration
+
     def _render_segment(
         self,
         image_path: Path,
         audio_path: Path,
         destination: Path,
+        *,
+        display_duration_seconds: float,
     ) -> None:
         command = (
             self.ffmpeg_path,
@@ -710,6 +733,10 @@ class GoogleCloudNarratedPitchRenderer:
             "medium",
             "-tune",
             "stillimage",
+            "-af",
+            f"apad=whole_dur={display_duration_seconds:.6f}",
+            "-t",
+            f"{display_duration_seconds:.6f}",
             "-c:a",
             "aac",
             "-b:a",
@@ -718,7 +745,6 @@ class GoogleCloudNarratedPitchRenderer:
             "48000",
             "-ac",
             "2",
-            "-shortest",
             "-movflags",
             "+faststart",
             str(destination),
@@ -787,6 +813,19 @@ class GoogleCloudNarratedPitchRenderer:
         ):
             raise NarratedPitchRenderError("pitch_render_failed")
 
+    @staticmethod
+    def _stream_duration(value: Mapping[str, Any], *, failure_code: str) -> float:
+        raw_duration = value.get("duration")
+        if type(raw_duration) not in {str, int, float}:
+            raise NarratedPitchRenderError(failure_code)
+        try:
+            duration = float(raw_duration)
+        except (OverflowError, TypeError, ValueError):
+            raise NarratedPitchRenderError(failure_code) from None
+        if not math.isfinite(duration) or duration <= 0:
+            raise NarratedPitchRenderError(failure_code)
+        return duration
+
     def _probe_media(
         self,
         video_path: Path,
@@ -794,13 +833,15 @@ class GoogleCloudNarratedPitchRenderer:
         failure_code: str,
         mismatch_code: str,
         maximum_duration_seconds: float,
+        expected_duration_seconds: float | None = None,
+        duration_tolerance_seconds: float = _DURATION_TOLERANCE_SECONDS,
     ) -> _ProbeEvidence:
         command = (
             self.ffprobe_path,
             "-v",
             "error",
             "-show_entries",
-            "format=duration:stream=codec_type,codec_name,width,height",
+            "format=duration:stream=codec_type,codec_name,width,height,duration",
             "-of",
             "json",
             str(video_path),
@@ -825,26 +866,41 @@ class GoogleCloudNarratedPitchRenderer:
         format_value = payload.get("format")
         if not isinstance(format_value, Mapping):
             raise NarratedPitchRenderError(failure_code)
-        raw_duration = format_value.get("duration")
-        if type(raw_duration) not in {str, int, float}:
-            raise NarratedPitchRenderError(failure_code)
         try:
-            duration = float(raw_duration)
-        except (OverflowError, TypeError, ValueError):
-            raise NarratedPitchRenderError(failure_code) from None
+            duration = self._stream_duration(format_value, failure_code=mismatch_code)
+            video_duration = self._stream_duration(videos[0], failure_code=mismatch_code)
+            audio_duration = self._stream_duration(audios[0], failure_code=mismatch_code)
+        except IndexError:
+            raise NarratedPitchRenderError(mismatch_code) from None
         if (
-            len(videos) != 1
+            len(payload["streams"]) != 2
+            or len(videos) != 1
             or len(audios) != 1
             or videos[0].get("codec_name") != "h264"
             or videos[0].get("width") != 1920
             or videos[0].get("height") != 1080
             or audios[0].get("codec_name") != "aac"
-            or not math.isfinite(duration)
-            or not 0 < duration <= maximum_duration_seconds
+            or duration > maximum_duration_seconds
+            or video_duration > maximum_duration_seconds
+            or audio_duration > maximum_duration_seconds
+            or abs(video_duration - audio_duration) > duration_tolerance_seconds
+            or abs(duration - video_duration) > duration_tolerance_seconds
+            or abs(duration - audio_duration) > duration_tolerance_seconds
+            or (
+                expected_duration_seconds is not None
+                and (
+                    not math.isfinite(expected_duration_seconds)
+                    or expected_duration_seconds <= 0
+                    or abs(duration - expected_duration_seconds)
+                    > duration_tolerance_seconds
+                )
+            )
         ):
             raise NarratedPitchRenderError(mismatch_code)
         return _ProbeEvidence(
             duration_seconds=round(duration, 6),
+            video_duration_seconds=round(video_duration, 6),
+            audio_duration_seconds=round(audio_duration, 6),
             video_codec="h264",
             audio_codec="aac",
             width=1920,
@@ -853,14 +909,20 @@ class GoogleCloudNarratedPitchRenderer:
             audio_stream_count=1,
         )
 
-    def _probe_segment(self, video_path: Path) -> float:
-        """Return only the validated encoded duration for one rendered card."""
+    def _probe_segment(
+        self,
+        video_path: Path,
+        *,
+        expected_duration_seconds: float,
+    ) -> float:
+        """Validate one card's container, video, and padded audio duration."""
 
         return self._probe_media(
             video_path,
             failure_code="segment_probe_failed",
             mismatch_code="segment_probe_mismatch",
             maximum_duration_seconds=_MAX_SEGMENT_SECONDS,
+            expected_duration_seconds=expected_duration_seconds,
         ).duration_seconds
 
     def _probe(
@@ -870,20 +932,20 @@ class GoogleCloudNarratedPitchRenderer:
         expected_duration_seconds: float,
         card_count: int,
     ) -> _ProbeEvidence:
+        duration_tolerance = max(
+            _DURATION_TOLERANCE_SECONDS,
+            min(0.5, card_count * 0.02),
+        )
         evidence = self._probe_media(
             video_path,
             failure_code="pitch_probe_failed",
             mismatch_code="pitch_probe_mismatch",
             maximum_duration_seconds=_MAX_PITCH_SECONDS,
+            duration_tolerance_seconds=duration_tolerance,
         )
-        duration_tolerance = max(0.5, min(2.0, card_count * 0.05))
-        if (
-            abs(evidence.duration_seconds - expected_duration_seconds)
-            > duration_tolerance
-        ):
+        if abs(evidence.duration_seconds - expected_duration_seconds) > duration_tolerance:
             raise NarratedPitchRenderError("pitch_duration_mismatch")
         return evidence
-
     @staticmethod
     def _srt_timestamp(seconds: float) -> str:
         milliseconds = max(0, round(seconds * 1_000))
@@ -1089,10 +1151,19 @@ class GoogleCloudNarratedPitchRenderer:
             segment_path = temp / f"segment-{sequence:04d}.mp4"
             image_path.write_bytes(image)
             audio = self._synthesize(str(cue.get("narration") or ""), audio_path)
+            display_duration = self._display_duration_seconds(audio.duration_seconds)
             if ownership_check is not None and not ownership_check():
                 raise NarratedPitchRenderError("work_stopped")
-            self._render_segment(image_path, audio.path, segment_path)
-            duration = self._probe_segment(segment_path)
+            self._render_segment(
+                image_path,
+                audio.path,
+                segment_path,
+                display_duration_seconds=display_duration,
+            )
+            duration = self._probe_segment(
+                segment_path,
+                expected_duration_seconds=display_duration,
+            )
             if ownership_check is not None and not ownership_check():
                 raise NarratedPitchRenderError("work_stopped")
             segment_bytes = segment_path.read_bytes()
@@ -1388,11 +1459,20 @@ class GoogleCloudNarratedPitchRenderer:
                 segment_path = temp / f"segment-{index:04d}.mp4"
                 image_path.write_bytes(image)
                 segment = self._synthesize(str(cue.get("narration") or ""), audio_path)
-                audio_duration_total += segment.duration_seconds
+                display_duration = self._display_duration_seconds(segment.duration_seconds)
+                audio_duration_total += display_duration
                 if audio_duration_total > _MAX_PITCH_SECONDS:
                     raise NarratedPitchRenderError("pitch_duration_exceeded")
-                self._render_segment(image_path, segment.path, segment_path)
-                encoded_duration = self._probe_segment(segment_path)
+                self._render_segment(
+                    image_path,
+                    segment.path,
+                    segment_path,
+                    display_duration_seconds=display_duration,
+                )
+                encoded_duration = self._probe_segment(
+                    segment_path,
+                    expected_duration_seconds=display_duration,
+                )
                 rendered_duration_total += encoded_duration
                 if rendered_duration_total > _MAX_PITCH_SECONDS:
                     raise NarratedPitchRenderError("pitch_duration_exceeded")

@@ -245,7 +245,11 @@ def _natural_story_purpose(
         )
         if discovery:
             name, discovery_detail = discovery.groups()
-            story = f"In {setting}, {name} discovers {discovery_detail}"
+            story = (
+                f"In {setting}, {name} discovers {discovery_detail}"
+                if setting
+                else f"{name} discovers {discovery_detail}"
+            )
         elif subject_tail:
             story = _finite_story_clause(
                 f"{subject} {subject_tail.group(1)}",
@@ -283,12 +287,12 @@ def _audience_action(
 
     establish = _ESTABLISH_ACTION.match(action)
     if establish:
-        setting, characters, _purpose = establish.groups()
-        opening = _ESTABLISH_OPENINGS[
-            min(role_occurrence - 1, len(_ESTABLISH_OPENINGS) - 1)
-        ].format(
-            setting=_spoken_story_text(setting),
-            characters=_spoken_characters(characters),
+        _setting, characters, _purpose = establish.groups()
+        spoken_characters = _spoken_characters(characters)
+        opening = (
+            f"{spoken_characters} enter."
+            if role_occurrence == 1
+            else f"{spoken_characters} face the next turn."
         )
         return _safe_story_sentence(opening, fallback="The story begins.")
 
@@ -302,7 +306,7 @@ def _audience_action(
         return _natural_story_purpose(
             purpose,
             characters=characters,
-            setting=_spoken_story_text(setting),
+            setting="",
             fallback=fallback,
         )
 
@@ -326,6 +330,63 @@ def _audience_action(
     if opening.endswith((",", " as")):
         clean_action = clean_action[0].lower() + clean_action[1:]
     return f"{opening} {clean_action}".strip()
+
+
+def _story_location(raw_shot: Mapping[str, Any], card: Mapping[str, Any], action: str) -> str:
+    """Find the audience-facing location attached to a planned card."""
+
+    for container in (card, raw_shot):
+        for key in ("location", "setting", "scene_setting"):
+            value = _spoken_story_text(container.get(key), maximum=240)
+            if value:
+                return value
+    match = _ESTABLISH_ACTION.match(action)
+    if match:
+        return _spoken_story_text(match.group(1), maximum=240)
+    match = _PRIMARY_ACTION.match(action)
+    if match:
+        return _spoken_story_text(match.group(2), maximum=240)
+    match = _BRIDGE_ACTION.match(action)
+    if match:
+        return _spoken_story_text(match.group(1), maximum=240)
+    return ""
+
+
+def _omit_repeated_location(narration: str, location: str) -> str:
+    """Keep a current-place name from being re-spoken in plan-derived prose."""
+
+    if not location:
+        return narration
+    escaped = re.escape(location.strip())
+    narration = re.sub(
+        rf"^In\s+{escaped},\s*",
+        "",
+        narration,
+        flags=re.IGNORECASE,
+    )
+    narration = re.sub(
+        rf"\s+in\s+{escaped}(?=[,.!?]|$)",
+        "",
+        narration,
+        flags=re.IGNORECASE,
+    )
+    return narration
+
+
+def _location_transition(
+    location: str,
+    *,
+    previous_location: str | None,
+    seen_locations: set[str],
+) -> tuple[str, str | None]:
+    """Speak a location only for the opening card or a genuine move."""
+
+    key = re.sub(r"\s+", " ", location).strip(" ,.;:-").casefold()
+    if not key or key == previous_location:
+        return "", previous_location
+    lead = f"Back in {location}," if key in seen_locations else f"In {location},"
+    seen_locations.add(key)
+    return lead, key
 
 
 def _audience_dialogue(lines: Sequence[str]) -> str:
@@ -509,6 +570,8 @@ def build_narrated_pitch_cues(
     dialogue_offsets: dict[int, int] = {}
     role_counts: dict[str, int] = {}
     heard_audio: set[str] = set()
+    seen_locations: set[str] = set()
+    previous_location: str | None = None
     cues: list[dict[str, Any]] = []
     primary_dialogue_scenes = {
         shot.get("scene_number")
@@ -561,10 +624,19 @@ def build_narrated_pitch_cues(
             role_occurrence=role_counts[role_key],
             sequence=index,
         )
+        location_lead, previous_location = _location_transition(
+            _story_location(raw_shot, card, action),
+            previous_location=previous_location,
+            seen_locations=seen_locations,
+        )
+        story_text = _omit_repeated_location(
+            story_text,
+            _story_location(raw_shot, card, action),
+        )
         narration_parts = (
-            [dialogue_text]
+            [location_lead, dialogue_text]
             if dialogue_text
-            else [story_text, audio_text]
+            else [location_lead, story_text, audio_text]
         )
         narration = _clean(
             " ".join(part for part in narration_parts if part),
