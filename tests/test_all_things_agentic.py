@@ -1078,6 +1078,7 @@ class UniqueVisualProvider:
         self.cancel_after_call = cancel_after_call
         self.cancel_callback: object | None = None
         self.calls: list[tuple[str, str, str, bool]] = []
+        self.reference_images: list[bytes | None] = []
 
     def create_panel(
         self,
@@ -1088,6 +1089,7 @@ class UniqueVisualProvider:
         reference_image: bytes | None = None,
     ) -> VisualPanelProviderResult:
         self.calls.append((prompt, shot_id, job_id, reference_image is not None))
+        self.reference_images.append(reference_image)
         if self.cancel_after_call == len(self.calls) and callable(self.cancel_callback):
             self.cancel_callback(job_id)
         image = b"\xff\xd8" + (shot_id.encode("ascii") * 12) + b"\xff\xd9"
@@ -1564,6 +1566,188 @@ class AllThingsAgenticTests(unittest.TestCase):
 
         self.assertEqual(len(set(prompts.values())), 3)
 
+    def test_visual_prompts_repeat_project_character_appearance_and_wardrobe_anchors(self) -> None:
+        value = brief_mapping()
+        value.update(
+            {
+                "title": "The Last Jump",
+                "summary": "Mara and Dax repair a damaged orbital station and choose to escape.",
+                "visual_direction": "Grounded orbital repair-bay line art with practical equipment.",
+                "scenes": [
+                    {
+                        "number": 1,
+                        "purpose": "Mara discovers an approaching signal while Dax checks the damage.",
+                        "setting": "orbital repair bay",
+                        "characters": ["Mara", "Dax"],
+                        "dialogue_required": True,
+                    },
+                    {
+                        "number": 2,
+                        "purpose": "Dax and Mara choose to escape before the signal arrives.",
+                        "setting": "damaged space-station control room",
+                        "characters": ["Dax", "Mara"],
+                        "dialogue_required": True,
+                    },
+                ],
+            }
+        )
+        brief = ProductionBrief.from_mapping(value)
+        timeline = compile_storyboard_timeline(brief)
+        prompts = [storyboard_panel_prompt(brief, shot) for shot in timeline["shots"]]
+        mara_anchor = (
+            "APPEARANCE ANCHOR [Mara]: continuity ID "
+        )
+        dax_anchor = (
+            "APPEARANCE ANCHOR [Dax]: continuity ID "
+        )
+        self.assertEqual(len(prompts), 6)
+        for prompt in prompts:
+            self.assertIn(mara_anchor, prompt)
+            self.assertIn(dax_anchor, prompt)
+            self.assertIn("project-wide identity locks, not suggestions", prompt)
+            self.assertIn("lock earliest character-reference age/build", prompt)
+            self.assertIn("face/head, hair style/length/color", prompt)
+            self.assertIn("full wardrobe (sleeves/patches/harness)", prompt)
+            self.assertIn("establish once if absent", prompt)
+            self.assertIn("this scene authorizes no new aging, hair, build, or wardrobe change", prompt)
+            self.assertIn("most recently approved state from the reference or baseline", prompt)
+            self.assertIn("do not authorize a character to appear", prompt)
+
+    def test_visual_prompt_limits_an_explicit_time_or_wardrobe_change_to_the_stated_change(self) -> None:
+        value = brief_mapping()
+        value["scenes"] = [
+            {
+                "number": 1,
+                "purpose": "Five years later, Mara changes outfit into a formal coat.",
+                "setting": "orbital repair shop",
+                "characters": ["Mara"],
+                "dialogue_required": False,
+            }
+        ]
+        brief = ProductionBrief.from_mapping(value)
+        prompt = storyboard_panel_prompt(brief, compile_storyboard_timeline(brief)["shots"][0])
+        self.assertIn("EXPLICIT APPEARANCE CHANGE OVERRIDE", prompt)
+        self.assertIn("the stated passage of time or aging cue for the scene cast", prompt)
+        self.assertIn("the stated wardrobe or hair change for Mara", prompt)
+        self.assertIn("A time jump alone does not authorize wardrobe or hair changes", prompt)
+        self.assertIn("resulting approved state becomes that character's lock for later scenes", prompt)
+
+    def test_generic_character_anchor_does_not_invent_traits_or_accept_negated_changes(self) -> None:
+        value = brief_mapping()
+        value.update(
+            {
+                "title": "Summer Door",
+                "summary": "A child enters a sunlit garden.",
+                "visual_direction": "Preserve every concrete character choice from the source.",
+                "scenes": [
+                    {
+                        "number": 1,
+                        "purpose": (
+                            "Mara, a bald seven-year-old in a sleeveless summer dress, enters. "
+                            "No time jump or costume change occurs."
+                        ),
+                        "setting": "garden",
+                        "characters": ["Mara"],
+                        "dialogue_required": False,
+                    }
+                ],
+            }
+        )
+        brief = ProductionBrief.from_mapping(value)
+        prompt = storyboard_panel_prompt(brief, compile_storyboard_timeline(brief)["shots"][0])
+        self.assertIn("bald seven-year-old in a sleeveless summer dress", prompt)
+        self.assertIn("lock earliest character-reference age/build", prompt)
+        self.assertNotIn("adult in their 30s", prompt)
+        self.assertNotIn("low bun", prompt)
+        self.assertNotIn("repair jumpsuit", prompt)
+        self.assertNotIn("EXPLICIT APPEARANCE CHANGE OVERRIDE", prompt)
+        self.assertIn("this scene authorizes no new aging, hair, build, or wardrobe change", prompt)
+
+    def test_character_continuity_ids_are_casefolded_and_prompts_stay_under_provider_limit(self) -> None:
+        value = brief_mapping()
+        value["scenes"] = [
+            {
+                "number": 1,
+                "purpose": "Mara leads the group into the room.",
+                "setting": "briefing room",
+                "characters": ["Mara"],
+                "dialogue_required": False,
+            },
+            {
+                "number": 2,
+                "purpose": "MARA continues the briefing without changing appearance.",
+                "setting": "briefing room",
+                "characters": ["MARA"],
+                "dialogue_required": False,
+            },
+        ]
+        brief = ProductionBrief.from_mapping(value)
+        timeline = compile_storyboard_timeline(brief)
+        first = storyboard_panel_prompt(brief, timeline["shots"][0])
+        second = storyboard_panel_prompt(brief, timeline["shots"][3])
+        first_id = re.search(r"APPEARANCE ANCHOR \[Mara\]: continuity ID ([0-9A-F]{10})", first)
+        second_id = re.search(r"APPEARANCE ANCHOR \[MARA\]: continuity ID ([0-9A-F]{10})", second)
+        self.assertIsNotNone(first_id)
+        self.assertIsNotNone(second_id)
+        self.assertEqual(first_id.group(1), second_id.group(1))  # type: ignore[union-attr]
+
+        crowded = brief_mapping()
+        crowded["scenes"] = [
+            {
+                "number": 1,
+                "purpose": "The full ensemble reviews the plan without changing appearance.",
+                "setting": "briefing room",
+                "characters": [
+                    "Ari", "Bea", "Cal", "Dee", "Eli", "Fay",
+                    "Gus", "Hope", "Ian", "Joy", "Kai", "Lux",
+                ],
+                "dialogue_required": False,
+            }
+        ]
+        crowded_brief = ProductionBrief.from_mapping(crowded)
+        crowded_timeline = compile_storyboard_timeline(crowded_brief)
+        self.assertLessEqual(
+            max(
+                len(storyboard_panel_prompt(crowded_brief, shot))
+                for shot in crowded_timeline["shots"]
+            ),
+            8_000,
+        )
+
+    def test_local_visual_build_keeps_full_cast_reference_across_scene_bridge(self) -> None:
+        value = brief_mapping()
+        value["scenes"] = [
+            {
+                "number": 1,
+                "purpose": "Mara and Jon assess the damaged controls.",
+                "setting": "orbital repair bay",
+                "characters": ["Mara", "Jon"],
+                "dialogue_required": True,
+            },
+            {
+                "number": 2,
+                "purpose": "Mara and Jon agree to leave together.",
+                "setting": "station departure console",
+                "characters": ["Mara", "Jon"],
+                "dialogue_required": True,
+            },
+        ]
+        brief = ProductionBrief.from_mapping(value)
+        provider = UniqueVisualProvider()
+        storyboard = build_visual_storyboard(
+            brief,
+            compile_storyboard_timeline(brief),
+            provider=provider,
+            config=valid_config(),
+            job_id="local-reference-test",
+            artifact_store=StaticArtifactStore(),
+        )
+        self.assertEqual(storyboard["status"], "complete")
+        scene_one_primary = b"\xff\xd8" + (b"SC01-SH02" * 12) + b"\xff\xd9"
+        scene_one_bridge = b"\xff\xd8" + (b"SC01-SH03" * 12) + b"\xff\xd9"
+        self.assertEqual(provider.reference_images[3], scene_one_primary)
+        self.assertNotEqual(provider.reference_images[3], scene_one_bridge)
+
     def test_visual_storyboard_is_bounded_ordered_and_cryptographically_validated(self) -> None:
         brief = ProductionBrief.from_mapping(brief_mapping())
         timeline = compile_storyboard_timeline(brief)
@@ -2017,6 +2201,10 @@ class AllThingsAgenticTests(unittest.TestCase):
         self.assertEqual(visual_deltas, [0] + ([2] * 18) + ([0] * 37))
         self.assertEqual(dispatcher.dispatch_sequences, list(range(56)))
         self.assertEqual(dispatcher.attempts, [1] * 56)
+        scene_one_primary = b"\xff\xd8" + (b"SC01-SH02" * 12) + b"\xff\xd9"
+        scene_one_bridge = b"\xff\xd8" + (b"SC01-SH03" * 12) + b"\xff\xd9"
+        self.assertEqual(visual_provider.reference_images[3], scene_one_primary)
+        self.assertNotEqual(visual_provider.reference_images[3], scene_one_bridge)
         # The outbox persists an absolute not-before time; reconciliation uses
         # that exact timestamp instead of recomputing a relative delay.
         self.assertEqual(dispatcher.delay_seconds, [0] * 56)

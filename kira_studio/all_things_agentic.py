@@ -1579,6 +1579,100 @@ _VISUAL_HAND_ACTION_PATTERN = re.compile(
     r"reach|reaches|reaching|pick up|picks up|picking up)\b",
     re.IGNORECASE,
 )
+_VISUAL_EXPLICIT_TIME_CHANGE_PATTERN = re.compile(
+    r"\b(?:\d+\s+(?:years?|months?|days?)\s+later|years? later|months? later|"
+    r"time jump|flashback|flash-forward|earlier in (?:his|her|their) life|"
+    r"visibly older|aged by)\b",
+    re.IGNORECASE,
+)
+_VISUAL_EXPLICIT_WARDROBE_CHANGE_PATTERN = re.compile(
+    r"\b(?:wardrobe change|costume change|changes? (?:clothes|outfit|wardrobe)|"
+    r"changed into|now wears?|new outfit|different clothes|hair (?:change|changes|cut)|"
+    r"cuts? (?:his|her|their) hair)\b",
+    re.IGNORECASE,
+)
+
+
+def _project_character_appearance_anchors(brief: ProductionBrief) -> dict[str, str]:
+    """Return compact stable identity locks without inventing unsupplied canon details."""
+
+    project_fingerprint = hashlib.sha256(
+        canonical_json(
+            {
+                "title": brief.title,
+                "summary": brief.summary,
+                "visual_direction": brief.visual_direction,
+            }
+        ).encode("utf-8")
+    ).hexdigest()[:12]
+    anchors_by_identity: dict[str, str] = {}
+    anchors: dict[str, str] = {}
+    for scene in brief.scenes:
+        for name in scene.characters:
+            identity_key = name.casefold()
+            if identity_key not in anchors_by_identity:
+                identity_token = hashlib.sha256(
+                    f"{project_fingerprint}\0{identity_key}".encode("utf-8")
+                ).hexdigest()[:10].upper()
+                anchors_by_identity[identity_key] = (
+                    f"continuity ID {identity_token}; lock earliest character-reference age/build, "
+                    "face/head, hair style/length/color, and full wardrobe "
+                    "(sleeves/patches/harness); establish once if absent; only a named override "
+                    "may vary"
+                )
+            anchors[name] = anchors_by_identity[identity_key]
+    return anchors
+
+
+def _nonnegated_visual_change_match(pattern: re.Pattern[str], text: str) -> bool:
+    for match in pattern.finditer(text):
+        prefix = text[max(0, match.start() - 48) : match.start()]
+        if re.search(
+            r"\b(?:no|not|never|without|avoid|avoids|avoiding)\b[^.!?;:]{0,40}$",
+            prefix,
+            re.IGNORECASE,
+        ):
+            continue
+        return True
+    return False
+
+
+def _scene_appearance_change_contract(scene: SceneBrief) -> str:
+    context = f"{scene.purpose} {scene.setting}"
+    time_change = _nonnegated_visual_change_match(
+        _VISUAL_EXPLICIT_TIME_CHANGE_PATTERN,
+        context,
+    )
+    wardrobe_change = _nonnegated_visual_change_match(
+        _VISUAL_EXPLICIT_WARDROBE_CHANGE_PATTERN,
+        context,
+    )
+    explicitly_named = tuple(
+        name for name in scene.characters if re.search(rf"\b{re.escape(name)}\b", context, re.I)
+    )
+    if wardrobe_change and not explicitly_named:
+        wardrobe_change = False
+    if not time_change and not wardrobe_change:
+        return (
+            "APPEARANCE CONTINUITY LOCK: this scene authorizes no new aging, hair, build, or "
+            "wardrobe change. Preserve each character's most recently approved state from the "
+            "reference or baseline, including hair, garment cut, sleeves, patches, and harness."
+        )
+    permitted: list[str] = []
+    if time_change:
+        permitted.append("the stated passage of time or aging cue for the scene cast")
+    if wardrobe_change:
+        permitted.append(
+            "the stated wardrobe or hair change for " + ", ".join(explicitly_named)
+        )
+    permission = " and ".join(permitted)
+    return (
+        f"EXPLICIT APPEARANCE CHANGE OVERRIDE: only {permission} may vary in this scene, and only "
+        "as expressly described. Keep every other character and trait unchanged. The resulting "
+        "approved state becomes that character's lock for later scenes. A time jump alone does not "
+        "authorize wardrobe or hair changes; a wardrobe change alone does not authorize aging or "
+        "a different build."
+    )
 
 
 def storyboard_panel_prompt(
@@ -1601,7 +1695,18 @@ def storyboard_panel_prompt(
     role = shot.get("role")
     characters = ", ".join(scene.characters) if scene.characters else "none"
     character_count = len(scene.characters)
+    project_appearance_anchors = _project_character_appearance_anchors(brief)
     if scene.characters:
+        appearance_anchor_contract = (
+            "CHARACTER APPEARANCE ANCHORS: these are project-wide identity locks, not suggestions. "
+            + " ".join(
+                f"APPEARANCE ANCHOR [{name}]: {project_appearance_anchors[name]}."
+                for name in scene.characters
+            )
+            + " These locks preserve identity only and do not authorize a character to appear in "
+            "a bridge or detail composition. "
+            + _scene_appearance_change_contract(scene)
+        )
         cast_contract = (
             f"CAST CONTRACT: the complete allowed human cast contains exactly "
             f"{character_count} named character{'s' if character_count != 1 else ''}: "
@@ -1621,6 +1726,9 @@ def storyboard_panel_prompt(
             "person or human-like figure anywhere."
         )
     else:
+        appearance_anchor_contract = (
+            "CHARACTER APPEARANCE ANCHORS: none; this frame contains no authorized people."
+        )
         cast_contract = (
             "CAST CONTRACT: this scene has no named characters. Show no people, human silhouettes, "
             "partial bodies, faces, mannequins, reflections, or human-like background figures."
@@ -1711,7 +1819,7 @@ def storyboard_panel_prompt(
         "camera distance, blocking, focal subject, or generic two-character pose. If a reference "
         "image is supplied, use it only for character, costume, prop, and line-art continuity. "
         "Do not copy the reference image's camera angle, crop, blocking, pose, background layout, "
-        f"or composition. {cast_contract} {screen_content_contract} "
+        f"or composition. {cast_contract} {appearance_anchor_contract} {screen_content_contract} "
         f"{role_directions[role]} "
         f"Project: {brief.title}. Overall visual direction: {brief.visual_direction}. "
         f"Scene {scene.number} setting: {scene.setting}. Characters: {characters}. "
@@ -1885,6 +1993,20 @@ def _external_visual_panel(
     return inline
 
 
+def _shot_character_cast_key(
+    brief: ProductionBrief,
+    shot: Mapping[str, Any],
+) -> tuple[str, ...]:
+    scene_number = shot.get("scene_number")
+    if (
+        isinstance(scene_number, bool)
+        or not isinstance(scene_number, int)
+        or not 1 <= scene_number <= len(brief.scenes)
+    ):
+        return ()
+    return tuple(sorted({name.casefold() for name in brief.scenes[scene_number - 1].characters}))
+
+
 def build_visual_storyboard(
     brief: ProductionBrief,
     timeline: Mapping[str, Any],
@@ -1906,6 +2028,7 @@ def build_visual_storyboard(
     )
     panels: list[dict[str, Any]] = []
     reference_image: bytes | None = None
+    character_reference_images: dict[tuple[str, ...], bytes] = {}
     evidence_origin = "not_attempted"
     for index, raw_shot in enumerate(shots):
         shot = dict(raw_shot)
@@ -1918,12 +2041,16 @@ def build_visual_storyboard(
         if index not in selected:
             panels.append(_missing_visual_panel(brief, shot, "panel_limit_reached"))
             continue
+        cast_key = _shot_character_cast_key(brief, shot)
+        selected_reference = (
+            character_reference_images.get(cast_key) if cast_key else reference_image
+        )
         try:
             result = provider.create_panel(
                 storyboard_panel_prompt(brief, shot),
                 shot_id=str(shot["shot_id"]),
                 job_id=job_id,
-                reference_image=reference_image,
+                reference_image=selected_reference,
             )
             if artifact_store is None:
                 panel = _available_visual_panel(brief, shot, result)
@@ -1940,6 +2067,8 @@ def build_visual_storyboard(
             if origin in {"injected_test_client", "live_google_provider_response"}:
                 evidence_origin = str(origin)
             reference_image = result.image_bytes
+            if cast_key and shot.get("role") in {"establishing", "primary_coverage"}:
+                character_reference_images[cast_key] = result.image_bytes
         except VisualPanelGenerationError as exc:
             panel = _missing_visual_panel(brief, shot, exc.code)
         except Exception:
@@ -2189,12 +2318,36 @@ def _validate_checkpoint_pitch_segments(
 def _reference_image_from_checkpoint(
     panels: Sequence[Mapping[str, Any]],
     *,
+    brief: ProductionBrief,
+    timeline: Mapping[str, Any],
+    next_shot: Mapping[str, Any],
     artifact_store: ArtifactStore,
     job_id: str,
 ) -> bytes | None:
     if not panels:
         return None
-    panel = panels[-1]
+    shots = timeline.get("shots")
+    if not isinstance(shots, list) or len(panels) > len(shots):
+        raise PipelineCheckpointError("checkpoint reference timeline is invalid")
+    wanted_cast = _shot_character_cast_key(brief, next_shot)
+    selected_index: int | None = None
+    if wanted_cast:
+        # A bridge is intentionally a prop/detail or at most one face. Never let
+        # it replace the full-cast identity reference at the next scene boundary.
+        for index in range(len(panels) - 1, -1, -1):
+            candidate = shots[index]
+            if (
+                isinstance(candidate, Mapping)
+                and candidate.get("role") in {"establishing", "primary_coverage"}
+                and _shot_character_cast_key(brief, candidate) == wanted_cast
+            ):
+                selected_index = index
+                break
+        if selected_index is None:
+            return None
+    else:
+        selected_index = len(panels) - 1
+    panel = panels[selected_index]
     object_name = panel.get("object_name")
     if not isinstance(object_name, str) or not object_name.startswith(
         f"jobs/{job_id}/artifacts/"
@@ -2243,11 +2396,6 @@ def _generate_external_visual_chunk(
         job_id=job_id,
         next_panel_index=len(existing_panels),
     )
-    reference_image = _reference_image_from_checkpoint(
-        panels,
-        artifact_store=artifact_store,
-        job_id=job_id,
-    )
     stop = min(len(shots), len(panels) + config.visual_panels_per_dispatch)
     evidence_origin = "not_attempted"
     for index in range(len(panels), stop):
@@ -2286,6 +2434,14 @@ def _generate_external_visual_chunk(
         shot = shots[index]
         if not isinstance(shot, Mapping):
             raise BriefValidationError("visual storyboard shot is invalid")
+        reference_image = _reference_image_from_checkpoint(
+            panels,
+            brief=brief,
+            timeline=timeline,
+            next_shot=shot,
+            artifact_store=artifact_store,
+            job_id=job_id,
+        )
         try:
             result = provider.create_panel(
                 storyboard_panel_prompt(brief, shot),
@@ -2324,7 +2480,6 @@ def _generate_external_visual_chunk(
         origin = result.execution.get("evidence_origin")
         if origin in {"injected_test_client", "live_google_provider_response"}:
             evidence_origin = str(origin)
-        reference_image = result.image_bytes
         panels.append(panel)
         if ownership_check is not None and not ownership_check():
             raise PipelineWorkStopped("visual chunk ownership ended")
