@@ -110,6 +110,41 @@ def brief_mapping(*, ready: bool = True) -> dict[str, object]:
     }
 
 
+def explicit_live_shape_mapping() -> dict[str, object]:
+    value = brief_mapping()
+    value.update(
+        {
+            "title": "Harbor Signal",
+            "summary": "Lila and Theo repair a storm-damaged transmitter and warn the harbor.",
+            "duration_seconds": 54,
+            "scenes": [
+                {
+                    "number": index,
+                    "purpose": purpose,
+                    "setting": setting,
+                    "characters": ["Lila", "Theo"],
+                    "dialogue_required": logical_scene in {1, 3},
+                }
+                for index, (logical_scene, purpose, setting) in enumerate(
+                    (
+                        (1, "Shot 1.1: Establish the cramped harbor radio workshop as a storm rattles the windows.", "HARBOR RADIO WORKSHOP, DAWN"),
+                        (1, "Shot 1.2: Close-up of Lila holding a handwritten frequency note beside the receiver.", "HARBOR RADIO WORKSHOP, DAWN"),
+                        (1, "Shot 1.3: Medium shot of Theo nodding and grabbing the tool bag.", "HARBOR RADIO WORKSHOP, DAWN"),
+                        (2, "Shot 2.1: Wide shot establishes the storm-battered rooftop transmitter.", "ROOFTOP TRANSMITTER, STORM"),
+                        (2, "Shot 2.2: Close-up of a fraying cable whipping against the antenna mast.", "ROOFTOP TRANSMITTER, STORM"),
+                        (2, "Shot 2.3: Full-body shot of Lila and Theo struggling together to secure the cable.", "ROOFTOP TRANSMITTER, STORM"),
+                        (3, "Shot 3.1: The radio receiver sparks and a green indicator turns on.", "BACK IN HARBOR RADIO WORKSHOP, MOMENTS LATER"),
+                        (3, "Shot 3.2: Lila broadcasts a clear warning into the microphone.", "BACK IN HARBOR RADIO WORKSHOP, MOMENTS LATER"),
+                        (3, "Shot 3.3: Lila and Theo exchange relieved looks as the storm begins to fade.", "BACK IN HARBOR RADIO WORKSHOP, MOMENTS LATER"),
+                    ),
+                    start=1,
+                )
+            ],
+        }
+    )
+    return value
+
+
 def full_screenplay_mapping() -> dict[str, object]:
     value = brief_mapping()
     value.update(
@@ -1465,11 +1500,12 @@ class AllThingsAgenticTests(unittest.TestCase):
         )
 
         prompt = storyboard_panel_prompt(brief, risky["shots"][2])
-        self.assertIn("Never depict a detached, disembodied, duplicated, giant, or oversized hand", prompt)
-        self.assertIn("five fingers", prompt)
-        self.assertIn("prefer the prop or environmental detail alone", prompt)
-        self.assertIn("stated source action explicitly requires hand interaction", prompt)
-        self.assertNotIn("HANDS-OUT-OF-FRAME DEFAULT", prompt)
+        self.assertIn("The exact action requires hand contact", prompt)
+        self.assertIn("only the hands needed for that action", prompt)
+        self.assertIn("connected to the correct visible wrist, arm, and body", prompt)
+        self.assertIn("Never duplicate a hand or add a detached foreground hand", prompt)
+        self.assertIn("Lock every recurring named or described prop as one physical object", prompt)
+        self.assertNotIn("For a detail card, keep hands", prompt)
 
         review = visual_owner_review_gate(risky)
         self.assertEqual(review["status"], "pending_owner_review")
@@ -1501,89 +1537,40 @@ class AllThingsAgenticTests(unittest.TestCase):
         }
 
         for prompt in prompts.values():
-            self.assertIn("SCREEN CONTENT CONTRACT", prompt)
-            self.assertIn(
-                "only abstract, non-figurative signal or interface data",
-                prompt,
-            )
-            self.assertIn(
-                "show no faces, people, human figures, body parts, hands, silhouettes, "
-                "video feeds, portraits, or reflections",
-                prompt,
-            )
-            self.assertIn(
-                "Preserve the exact required physical cast count; a screen image never "
-                "satisfies, replaces, duplicates, or adds a character",
-                prompt,
-            )
-            self.assertIn("BODY-INTEGRITY CONTRACT", prompt)
-            self.assertIn(
-                "every visible person must be one complete, anatomically connected body",
-                prompt,
-            )
-            self.assertIn(
-                "Never add a spare, disconnected, or repeated head, torso, arm, hand, hip, leg, or foot",
-                prompt,
-            )
-            self.assertIn(
-                "seated lower body, extra legs, or any other body portion separated from its character",
-                prompt,
-            )
-            self.assertIn(
-                "Do not place body fragments on furniture, consoles, walls, floors, or backgrounds",
-                prompt,
-            )
-            self.assertIn(
-                "A crop may exit only at the outer frame and must continue naturally from the connected body",
-                prompt,
-            )
+            self.assertIn("Draw only this exact moment", prompt)
+            self.assertIn("Required cast", prompt)
+            self.assertIn("Required location and state", prompt)
+            self.assertIn("Required framing and camera", prompt)
+            self.assertIn("Preserve its environment geometry, time of day, weather, lighting, damage", prompt)
+            self.assertIn("Every visible person is one anatomically complete, connected body", prompt)
+            self.assertIn("Never add or detach a head, torso, arm, hand, hip, leg, or foot", prompt)
+            self.assertIn("Any visible screen contains only abstract, text-free interface graphics", prompt)
+            self.assertIn("never a person, face, body part, portrait, reflection, or readable words", prompt)
+            self.assertIn("Lock every recurring named or described prop as one physical object", prompt)
+            self.assertNotIn("Project:", prompt)
+            self.assertNotIn("Scene purpose:", prompt)
+            self.assertNotIn("continuity ID", prompt)
 
         establishing = prompts["establishing"]
-        self.assertIn("Every card in the sequence must have a materially distinct composition", establishing)
-        self.assertIn("use it only for character, costume, prop, and line-art continuity", establishing)
-        self.assertIn("Do not copy the reference image's camera angle, crop, blocking, pose", establishing)
-        self.assertIn("complete allowed human cast contains exactly 2 named characters: Mara, Jon", establishing)
-        self.assertIn("Show all 2 named characters exactly once and no other human figure", establishing)
-        self.assertIn("Never add extras, background people, bystanders, crowds", establishing)
-        self.assertIn("reflected people, faces on screens or posters, mannequins", establishing)
-        self.assertIn("Do not place an unexplained third person at a rear console", establishing)
+        self.assertIn("If a prior reference is supplied, preserve established character identity", establishing)
+        self.assertIn("Change only the requested camera, crop, blocking, and action", establishing)
+        self.assertIn("The exact visible cast is Mara, Jon, each exactly once", establishing)
+        self.assertIn("Add no extras, crowds, silhouettes, reflections", establishing)
         self.assertIn("genuinely wide environmental master", establishing)
-        self.assertIn("natural full figures inside that environment", establishing)
-        self.assertIn("Do not use a medium, over-the-shoulder, waist-up", establishing)
+        self.assertIn("clearly establishes location geography", establishing)
+        self.assertIn("do not turn this into a medium shot", establishing)
 
         primary = prompts["primary_coverage"]
-        self.assertIn("materially different from the establishing master", primary)
-        self.assertIn("medium two-shot, over-the-shoulder, or waist-up", primary)
-        self.assertIn("Do not repeat the wide environmental view", primary)
-        self.assertIn("faces, eyelines, and the central interaction", primary)
-        self.assertIn(
-            "Show all 2 named characters exactly once and no other human figure",
-            primary,
-        )
+        self.assertIn("action-focused medium, over-the-shoulder, waist-up, or full-body coverage", primary)
+        self.assertIn("faces, eyelines, and interaction", primary)
+        self.assertIn("without repeating the establishing composition", primary)
 
         bridge = prompts["continuity_bridge"]
-        self.assertIn("tight close reaction, prop-only insert, or environmental detail", bridge)
-        self.assertIn("Never reuse the establishing wide or two-full-body composition", bridge)
-        self.assertIn("never pose both characters as full figures", bridge)
-        self.assertIn("Default to no people", bridge)
-        self.assertIn("exactly one named character exactly once, cropped above the shoulders", bridge)
-        self.assertIn("HANDS-OUT-OF-FRAME DEFAULT", bridge)
-        self.assertIn("This detail frame must contain no visible hands, fingers, wrists", bridge)
-        self.assertIn("show no hands, fingers, wrists, forearms, or arms anywhere", bridge)
-        self.assertIn("Do not use any foreground body part as a framing device", bridge)
-        self.assertIn("non-anatomical confirmation prop or environmental change", bridge)
-        self.assertIn("Never show a pointing hand entering the frame", bridge)
-        self.assertIn("multiple hands crowding a console, display, control, or prop", bridge)
-        self.assertIn(
-            "In this reaction or detail card, any visible monitor or screen must remain "
-            "abstract and non-figurative interface data only",
-            bridge,
-        )
-        self.assertIn(
-            "never a face, person, body part, hand, silhouette, video feed, portrait, or reflection",
-            bridge,
-        )
-        self.assertNotIn("unless the stated action explicitly requires that scale", bridge)
+        self.assertIn("tight reaction, prop insert, or environmental detail", bridge)
+        self.assertIn("Do not repeat the establishing composition", bridge)
+        self.assertIn("Prefer a prop or environmental detail", bridge)
+        self.assertIn("If a face is essential, show one allowed character once", bridge)
+        self.assertIn("For a detail card, keep hands and other body fragments out of frame", bridge)
 
         self.assertEqual(len(set(prompts.values())), 3)
 
@@ -1601,11 +1588,9 @@ class AllThingsAgenticTests(unittest.TestCase):
         brief = ProductionBrief.from_mapping(value)
         prompt = storyboard_panel_prompt(brief, compile_storyboard_timeline(brief)["shots"][0])
 
-        self.assertIn("this scene has no named characters", prompt)
-        self.assertIn(
-            "show no human body or body fragment anywhere, including on furniture, consoles, walls, floors, screens, or in the background",
-            prompt,
-        )
+        self.assertIn("Required cast: no people", prompt)
+        self.assertIn("This card has an empty cast", prompt)
+        self.assertIn("no people, faces, silhouettes, reflections, mannequins, hands, limbs", prompt)
 
     def test_visual_prompts_repeat_project_character_appearance_and_wardrobe_anchors(self) -> None:
         value = brief_mapping()
@@ -1635,24 +1620,17 @@ class AllThingsAgenticTests(unittest.TestCase):
         brief = ProductionBrief.from_mapping(value)
         timeline = compile_storyboard_timeline(brief)
         prompts = [storyboard_panel_prompt(brief, shot) for shot in timeline["shots"]]
-        mara_anchor = (
-            "APPEARANCE ANCHOR [Mara]: continuity ID "
-        )
-        dax_anchor = (
-            "APPEARANCE ANCHOR [Dax]: continuity ID "
-        )
         self.assertEqual(len(prompts), 6)
         for prompt in prompts:
-            self.assertIn(mara_anchor, prompt)
-            self.assertIn(dax_anchor, prompt)
-            self.assertIn("project-wide identity locks, not suggestions", prompt)
-            self.assertIn("lock earliest character-reference age/build", prompt)
-            self.assertIn("face/head, hair style/length/color", prompt)
-            self.assertIn("full wardrobe (sleeves/patches/harness)", prompt)
-            self.assertIn("establish once if absent", prompt)
-            self.assertIn("this scene authorizes no new aging, hair, build, or wardrobe change", prompt)
-            self.assertIn("most recently approved state from the reference or baseline", prompt)
-            self.assertIn("do not authorize a character to appear", prompt)
+            self.assertIn("Required cast:", prompt)
+            self.assertIn("the same established person, apparent age and build", prompt)
+            self.assertIn("face and head shape, hair style, length, and color", prompt)
+            self.assertIn("complete wardrobe including garment cut, sleeves, patches, and harness", prompt)
+            self.assertIn("establish these once if no reference exists", prompt)
+            self.assertIn("Do not change apparent age, build, face, hair, or wardrobe", prompt)
+            self.assertIn("Preserve the most recently approved state", prompt)
+            self.assertNotIn("continuity ID", prompt)
+            self.assertNotIn("APPEARANCE ANCHOR", prompt)
 
     def test_visual_prompt_limits_an_explicit_time_or_wardrobe_change_to_the_stated_change(self) -> None:
         value = brief_mapping()
@@ -1667,11 +1645,10 @@ class AllThingsAgenticTests(unittest.TestCase):
         ]
         brief = ProductionBrief.from_mapping(value)
         prompt = storyboard_panel_prompt(brief, compile_storyboard_timeline(brief)["shots"][0])
-        self.assertIn("EXPLICIT APPEARANCE CHANGE OVERRIDE", prompt)
         self.assertIn("the stated passage of time or aging cue for the scene cast", prompt)
         self.assertIn("the stated wardrobe or hair change for Mara", prompt)
-        self.assertIn("A time jump alone does not authorize wardrobe or hair changes", prompt)
-        self.assertIn("resulting approved state becomes that character's lock for later scenes", prompt)
+        self.assertIn("Time passage alone does not change wardrobe or hair", prompt)
+        self.assertIn("Use the approved result as the later reference", prompt)
 
     def test_generic_character_anchor_does_not_invent_traits_or_accept_negated_changes(self) -> None:
         value = brief_mapping()
@@ -1697,14 +1674,14 @@ class AllThingsAgenticTests(unittest.TestCase):
         brief = ProductionBrief.from_mapping(value)
         prompt = storyboard_panel_prompt(brief, compile_storyboard_timeline(brief)["shots"][0])
         self.assertIn("bald seven-year-old in a sleeveless summer dress", prompt)
-        self.assertIn("lock earliest character-reference age/build", prompt)
+        self.assertIn("the same established person, apparent age and build", prompt)
         self.assertNotIn("adult in their 30s", prompt)
         self.assertNotIn("low bun", prompt)
         self.assertNotIn("repair jumpsuit", prompt)
-        self.assertNotIn("EXPLICIT APPEARANCE CHANGE OVERRIDE", prompt)
-        self.assertIn("this scene authorizes no new aging, hair, build, or wardrobe change", prompt)
+        self.assertNotIn("Only the stated passage of time", prompt)
+        self.assertIn("Do not change apparent age, build, face, hair, or wardrobe", prompt)
 
-    def test_character_continuity_ids_are_casefolded_and_prompts_stay_under_provider_limit(self) -> None:
+    def test_character_identity_locks_are_casefolded_and_prompts_stay_concise(self) -> None:
         value = brief_mapping()
         value["scenes"] = [
             {
@@ -1726,11 +1703,10 @@ class AllThingsAgenticTests(unittest.TestCase):
         timeline = compile_storyboard_timeline(brief)
         first = storyboard_panel_prompt(brief, timeline["shots"][0])
         second = storyboard_panel_prompt(brief, timeline["shots"][3])
-        first_id = re.search(r"APPEARANCE ANCHOR \[Mara\]: continuity ID ([0-9A-F]{10})", first)
-        second_id = re.search(r"APPEARANCE ANCHOR \[MARA\]: continuity ID ([0-9A-F]{10})", second)
-        self.assertIsNotNone(first_id)
-        self.assertIsNotNone(second_id)
-        self.assertEqual(first_id.group(1), second_id.group(1))  # type: ignore[union-attr]
+        for prompt in (first, second):
+            self.assertIn("the same established person, apparent age and build", prompt)
+            self.assertNotIn("continuity ID", prompt)
+            self.assertNotRegex(prompt, r"[0-9A-F]{10}")
 
         crowded = brief_mapping()
         crowded["scenes"] = [
@@ -1752,7 +1728,7 @@ class AllThingsAgenticTests(unittest.TestCase):
                 len(storyboard_panel_prompt(crowded_brief, shot))
                 for shot in crowded_timeline["shots"]
             ),
-            8_000,
+            3_500,
         )
 
     def test_local_visual_build_keeps_full_cast_reference_across_scene_bridge(self) -> None:
@@ -1788,6 +1764,57 @@ class AllThingsAgenticTests(unittest.TestCase):
         scene_one_bridge = b"\xff\xd8" + (b"SC01-SH03" * 12) + b"\xff\xd9"
         self.assertEqual(provider.reference_images[3], scene_one_primary)
         self.assertNotEqual(provider.reference_images[3], scene_one_bridge)
+
+    def test_visual_reference_selection_prefers_story_scene_then_setting_and_cast(self) -> None:
+        brief = ProductionBrief.from_mapping(explicit_live_shape_mapping())
+        timeline = compile_storyboard_timeline(brief)
+        provider = UniqueVisualProvider()
+
+        storyboard = build_visual_storyboard(
+            brief,
+            timeline,
+            provider=provider,
+            config=valid_config(),
+            job_id="explicit-reference-selection",
+            artifact_store=StaticArtifactStore(),
+        )
+
+        self.assertEqual(storyboard["status"], "complete")
+        def image(shot_id: str) -> bytes:
+            return b"\xff\xd8" + (shot_id.encode("ascii") * 12) + b"\xff\xd9"
+        # No unrelated prior cast or location is leaked into a new empty-cast scene.
+        self.assertIsNone(provider.reference_images[3])
+        # An empty-cast detail keeps the empty establishing panel from its own story scene.
+        self.assertEqual(provider.reference_images[4], image("SC02-SH01"))
+        # Returning to the workshop normalizes BACK IN / MOMENTS LATER without using
+        # the unrelated rooftop panel simply because it was generated last.
+        self.assertEqual(provider.reference_images[6], image("SC01-SH01"))
+        # A solo card prefers the same normalized-setting identity reference.
+        self.assertEqual(provider.reference_images[7], image("SC01-SH02"))
+        # The two-person reaction uses the prior full-cast image, not a solo card.
+        self.assertEqual(provider.reference_images[8], image("SC02-SH03"))
+
+    def test_visual_reference_allows_full_cast_anchor_for_solo_card(self) -> None:
+        brief = ProductionBrief.from_mapping(brief_mapping())
+        timeline = compile_storyboard_timeline(brief)
+        timeline["shots"][1]["characters"] = ["Mara"]
+        timeline["shots"][1]["storyboard_card"]["characters"] = ["Mara"]
+        provider = UniqueVisualProvider()
+
+        storyboard = build_visual_storyboard(
+            brief,
+            timeline,
+            provider=provider,
+            config=valid_config(),
+            job_id="solo-from-full-cast-reference",
+            artifact_store=StaticArtifactStore(),
+        )
+
+        self.assertEqual(storyboard["status"], "complete")
+        self.assertEqual(
+            provider.reference_images[1],
+            b"\xff\xd8" + (b"SC01-SH01" * 12) + b"\xff\xd9",
+        )
 
     def test_visual_storyboard_is_bounded_ordered_and_cryptographically_validated(self) -> None:
         brief = ProductionBrief.from_mapping(brief_mapping())
@@ -1957,6 +1984,120 @@ class AllThingsAgenticTests(unittest.TestCase):
         self.assertIn("contiguous_timeline", audit["issue_codes"])
         with self.assertRaises(BriefValidationError):
             validate_storyboard_package(tampered)
+
+        tampered_cast = deepcopy(first)
+        tampered_cast["timeline"]["shots"][1]["characters"] = ["Jon"]
+        tampered_cast["audit"] = audit_storyboard_package(tampered_cast)
+        tampered_cast["manifest_sha256"] = sha256_json(
+            {
+                key: item
+                for key, item in tampered_cast.items()
+                if key != "manifest_sha256"
+            }
+        )
+        self.assertFalse(tampered_cast["audit"]["structurally_valid"])
+        self.assertIn(
+            "deterministic_timeline_contract",
+            tampered_cast["audit"]["issue_codes"],
+        )
+        with self.assertRaises(BriefValidationError):
+            validate_storyboard_package(tampered_cast)
+
+    def test_explicit_three_scene_nine_shot_brief_is_not_double_expanded(self) -> None:
+        raw_actions = [
+            str(scene["purpose"]).split(":", 1)[1].strip()
+            for scene in explicit_live_shape_mapping()["scenes"]  # type: ignore[index]
+        ]
+        brief = ProductionBrief.from_mapping(explicit_live_shape_mapping())
+        self.assertEqual(len(brief.scenes), 3)
+        self.assertEqual([scene.number for scene in brief.scenes], [1, 2, 3])
+        self.assertIn("Shot 1.1:", brief.scenes[0].purpose)
+        self.assertIn("Shot 1.3:", brief.scenes[0].purpose)
+
+        timeline = compile_storyboard_timeline(brief)
+        self.assertEqual(timeline["layout"], "explicit_ordered_shots")
+        self.assertEqual(timeline["shot_count"], 9)
+        self.assertEqual(
+            [shot["shot_id"] for shot in timeline["shots"]],
+            [f"SC{scene:02d}-SH{shot:02d}" for scene in range(1, 4) for shot in range(1, 4)],
+        )
+        self.assertEqual(
+            [shot["scene_number"] for shot in timeline["shots"]],
+            [1, 1, 1, 2, 2, 2, 3, 3, 3],
+        )
+        self.assertEqual(
+            [shot["storyboard_card"]["action"] for shot in timeline["shots"]],
+            raw_actions,
+        )
+        self.assertEqual(len(set(raw_actions)), 9)
+        self.assertEqual(
+            [shot["characters"] for shot in timeline["shots"]],
+            [[], ["Lila"], ["Theo"], [], [], ["Lila", "Theo"], [], ["Lila"], ["Lila", "Theo"]],
+        )
+        self.assertEqual(
+            [shot["role"] for shot in timeline["shots"]],
+            [
+                "establishing", "continuity_bridge", "primary_coverage",
+                "establishing", "continuity_bridge", "primary_coverage",
+                "continuity_bridge", "primary_coverage", "continuity_bridge",
+            ],
+        )
+
+        receiver_prompt = storyboard_panel_prompt(brief, timeline["shots"][6])
+        lila_prompt = storyboard_panel_prompt(brief, timeline["shots"][7])
+        reaction_prompt = storyboard_panel_prompt(brief, timeline["shots"][8])
+        self.assertIn("Required cast: no people", receiver_prompt)
+        self.assertNotIn("Keep Lila as", receiver_prompt)
+        self.assertIn("Required cast: Lila", lila_prompt)
+        self.assertIn("Keep Lila as the same established person", lila_prompt)
+        self.assertNotIn("Required cast: Lila, Theo", lila_prompt)
+        self.assertIn("tight connected reaction composition", reaction_prompt)
+        self.assertIn("Keep Lila as the same established person", reaction_prompt)
+        self.assertIn("Keep Theo as the same established person", reaction_prompt)
+        self.assertIn("Never merge identities or features between people", reaction_prompt)
+        self.assertNotIn(
+            "Keep Lila, Theo as the same established person",
+            reaction_prompt,
+        )
+        self.assertNotIn("Shot 3.1:", reaction_prompt)
+        self.assertNotIn("Project:", reaction_prompt)
+        self.assertNotIn("Scene purpose:", reaction_prompt)
+        self.assertNotIn("continuity ID", reaction_prompt)
+        self.assertEqual(
+            reaction_prompt.count(str(timeline["shots"][8]["storyboard_card"]["action"])),
+            1,
+        )
+
+        package = build_storyboard_package(brief)
+        self.assertEqual(len(package["production_brief"]["scenes"]), 3)
+        self.assertEqual(package["timeline"]["shot_count"], 9)
+        self.assertTrue(package["audit"]["structurally_valid"])
+        self.assertTrue(package["audit"]["ready_for_editorial"])
+        self.assertEqual(validate_storyboard_package(package), package)
+
+    def test_explicit_pronoun_cast_inherits_scene_cast_but_prop_insert_stays_empty(self) -> None:
+        value = explicit_live_shape_mapping()
+        value["scenes"][5]["purpose"] = (  # type: ignore[index]
+            "Shot 2.3: They struggle together to secure the cable."
+        )
+        brief = ProductionBrief.from_mapping(value)
+        shots = compile_storyboard_timeline(brief)["shots"]
+        self.assertEqual(shots[4]["characters"], [])
+        self.assertEqual(shots[5]["characters"], ["Lila", "Theo"])
+
+    def test_long_explicit_actions_roundtrip_through_package_audit(self) -> None:
+        value = explicit_live_shape_mapping()
+        for scene in value["scenes"]:  # type: ignore[union-attr]
+            marker, action = str(scene["purpose"]).split(":", 1)
+            expanded_action = (
+                action.strip() + " " + ("background remains stable " * 24)
+            )[:390]
+            scene["purpose"] = f"{marker}: {expanded_action}"
+        brief = ProductionBrief.from_mapping(value)
+        self.assertTrue(all(len(scene.purpose) > 1_200 for scene in brief.scenes))
+        package = build_storyboard_package(brief)
+        self.assertTrue(package["audit"]["structurally_valid"])
+        self.assertEqual(validate_storyboard_package(package), package)
 
     def test_storyboard_package_manifest_survives_browser_json_download(self) -> None:
         package = build_storyboard_package(ProductionBrief.from_mapping(brief_mapping()))
@@ -2186,6 +2327,12 @@ class AllThingsAgenticTests(unittest.TestCase):
 
     def test_imported_script_instruction_preserves_exact_canon_identifiers(self) -> None:
         instruction = re.sub(r"\s+", " ", SYSTEM_INSTRUCTION.casefold())
+        for scene_contract in (
+            "three scenes with three shots per scene",
+            "exactly three scene objects, not nine scene objects",
+            "without double expansion",
+        ):
+            self.assertIn(scene_contract, instruction)
         for required_contract in (
             "exact named props",
             "alphanumeric and lettered designations",

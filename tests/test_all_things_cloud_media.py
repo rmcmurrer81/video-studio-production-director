@@ -4,6 +4,7 @@ import base64
 from hashlib import sha256
 from io import BytesIO
 import json
+import math
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ from PIL import Image
 
 from kira_studio.all_things_cloud_media import (
     DEFAULT_VOICE_NAME,
+    _CARD_SEGMENT_TIMING_CONTRACT,
     CloudMediaValidationError,
     GoogleCloudArtifactStore,
     GoogleCloudNarratedPitchRenderer,
@@ -245,7 +247,10 @@ class FakeMediaRunner:
             )
         if call[0] == "fake-ffmpeg" and Path(call[-1]).name.startswith("segment-"):
             self.rendered_segment_durations.append(float(call[call.index("-t") + 1]))
-        Path(call[-1]).write_bytes(b"fake-private-mp4-bytes")
+        payload = b"fake-private-mp4-bytes"
+        if "-metadata" in call:
+            payload += call[call.index("-metadata") + 1].encode("ascii")
+        Path(call[-1]).write_bytes(payload)
         return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
 
 def pitch_values() -> tuple[dict[str, object], dict[str, object], str, dict[str, object]]:
@@ -547,6 +552,51 @@ class GoogleCloudNarratedPitchRendererTests(unittest.TestCase):
             any(str(upload["name"]).endswith("/narrated-pitch.mp4") for upload in bucket.uploads)
         )
 
+    def test_finalization_rejects_legacy_segments_without_cue_lead_contract(self) -> None:
+        brief, timeline, source, visuals = pitch_values()
+        renderer, _tts, _runner, bucket = self.renderer()
+        segments: list[dict[str, object]] = []
+        for index in range(2):
+            segments.extend(
+                dict(item)
+                for item in renderer.render_segment_chunk(
+                    brief=brief,
+                    timeline=timeline,
+                    source_message=source,
+                    visual_storyboard=visuals,
+                    job_id="job-123",
+                    start_index=index,
+                    max_cards=1,
+                )
+            )
+
+        first = segments[0]
+        old_name = str(first["object_name"])
+        current = bucket.objects.pop(old_name)
+        marker = _CARD_SEGMENT_TIMING_CONTRACT.encode("ascii")
+        self.assertIn(marker, current)
+        legacy = current.replace(marker, b"legacy-segment-no-lead".ljust(len(marker), b"_"))
+        legacy_digest = sha256(legacy).hexdigest()
+        legacy_name = f"jobs/job-123/artifacts/{legacy_digest}/pitch-card-0001.mp4"
+        bucket.objects[legacy_name] = legacy
+        first["object_name"] = legacy_name
+        first["sha256"] = legacy_digest
+        first["byte_length"] = len(legacy)
+        uploads_before_finalization = len(bucket.uploads)
+
+        with self.assertRaisesRegex(
+            NarratedPitchRenderError, "invalid_artifact_manifest"
+        ):
+            renderer.finalize_segments(
+                brief=brief,
+                timeline=timeline,
+                source_message=source,
+                visual_storyboard=visuals,
+                job_id="job-123",
+                segments=segments,
+            )
+        self.assertEqual(len(bucket.uploads), uploads_before_finalization)
+
     def test_finalization_observes_cancellation_after_probe_before_publication(self) -> None:
         brief, timeline, source, visuals = pitch_values()
         renderer, _tts, _runner, bucket = self.renderer()
@@ -586,8 +636,9 @@ class GoogleCloudNarratedPitchRendererTests(unittest.TestCase):
 
         manifest = renderer.render(brief, timeline, source, visuals, "job-123")
 
-        # Two 1.0-second WAVs each receive a 0.25-second tail, aligned to 24fps.
-        self.assertEqual(manifest["video"]["duration_seconds"], 2.5)
+        # Every 1.0-second WAV starts after one visible 24-fps card frame and
+        # retains its 0.25-second tail.  The full card stays frame-quantized.
+        self.assertEqual(manifest["video"]["duration_seconds"], 2.583334)
         card_commands = [
             call for call in runner.calls
             if call[0] == "fake-ffmpeg" and Path(call[-1]).name.startswith("segment-")
@@ -595,8 +646,12 @@ class GoogleCloudNarratedPitchRendererTests(unittest.TestCase):
         self.assertEqual(len(card_commands), 2)
         for command in card_commands:
             self.assertIn("-af", command)
-            self.assertIn("apad=whole_dur=1.250000", command)
-            self.assertEqual(command[command.index("-t") + 1], "1.250000")
+            audio_filter = command[command.index("-af") + 1]
+            self.assertEqual(
+                audio_filter,
+                "aresample=48000,adelay=2000S:all=1,apad=whole_dur=1.291667",
+            )
+            self.assertEqual(command[command.index("-t") + 1], "1.291667")
             self.assertNotIn("subtitles", " ".join(command).casefold())
         subtitle_upload = next(
             upload
@@ -604,8 +659,69 @@ class GoogleCloudNarratedPitchRendererTests(unittest.TestCase):
             if upload["content_type"] == "application/x-subrip"
         )
         subtitles = subtitle_upload["data"].decode("utf-8")  # type: ignore[union-attr]
-        self.assertIn("00:00:00,000 --> 00:00:01,250", subtitles)
-        self.assertIn("00:00:01,250 --> 00:00:02,500", subtitles)
+        self.assertIn("00:00:00,042 --> 00:00:01,292", subtitles)
+        self.assertIn("00:00:01,333 --> 00:00:02,583", subtitles)
+
+        narration_upload = next(
+            upload
+            for upload in bucket.uploads
+            if upload["content_type"] == "text/plain; charset=utf-8"
+        )
+        narration = narration_upload["data"].decode("utf-8")  # type: ignore[union-attr]
+        self.assertIn(
+            "CARD 1 — SC01-SH01 — 00:00:00,042 to 00:00:01,292",
+            narration,
+        )
+        self.assertIn(
+            "CARD 2 — SC01-SH02 — 00:00:01,333 to 00:00:02,583",
+            narration,
+        )
+        self.assertNotIn("00:00:04:00", narration)
+
+    def test_playback_cues_start_after_frame_quantized_card_cuts(self) -> None:
+        renderer, _tts, _runner, _bucket = self.renderer()
+        # These real-world-like segment durations put every raw boundary
+        # between 24-fps frames.  A one-frame lead must always clear the next
+        # output-frame cut, and TXT/SRT must share the exact cue timestamps.
+        durations = (11.136, 12.011, 9.345)
+        final_duration = sum(durations)
+        windows = renderer._playback_cue_windows(
+            durations,
+            final_duration_seconds=final_duration,
+        )
+        boundaries = (0.0, durations[0], durations[0] + durations[1])
+        for boundary, (cue_start, _cue_end) in zip(boundaries, windows):
+            card_cut = math.ceil(boundary * 24 - 1e-9) / 24
+            self.assertGreaterEqual(cue_start, card_cut)
+
+        cues = [
+            {
+                "sequence": index,
+                "shot_id": f"SC01-SH{index:02d}",
+                "planned_in_timecode": "00:00:00:00",
+                "planned_out_timecode": "00:00:42:00",
+                "action": f"Card {index} visual",
+                "narration": f"Card {index} narration.",
+                "dialogue_source": "planned_direction",
+            }
+            for index in range(1, 4)
+        ]
+        subtitles = renderer._subtitles(cues, windows)
+        narration = renderer._playback_narration_text(
+            {"title": "Timing test", "summary": "Exact playback cues."},
+            cues,
+            windows,
+        )
+        for start, end in windows:
+            self.assertIn(
+                f"{renderer._srt_timestamp(start)} --> {renderer._srt_timestamp(end)}",
+                subtitles,
+            )
+            self.assertIn(
+                f"{renderer._srt_timestamp(start)} to {renderer._srt_timestamp(end)}",
+                narration,
+            )
+        self.assertNotIn("00:00:42:00", narration)
 
     def test_rejects_mismatched_audio_or_subtitle_streams(self) -> None:
         brief, timeline, source, visuals = pitch_values()

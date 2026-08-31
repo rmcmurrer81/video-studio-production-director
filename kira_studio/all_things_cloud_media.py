@@ -61,6 +61,20 @@ _DEFAULT_COMMAND_TIMEOUT_SECONDS = 10 * 60
 _TTS_REQUEST_TIMEOUT_SECONDS = 2 * 60
 _CARD_AUDIO_PAD_SECONDS = 0.25
 _FRAME_RATE = 24
+_AUDIO_SAMPLE_RATE = 48_000
+# Give the new card one complete video frame before its narration starts.
+# Concatenated MP4 segment timestamps include AAC/container rounding, while the
+# final H.264 stream can only change stills on the next 24-fps frame.  Without
+# this guard, a cue can begin up to one frame before its card becomes visible.
+_CARD_CUE_LEAD_FRAMES = 1
+_CARD_CUE_LEAD_SECONDS = _CARD_CUE_LEAD_FRAMES / _FRAME_RATE
+_CARD_CUE_LEAD_SAMPLES = (_AUDIO_SAMPLE_RATE * _CARD_CUE_LEAD_FRAMES) // _FRAME_RATE
+# Continued-render checkpoints predate the one-frame cue lead. Keep their
+# existing public manifest shape, but stamp every newly rendered private card
+# MP4 so finalization can reject a legacy segment instead of reporting shifted
+# TXT/SRT cue windows as current timing evidence.
+_CARD_SEGMENT_TIMING_CONTRACT = "video-studio.card-cue-lead/v2"
+_CARD_SEGMENT_TIMING_CONTRACT_BYTES = _CARD_SEGMENT_TIMING_CONTRACT.encode("ascii")
 _DURATION_TOLERANCE_SECONDS = 0.125
 
 
@@ -680,7 +694,7 @@ class GoogleCloudNarratedPitchRenderer:
 
     @staticmethod
     def _display_duration_seconds(audio_duration_seconds: float) -> float:
-        """Add the card's short tail and align its still image to 24 fps."""
+        """Add a visible-card lead and short tail, aligned exactly to 24 fps."""
 
         if (
             not math.isfinite(audio_duration_seconds)
@@ -688,7 +702,13 @@ class GoogleCloudNarratedPitchRenderer:
         ):
             raise NarratedPitchRenderError("invalid_tts_audio")
         duration = math.ceil(
-            (audio_duration_seconds + _CARD_AUDIO_PAD_SECONDS) * _FRAME_RATE - 1e-9
+            (
+                audio_duration_seconds
+                + _CARD_CUE_LEAD_SECONDS
+                + _CARD_AUDIO_PAD_SECONDS
+            )
+            * _FRAME_RATE
+            - 1e-9
         ) / _FRAME_RATE
         if not 0 < duration <= _MAX_SEGMENT_SECONDS:
             raise NarratedPitchRenderError("pitch_duration_exceeded")
@@ -734,7 +754,11 @@ class GoogleCloudNarratedPitchRenderer:
             "-tune",
             "stillimage",
             "-af",
-            f"apad=whole_dur={display_duration_seconds:.6f}",
+            (
+                f"aresample={_AUDIO_SAMPLE_RATE},"
+                f"adelay={_CARD_CUE_LEAD_SAMPLES}S:all=1,"
+                f"apad=whole_dur={display_duration_seconds:.6f}"
+            ),
             "-t",
             f"{display_duration_seconds:.6f}",
             "-c:a",
@@ -742,9 +766,11 @@ class GoogleCloudNarratedPitchRenderer:
             "-b:a",
             "192k",
             "-ar",
-            "48000",
+            str(_AUDIO_SAMPLE_RATE),
             "-ac",
             "2",
+            "-metadata",
+            f"comment={_CARD_SEGMENT_TIMING_CONTRACT}",
             "-movflags",
             "+faststart",
             str(destination),
@@ -799,7 +825,7 @@ class GoogleCloudNarratedPitchRenderer:
             "-b:a",
             "192k",
             "-ar",
-            "48000",
+            str(_AUDIO_SAMPLE_RATE),
             "-ac",
             "2",
             "-movflags",
@@ -957,23 +983,80 @@ class GoogleCloudNarratedPitchRenderer:
     def _subtitles(
         self,
         cues: Sequence[Mapping[str, Any]],
-        durations: Sequence[float],
+        cue_windows: Sequence[tuple[float, float]],
     ) -> str:
-        if len(cues) != len(durations):
+        if len(cues) != len(cue_windows):
             raise NarratedPitchRenderError("incomplete_subtitle_coverage")
         blocks: list[str] = []
-        position = 0.0
-        for index, (cue, duration) in enumerate(zip(cues, durations), start=1):
+        for index, (cue, window) in enumerate(zip(cues, cue_windows), start=1):
             narration = str(cue.get("narration") or "").replace("\r", " ").replace("\n", " ")
             if not narration.strip():
                 raise NarratedPitchRenderError("incomplete_subtitle_coverage")
-            end = position + duration
+            start, end = window
             blocks.append(
-                f"{index}\n{self._srt_timestamp(position)} --> {self._srt_timestamp(end)}\n"
+                f"{index}\n{self._srt_timestamp(start)} --> {self._srt_timestamp(end)}\n"
                 f"{narration}\n"
             )
-            position = end
         return "\n".join(blocks).rstrip() + "\n"
+
+    @staticmethod
+    def _playback_cue_windows(
+        durations: Sequence[float],
+        *,
+        final_duration_seconds: float,
+    ) -> list[tuple[float, float]]:
+        """Return actual post-render cue windows shared by TXT and SRT.
+
+        Segment boundaries can fall between output video frames because the
+        MP4 duration includes AAC/container rounding.  Narration is delayed by
+        one complete output frame within every segment, so its reported start
+        is guaranteed to be at or after the first frame of the matching card.
+        The final cue ends at the probed final MP4 duration.
+        """
+
+        if not durations:
+            raise NarratedPitchRenderError("incomplete_subtitle_coverage")
+        if not math.isfinite(final_duration_seconds) or final_duration_seconds <= 0:
+            raise NarratedPitchRenderError("pitch_duration_mismatch")
+        windows: list[tuple[float, float]] = []
+        position = 0.0
+        for duration in durations:
+            if (
+                isinstance(duration, bool)
+                or not isinstance(duration, (int, float))
+                or not math.isfinite(float(duration))
+                or float(duration) <= _CARD_CUE_LEAD_SECONDS
+            ):
+                raise NarratedPitchRenderError("incomplete_subtitle_coverage")
+            end = position + float(duration)
+            windows.append((position + _CARD_CUE_LEAD_SECONDS, end))
+            position = end
+        final_start, _final_end = windows[-1]
+        if final_duration_seconds <= final_start:
+            raise NarratedPitchRenderError("pitch_duration_mismatch")
+        windows[-1] = (final_start, final_duration_seconds)
+        return windows
+
+    def _playback_narration_text(
+        self,
+        brief: Mapping[str, Any],
+        cues: Sequence[Mapping[str, Any]],
+        cue_windows: Sequence[tuple[float, float]],
+    ) -> str:
+        """Format narration.txt with the same final cue times as subtitles."""
+
+        if len(cues) != len(cue_windows):
+            raise NarratedPitchRenderError("incomplete_subtitle_coverage")
+        playback_cues: list[dict[str, Any]] = []
+        for cue, (start, end) in zip(cues, cue_windows):
+            playback_cues.append(
+                {
+                    **dict(cue),
+                    "planned_in_timecode": self._srt_timestamp(start),
+                    "planned_out_timecode": self._srt_timestamp(end),
+                }
+            )
+        return pitch_narration_text(brief, playback_cues)
 
     @staticmethod
     def _artifact_entry(
@@ -1281,6 +1364,8 @@ class GoogleCloudNarratedPitchRenderer:
                 or sha256(data).hexdigest() != digest
             ):
                 raise NarratedPitchRenderError("visual_asset_integrity_failed")
+            if _CARD_SEGMENT_TIMING_CONTRACT_BYTES not in data:
+                raise NarratedPitchRenderError("invalid_artifact_manifest")
             durations.append(float(duration))
             loaded.append(data)
             if ownership_check is not None and not ownership_check():
@@ -1306,6 +1391,10 @@ class GoogleCloudNarratedPitchRenderer:
                 expected_duration_seconds=sum(durations),
                 card_count=len(cues),
             )
+            cue_windows = self._playback_cue_windows(
+                durations,
+                final_duration_seconds=evidence.duration_seconds,
+            )
             video_bytes = video_path.read_bytes()
             if not 0 < len(video_bytes) <= _MAX_VIDEO_BYTES:
                 raise NarratedPitchRenderError("invalid_rendered_video")
@@ -1317,7 +1406,11 @@ class GoogleCloudNarratedPitchRenderer:
             subtitles_value: Mapping[str, Any] | None = None
             subtitle_bytes: bytes | None = None
             if self.include_narration_text:
-                narration_bytes = pitch_narration_text(safe_brief, cues).encode("utf-8")
+                narration_bytes = self._playback_narration_text(
+                    safe_brief,
+                    cues,
+                    cue_windows,
+                ).encode("utf-8")
                 narration_value = self.artifact_store.put_bytes(
                     job_id=safe_job_id,
                     artifact_id="narration.txt",
@@ -1327,7 +1420,7 @@ class GoogleCloudNarratedPitchRenderer:
                 if ownership_check is not None and not ownership_check():
                     raise NarratedPitchRenderError("work_stopped")
             if self.include_subtitles:
-                subtitle_bytes = self._subtitles(cues, durations).encode("utf-8")
+                subtitle_bytes = self._subtitles(cues, cue_windows).encode("utf-8")
                 subtitles_value = self.artifact_store.put_bytes(
                     job_id=safe_job_id,
                     artifact_id="subtitles.srt",
@@ -1488,6 +1581,10 @@ class GoogleCloudNarratedPitchRenderer:
                 expected_duration_seconds=sum(segment_durations),
                 card_count=len(cues),
             )
+            cue_windows = self._playback_cue_windows(
+                segment_durations,
+                final_duration_seconds=evidence.duration_seconds,
+            )
             video_bytes = video_path.read_bytes()
             if not 0 < len(video_bytes) <= _MAX_VIDEO_BYTES:
                 raise NarratedPitchRenderError("invalid_rendered_video")
@@ -1497,7 +1594,11 @@ class GoogleCloudNarratedPitchRenderer:
             subtitles_value: Mapping[str, Any] | None = None
             subtitle_bytes: bytes | None = None
             if self.include_narration_text:
-                narration_bytes = pitch_narration_text(safe_brief, cues).encode("utf-8")
+                narration_bytes = self._playback_narration_text(
+                    safe_brief,
+                    cues,
+                    cue_windows,
+                ).encode("utf-8")
                 narration_value = self.artifact_store.put_bytes(
                     job_id=safe_job_id,
                     artifact_id="narration.txt",
@@ -1505,7 +1606,7 @@ class GoogleCloudNarratedPitchRenderer:
                     content_type="text/plain; charset=utf-8",
                 )
             if self.include_subtitles:
-                subtitle_bytes = self._subtitles(cues, segment_durations).encode("utf-8")
+                subtitle_bytes = self._subtitles(cues, cue_windows).encode("utf-8")
                 subtitles_value = self.artifact_store.put_bytes(
                     job_id=safe_job_id,
                     artifact_id="subtitles.srt",

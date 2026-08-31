@@ -833,7 +833,7 @@ class SceneBrief:
             raise BriefValidationError("scene dialogue_required must be true or false")
         return cls(
             number=number,
-            purpose=_clean_string(value["purpose"], label="scene purpose", maximum=360),
+            purpose=_clean_string(value["purpose"], label="scene purpose", maximum=1_200),
             setting=_clean_string(value["setting"], label="scene setting", maximum=240),
             characters=_clean_string_list(
                 value["characters"], label="scene characters", maximum=12, item_maximum=120
@@ -903,10 +903,11 @@ class ProductionBrief:
             raise BriefValidationError("a production-ready brief cannot retain clarifying questions")
         if not value["ready_for_production"] and not questions:
             raise BriefValidationError("a held brief must explain what still needs clarification")
-        scenes = tuple(
+        provider_scenes = tuple(
             SceneBrief.from_mapping(scene, expected_number=index)
             for index, scene in enumerate(value["scenes"], start=1)
         )
+        scenes = _collapse_preexpanded_shot_rows(provider_scenes)
         return cls(
             title=_clean_string(value["title"], label="title", maximum=120),
             summary=_clean_string(value["summary"], label="summary", maximum=900),
@@ -1043,6 +1044,177 @@ _SHOT_BLUEPRINTS: tuple[dict[str, str], ...] = (
     },
 )
 
+_EXPLICIT_SHOT_ROW = re.compile(
+    r"^\s*shot\s+0*(?P<scene>\d{1,3})\s*\.\s*0*(?P<shot>\d{1,3})\s*"
+    r"[:\-–—)]\s*(?P<action>.+?)\s*$",
+    re.IGNORECASE,
+)
+_EXPLICIT_SHOT_MARKER = re.compile(
+    r"\bshot\s+0*(?P<scene>\d{1,3})\s*\.\s*0*(?P<shot>\d{1,3})\s*"
+    r"[:\-–—)]\s*",
+    re.IGNORECASE,
+)
+
+
+def _explicit_ordered_shot_rows(
+    scenes: Sequence[SceneBrief],
+) -> tuple[tuple[SceneBrief, int, int, str], ...]:
+    """Recognize a provider response that already contains one row per shot.
+
+    The brief schema intentionally exposes scenes, while the deterministic
+    compiler normally creates three coverage cards for each scene. A model can
+    nevertheless preserve a user's ``Shot 1.1`` / ``Shot 1.2`` / ``Shot 1.3``
+    wording by returning each requested shot as a scene row. Expanding those
+    rows again creates 27 cards from a nine-shot request. Only a complete,
+    strictly ordered three-shots-per-scene grid is treated as pre-expanded;
+    partial or ambiguous labels keep the ordinary compiler path.
+    """
+
+    rows: list[tuple[SceneBrief, int, int, str]] = []
+    for scene in scenes:
+        match = _EXPLICIT_SHOT_ROW.fullmatch(scene.purpose)
+        if match is None:
+            return ()
+        action = match.group("action").strip()
+        if not action:
+            return ()
+        rows.append(
+            (
+                scene,
+                int(match.group("scene")),
+                int(match.group("shot")),
+                action,
+            )
+        )
+    if not rows:
+        return ()
+    scene_numbers = sorted({row[1] for row in rows})
+    if scene_numbers != list(range(1, len(scene_numbers) + 1)):
+        return ()
+    expected = [
+        (scene_number, shot_number)
+        for scene_number in scene_numbers
+        for shot_number in range(1, len(_SHOT_BLUEPRINTS) + 1)
+    ]
+    if [(row[1], row[2]) for row in rows] != expected:
+        return ()
+    return tuple(rows)
+
+
+def _collapse_preexpanded_shot_rows(
+    scenes: Sequence[SceneBrief],
+) -> tuple[SceneBrief, ...]:
+    """Expose provider shot rows as the logical scene count the user asked for."""
+
+    rows = _explicit_ordered_shot_rows(scenes)
+    if not rows:
+        return tuple(scenes)
+    collapsed: list[SceneBrief] = []
+    for story_scene_number in sorted({row[1] for row in rows}):
+        group = [row for row in rows if row[1] == story_scene_number]
+        characters = tuple(
+            dict.fromkeys(name for scene, _group, _shot, _action in group for name in scene.characters)
+        )
+        purpose = " ".join(
+            f"Shot {story_scene_number}.{shot_number}: {action}"
+            for _scene, _group, shot_number, action in group
+        )
+        collapsed.append(
+            SceneBrief(
+                number=story_scene_number,
+                purpose=purpose,
+                setting=group[0][0].setting,
+                characters=characters,
+                dialogue_required=any(row[0].dialogue_required for row in group),
+            )
+        )
+    return tuple(collapsed)
+
+
+def _explicit_scene_shot_rows(
+    brief: ProductionBrief,
+) -> tuple[tuple[SceneBrief, int, int, str], ...]:
+    """Read three ordered dotted shot directives retained inside each logical scene."""
+
+    rows: list[tuple[SceneBrief, int, int, str]] = []
+    for scene in brief.scenes:
+        markers = list(_EXPLICIT_SHOT_MARKER.finditer(scene.purpose))
+        if len(markers) != len(_SHOT_BLUEPRINTS):
+            return ()
+        for index, marker in enumerate(markers):
+            story_scene_number = int(marker.group("scene"))
+            shot_number = int(marker.group("shot"))
+            if story_scene_number != scene.number or shot_number != index + 1:
+                return ()
+            end = markers[index + 1].start() if index + 1 < len(markers) else len(scene.purpose)
+            action = scene.purpose[marker.end() : end].strip(" ,;:-")
+            if not action:
+                return ()
+            rows.append((scene, story_scene_number, shot_number, action))
+    return tuple(rows)
+
+
+def _explicit_shot_role(scene: SceneBrief, shot_number: int, action: str) -> str:
+    """Choose the closest existing visual composition for an explicit shot."""
+
+    lowered = action.casefold()
+    if re.search(r"\b(?:establish|wide|master)\b", lowered):
+        return "establishing"
+    if re.search(r"\b(?:close[- ]?up|detail|insert)\b", lowered):
+        return "continuity_bridge"
+    if re.search(
+        r"\b(?:medium|two[- ]?shot|over[- ]the[- ]shoulder|waist[- ]?up|full[- ]?body)\b",
+        lowered,
+    ):
+        return "primary_coverage"
+    if re.search(
+        r"\b(?:speaks?|says?|answers?|replies?|broadcasts?|microphone|dialogue)\b",
+        lowered,
+    ):
+        return "primary_coverage"
+    if re.search(r"\b(?:reaction|looks?|sparks?)\b", lowered):
+        return "continuity_bridge"
+    card_characters = _explicit_card_characters(scene, action)
+    if not card_characters:
+        return "continuity_bridge"
+    if len(card_characters) > 1:
+        return "primary_coverage"
+    return _SHOT_BLUEPRINTS[shot_number - 1]["role"]
+
+
+def _shot_blueprint(role: str) -> Mapping[str, str]:
+    for blueprint in _SHOT_BLUEPRINTS:
+        if blueprint["role"] == role:
+            return blueprint
+    raise BriefValidationError("storyboard shot role is unsupported")
+
+
+def _explicit_card_characters(scene: SceneBrief, action: str) -> tuple[str, ...]:
+    """Keep only the logical-scene characters expressly present in one card."""
+
+    selected = tuple(
+        name
+        for name in scene.characters
+        if re.search(rf"(?<!\w){re.escape(name)}(?!\w)", action, re.IGNORECASE)
+    )
+    if selected:
+        return selected
+    if scene.characters and re.search(
+        r"\b(?:they|them|their|theirs|themselves|both|the pair|the friends|"
+        r"the crew|together)\b",
+        action,
+        re.IGNORECASE,
+    ):
+        return scene.characters
+    if len(scene.characters) == 1 and re.search(
+        r"\b(?:he|him|his|himself|she|her|hers|herself|they|them|their|"
+        r"speaks?|says?|answers?|replies?|broadcasts?|microphone|dialogue)\b",
+        action,
+        re.IGNORECASE,
+    ):
+        return scene.characters
+    return ()
+
 
 def _planned_timecode(frame: int, *, frame_rate: int = STORYBOARD_FRAME_RATE) -> str:
     if isinstance(frame, bool) or not isinstance(frame, int) or frame < 0:
@@ -1163,6 +1335,84 @@ def compile_storyboard_timeline(brief: ProductionBrief) -> dict[str, Any]:
     """
 
     total_frames = brief.duration_seconds * STORYBOARD_FRAME_RATE
+    explicit_rows = _explicit_scene_shot_rows(brief)
+    if explicit_rows:
+        duration_frames = _equal_positive_allocation(
+            total_frames,
+            len(explicit_rows),
+            minimum=1,
+        )
+        first_settings = {
+            story_scene_number: next(
+                scene.setting
+                for scene, row_scene_number, _shot_number, _action in explicit_rows
+                if row_scene_number == story_scene_number
+            )
+            for story_scene_number in sorted({row[1] for row in explicit_rows})
+        }
+        shots: list[dict[str, Any]] = []
+        cursor = 0
+        for sequence, ((scene, story_scene_number, shot_number, action), frames) in enumerate(
+            zip(explicit_rows, duration_frames),
+            start=1,
+        ):
+            out_frame = cursor + frames
+            role = _explicit_shot_role(scene, shot_number, action)
+            blueprint = _shot_blueprint(role)
+            group_setting = first_settings[story_scene_number]
+            card_characters = _explicit_card_characters(scene, action)
+            logical_scene = SceneBrief(
+                number=story_scene_number,
+                purpose=action,
+                setting=group_setting,
+                characters=card_characters,
+                dialogue_required=scene.dialogue_required,
+            )
+            shots.append(
+                {
+                    "shot_id": f"SC{story_scene_number:02d}-SH{shot_number:02d}",
+                    "sequence": sequence,
+                    # The public brief has already been normalized back to the
+                    # user's logical scene count.
+                    "scene_number": scene.number,
+                    # story_scene_number binds dialogue and location flow to
+                    # the user's actual scene rather than the provider row.
+                    "story_scene_number": story_scene_number,
+                    "characters": list(card_characters),
+                    "role": role,
+                    "planned_in_frame": cursor,
+                    "planned_out_frame_exclusive": out_frame,
+                    "planned_in_timecode": _planned_timecode(cursor),
+                    "planned_out_timecode": _planned_timecode(out_frame),
+                    "planned_duration_frames": frames,
+                    "planned_duration_seconds": _planned_duration_seconds(frames),
+                    "storyboard_card": {
+                        "characters": list(card_characters),
+                        "framing": blueprint["framing"],
+                        "camera": blueprint["camera"],
+                        "setting": group_setting,
+                        "action": action,
+                        "dialogue_or_audio": _shot_audio(brief, logical_scene, role),
+                        "continuity_requirements": _scene_continuity(logical_scene),
+                        "source_footage_guidance": _source_footage_guidance(logical_scene),
+                        "bridge_shot_guidance": _bridge_shot_guidance(logical_scene),
+                    },
+                }
+            )
+            cursor = out_frame
+        return {
+            "schema": STORYBOARD_TIMELINE_SCHEMA,
+            "layout": "explicit_ordered_shots",
+            "timecode_basis": "planned_non_drop_24fps",
+            "frame_rate": STORYBOARD_FRAME_RATE,
+            "start_timecode": _planned_timecode(0),
+            "end_timecode": _planned_timecode(total_frames),
+            "duration_frames": total_frames,
+            "duration_seconds": brief.duration_seconds,
+            "shot_count": len(shots),
+            "shots": shots,
+        }
+
     scene_frames = _equal_positive_allocation(
         total_frames,
         len(brief.scenes),
@@ -1223,9 +1473,51 @@ def compile_storyboard_timeline(brief: ProductionBrief) -> dict[str, Any]:
 def _brief_from_export(value: Any) -> ProductionBrief:
     if not isinstance(value, Mapping) or value.get("schema") != BRIEF_SCHEMA:
         raise BriefValidationError("storyboard package contains an invalid production brief")
-    return ProductionBrief.from_mapping(
-        {key: item for key, item in value.items() if key != "schema"}
-    )
+    exported = {key: item for key, item in value.items() if key != "schema"}
+    raw_scenes = exported.get("scenes")
+    if isinstance(raw_scenes, list) and raw_scenes:
+        expanded: list[dict[str, Any]] = []
+        for expected_scene_number, raw_scene in enumerate(raw_scenes, start=1):
+            if not isinstance(raw_scene, Mapping):
+                expanded = []
+                break
+            purpose = raw_scene.get("purpose")
+            if not isinstance(purpose, str):
+                expanded = []
+                break
+            markers = list(_EXPLICIT_SHOT_MARKER.finditer(purpose))
+            if len(markers) != len(_SHOT_BLUEPRINTS):
+                expanded = []
+                break
+            scene_rows: list[dict[str, Any]] = []
+            for index, marker in enumerate(markers):
+                story_scene_number = int(marker.group("scene"))
+                shot_number = int(marker.group("shot"))
+                if story_scene_number != expected_scene_number or shot_number != index + 1:
+                    scene_rows = []
+                    break
+                end = (
+                    markers[index + 1].start()
+                    if index + 1 < len(markers)
+                    else len(purpose)
+                )
+                action = purpose[marker.end() : end].strip(" ,;:-")
+                if not action:
+                    scene_rows = []
+                    break
+                row = dict(raw_scene)
+                row["number"] = len(expanded) + len(scene_rows) + 1
+                row["purpose"] = (
+                    f"Shot {story_scene_number}.{shot_number}: {action}"
+                )
+                scene_rows.append(row)
+            if len(scene_rows) != len(_SHOT_BLUEPRINTS):
+                expanded = []
+                break
+            expanded.extend(scene_rows)
+        if len(expanded) == len(raw_scenes) * len(_SHOT_BLUEPRINTS):
+            exported["scenes"] = expanded
+    return ProductionBrief.from_mapping(exported)
 
 
 def _storyboard_package_body(
@@ -1235,6 +1527,16 @@ def _storyboard_package_body(
 ) -> dict[str, Any]:
     brief_export = brief.to_dict()
     brief_digest = sha256_json(brief_export)
+    explicit_layout = timeline.get("layout") == "explicit_ordered_shots"
+    mutations = [
+        "allocate_total_duration_as_contiguous_24fps_frames",
+        (
+            "preserve_explicit_ordered_shot_rows_without_double_expansion"
+            if explicit_layout
+            else "expand_each_scene_to_establishing_primary_and_bridge_coverage"
+        ),
+        "attach_plan_only_continuity_and_source_coverage_guidance",
+    ]
     return {
         "schema": STORYBOARD_PACKAGE_SCHEMA,
         "package_id": f"storyboard-{brief_digest[:24]}",
@@ -1245,11 +1547,7 @@ def _storyboard_package_body(
         "compiler": {
             "name": "video-studio-deterministic-storyboard-compiler",
             "version": "1",
-            "mutations": [
-                "allocate_total_duration_as_contiguous_24fps_frames",
-                "expand_each_scene_to_establishing_primary_and_bridge_coverage",
-                "attach_plan_only_continuity_and_source_coverage_guidance",
-            ],
+            "mutations": mutations,
         },
         "production_brief": brief_export,
         "timeline": dict(timeline),
@@ -1304,6 +1602,14 @@ def audit_storyboard_package(value: Mapping[str, Any]) -> dict[str, Any]:
             )
         )
         actual_timeline = value.get("timeline")
+        timeline_matches = actual_timeline == expected_timeline
+        checks.append(
+            _audit_item(
+                "deterministic_timeline_contract",
+                timeline_matches,
+                "Every timeline field and per-card value matches deterministic compilation.",
+            )
+        )
         actual_shots = (
             actual_timeline.get("shots")
             if isinstance(actual_timeline, Mapping)
@@ -1396,6 +1702,7 @@ def audit_storyboard_package(value: Mapping[str, Any]) -> dict[str, Any]:
         for check_id in (
             "brief_digest",
             "package_contract",
+            "deterministic_timeline_contract",
             "ordered_three_angle_coverage",
             "contiguous_timeline",
             "coverage_and_continuity_cards",
@@ -1593,37 +1900,6 @@ _VISUAL_EXPLICIT_WARDROBE_CHANGE_PATTERN = re.compile(
 )
 
 
-def _project_character_appearance_anchors(brief: ProductionBrief) -> dict[str, str]:
-    """Return compact stable identity locks without inventing unsupplied canon details."""
-
-    project_fingerprint = hashlib.sha256(
-        canonical_json(
-            {
-                "title": brief.title,
-                "summary": brief.summary,
-                "visual_direction": brief.visual_direction,
-            }
-        ).encode("utf-8")
-    ).hexdigest()[:12]
-    anchors_by_identity: dict[str, str] = {}
-    anchors: dict[str, str] = {}
-    for scene in brief.scenes:
-        for name in scene.characters:
-            identity_key = name.casefold()
-            if identity_key not in anchors_by_identity:
-                identity_token = hashlib.sha256(
-                    f"{project_fingerprint}\0{identity_key}".encode("utf-8")
-                ).hexdigest()[:10].upper()
-                anchors_by_identity[identity_key] = (
-                    f"continuity ID {identity_token}; lock earliest character-reference age/build, "
-                    "face/head, hair style/length/color, and full wardrobe "
-                    "(sleeves/patches/harness); establish once if absent; only a named override "
-                    "may vary"
-                )
-            anchors[name] = anchors_by_identity[identity_key]
-    return anchors
-
-
 def _nonnegated_visual_change_match(pattern: re.Pattern[str], text: str) -> bool:
     for match in pattern.finditer(text):
         prefix = text[max(0, match.start() - 48) : match.start()]
@@ -1654,9 +1930,8 @@ def _scene_appearance_change_contract(scene: SceneBrief) -> str:
         wardrobe_change = False
     if not time_change and not wardrobe_change:
         return (
-            "APPEARANCE CONTINUITY LOCK: this scene authorizes no new aging, hair, build, or "
-            "wardrobe change. Preserve each character's most recently approved state from the "
-            "reference or baseline, including hair, garment cut, sleeves, patches, and harness."
+            "Do not change apparent age, build, face, hair, or wardrobe. Preserve the most "
+            "recently approved state, including garment cut, sleeves, patches, and harness."
         )
     permitted: list[str] = []
     if time_change:
@@ -1667,12 +1942,29 @@ def _scene_appearance_change_contract(scene: SceneBrief) -> str:
         )
     permission = " and ".join(permitted)
     return (
-        f"EXPLICIT APPEARANCE CHANGE OVERRIDE: only {permission} may vary in this scene, and only "
-        "as expressly described. Keep every other character and trait unchanged. The resulting "
-        "approved state becomes that character's lock for later scenes. A time jump alone does not "
-        "authorize wardrobe or hair changes; a wardrobe change alone does not authorize aging or "
-        "a different build."
+        f"Only {permission} may change, exactly as described by the current action. Preserve every "
+        "other character trait. Use the approved result as the later reference. Time passage alone "
+        "does not change wardrobe or hair, and a wardrobe change alone does not change age or build."
     )
+
+
+def _shot_characters(scene: SceneBrief, shot: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return a validated per-card cast, falling back to the logical scene cast."""
+
+    raw = shot.get("characters")
+    if raw is None:
+        return scene.characters
+    if not isinstance(raw, list) or any(not isinstance(name, str) for name in raw):
+        raise BriefValidationError("visual storyboard shot has invalid card characters")
+    allowed = {name.casefold(): name for name in scene.characters}
+    selected: list[str] = []
+    for raw_name in raw:
+        name = raw_name.strip()
+        canonical = allowed.get(name.casefold())
+        if canonical is None or canonical in selected:
+            raise BriefValidationError("visual storyboard shot has invalid card characters")
+        selected.append(canonical)
+    return tuple(selected)
 
 
 def storyboard_panel_prompt(
@@ -1692,154 +1984,142 @@ def storyboard_panel_prompt(
     card = shot.get("storyboard_card")
     if not isinstance(card, Mapping):
         raise BriefValidationError("visual storyboard shot is missing its card")
+    card_characters = _shot_characters(scene, shot)
+    explicit_card_cast = "characters" in shot
+    card_scene = SceneBrief(
+        number=scene.number,
+        purpose=(
+            str(card.get("action") or scene.purpose)
+            if explicit_card_cast
+            else scene.purpose
+        ),
+        setting=str(card.get("setting") or scene.setting),
+        characters=card_characters,
+        dialogue_required=scene.dialogue_required,
+    )
     role = shot.get("role")
-    characters = ", ".join(scene.characters) if scene.characters else "none"
-    character_count = len(scene.characters)
-    project_appearance_anchors = _project_character_appearance_anchors(brief)
-    if scene.characters:
-        appearance_anchor_contract = (
-            "CHARACTER APPEARANCE ANCHORS: these are project-wide identity locks, not suggestions. "
-            + " ".join(
-                f"APPEARANCE ANCHOR [{name}]: {project_appearance_anchors[name]}."
-                for name in scene.characters
+    characters = ", ".join(card_characters)
+    character_count = len(card_characters)
+    if card_characters:
+        if len(card_characters) <= 4:
+            character_identity_locks = " ".join(
+                f"Keep {name} as the same established person."
+                for name in card_characters
             )
-            + " These locks preserve identity only and do not authorize a character to appear in "
-            "a bridge or detail composition. "
-            + _scene_appearance_change_contract(scene)
+        else:
+            character_identity_locks = (
+                "Identity locks are individual: "
+                + "; ".join(f"{name} remains {name}" for name in card_characters)
+                + "."
+            )
+        shared_appearance_details = (
+            "For every named person, preserve the same established person, apparent age and "
+            "build, face and head shape, hair style, length, and color, and complete wardrobe "
+            "including garment cut, sleeves, patches, and harness; establish these once if no "
+            "reference exists. Never merge identities or features between people."
+        )
+        appearance_contract = (
+            f"{character_identity_locks} {shared_appearance_details} "
+            f"{_scene_appearance_change_contract(card_scene)}"
         )
         cast_contract = (
-            f"CAST CONTRACT: the complete allowed human cast contains exactly "
-            f"{character_count} named character{'s' if character_count != 1 else ''}: "
-            f"{characters}. Only those identities may appear, and each visible character "
-            "may appear at most once. Never add extras, background people, bystanders, crowds, "
-            "human silhouettes, partial background bodies, reflected people, faces on screens "
-            "or posters, mannequins, or duplicate copies of a named character. Do not place an "
-            "unexplained third person at a rear console, doorway, corridor, or other background "
-            "position."
-        )
-        body_integrity_contract = (
-            "BODY-INTEGRITY CONTRACT: every visible person must be one complete, anatomically "
-            "connected body (or a natural outer-frame crop of that one body), belonging to one "
-            "allowed named character and counted only once. Never add a spare, disconnected, or "
-            "repeated head, torso, arm, hand, hip, leg, or foot; never show a seated lower body, "
-            "extra legs, or any other body portion separated from its character. Do not place body "
-            "fragments on furniture, consoles, walls, floors, or backgrounds. A crop may exit only "
-            "at the outer frame and must continue naturally from the connected body."
+            f"The exact visible cast is {characters}, each exactly once. Add no extras, crowds, "
+            "silhouettes, reflections, screen faces, mannequins, background bodies, or duplicates."
         )
         full_cast_direction = (
-            f"Show all {character_count} named characters exactly once and no other human figure."
+            f"Show all {character_count} required character{'s' if character_count != 1 else ''}."
         )
-        bridge_cast_direction = (
-            "Default to no people. If a reaction face is the most story-specific bridge, show "
-            "exactly one named character exactly once, cropped above the shoulders, with no other "
-            "person or human-like figure anywhere."
-        )
+        if explicit_card_cast:
+            bridge_cast_direction = (
+                f"Show exactly {characters} in one tight connected reaction composition; "
+                "show every required character once and nobody else."
+            )
+        else:
+            bridge_cast_direction = (
+                "Prefer a prop or environmental detail. If a face is essential, show one allowed "
+                "character once in a tight natural crop and nobody else."
+            )
     else:
-        appearance_anchor_contract = (
-            "CHARACTER APPEARANCE ANCHORS: none; this frame contains no authorized people."
-        )
+        appearance_contract = ""
         cast_contract = (
-            "CAST CONTRACT: this scene has no named characters. Show no people, human silhouettes, "
-            "partial bodies, faces, mannequins, reflections, or human-like background figures."
-        )
-        body_integrity_contract = (
-            "BODY-INTEGRITY CONTRACT: show no human body or body fragment anywhere, including on "
-            "furniture, consoles, walls, floors, screens, or in the background."
+            "This card has an empty cast. Show no people, faces, silhouettes, reflections, "
+            "mannequins, hands, limbs, or other body fragments anywhere."
         )
         full_cast_direction = "Show no human figures."
         bridge_cast_direction = "Show no human figures."
     screen_content_contract = (
-        "SCREEN CONTENT CONTRACT: every monitor, display, console screen, television, projection, "
-        "and reflective screen surface may show only abstract, non-figurative signal or interface "
-        "data, such as waveforms, geometric status graphics, text-free diagrams, or indicator "
-        "lights. On or inside any screen, show no faces, people, human figures, body parts, hands, "
-        "silhouettes, video feeds, portraits, or reflections. Preserve the exact required physical "
-        "cast count; a screen image never satisfies, replaces, duplicates, or adds a character."
+        "Any visible screen contains only abstract, text-free interface graphics or indicator "
+        "lights, never a person, face, body part, portrait, reflection, or readable words."
     )
     explicit_hand_action = bool(
         _VISUAL_HAND_ACTION_PATTERN.search(
-            f"{scene.purpose} {card.get('action') or ''}"
+            (
+                card_scene.purpose
+                if explicit_card_cast
+                else f"{card_scene.purpose} {card.get('action') or ''}"
+            )
         )
     )
     if explicit_hand_action:
-        bridge_hand_direction = (
-            "The stated source action explicitly requires hand interaction. If that contact must "
-            "appear, show at most one natural-scale hand connected to its visible wrist and forearm, "
-            "kept away from the foreground; do not use a hand as the focal object or framing device."
+        hand_contract = (
+            "The exact action requires hand contact. Show only the hands needed for that action, "
+            "at natural scale, each connected to the correct visible wrist, arm, and body. Never "
+            "duplicate a hand or add a detached foreground hand."
         )
     else:
-        bridge_hand_direction = (
-            "HANDS-OUT-OF-FRAME DEFAULT: show no hands, fingers, wrists, forearms, or arms anywhere "
-            "in this frame. Do not use any foreground body part as a framing device. Prefer a "
-            "non-anatomical prop or environmental state; a reaction face must be cropped above the "
-            "shoulders. For a generic final detail or confirmation beat, choose a story-specific "
-            "non-anatomical confirmation prop or environmental change, never a body part. Never "
-            "show a pointing hand entering the frame or multiple hands crowding a console, display, "
-            "control, or prop."
+        hand_contract = (
+            "Do not invent a pointing, detached, oversized, duplicated, or foreground hand. "
+            "For a detail card, keep hands and other body fragments out of frame."
         )
-    if role == "continuity_bridge" and not explicit_hand_action:
-        hand_anatomy_contract = (
-            "Keep any visible face anatomically plausible and naturally proportioned. This detail "
-            "frame must contain no visible hands, fingers, wrists, forearms, arms, or foreground "
-            "body parts."
-        )
-    else:
-        hand_anatomy_contract = (
-            "Keep human anatomy plausible and naturally proportioned. Never depict a detached, "
-            "disembodied, duplicated, giant, or oversized hand. Every visible hand must connect "
-            "to a visible, anatomically plausible wrist and forearm, with natural joints and five "
-            "fingers. Do not place a hand or handheld prop in extreme foreground or make it larger "
-            "than a character's head unless the stated action explicitly requires that scale. For "
-            "a detail or insert, prefer the prop or environmental detail alone; when human contact "
-            "is essential, keep the proportionate hand, wrist, and forearm together in the frame."
-        )
+    body_contract = (
+        "Every visible person is one anatomically complete, connected body or a natural crop at "
+        "the outer canvas edge. Never add or detach a head, torso, arm, hand, hip, leg, or foot."
+    )
     role_directions = {
         "establishing": (
-            "COMPOSITION CONTRACT — ESTABLISHING: create a genuinely wide environmental "
-            "master. Show the room or location geography clearly, with the named characters "
-            "as natural full figures inside that environment. Keep enough surrounding space "
-            "to explain entrances, exits, and their spatial relationship. Do not use a medium, "
-            "over-the-shoulder, waist-up, reaction close-up, or prop insert composition. "
+            "Use a genuinely wide environmental master that clearly establishes location "
+            "geography. Keep any required cast naturally inside the environment; do not turn this "
+            "into a medium shot, over-the-shoulder view, reaction close-up, or prop insert. "
             f"{full_cast_direction}"
         ),
         "primary_coverage": (
-            "COMPOSITION CONTRACT — PRIMARY COVERAGE: make this materially different from "
-            "the establishing master. Use a medium two-shot, over-the-shoulder, or waist-up "
-            "character composition that makes faces, eyelines, and the central interaction "
-            "dominant. Do not repeat the wide environmental view or stage both characters as "
-            f"small full-body figures. {full_cast_direction}"
+            "Use action-focused medium, over-the-shoulder, waist-up, or full-body coverage exactly "
+            "as requested by the current action and camera. Make faces, eyelines, and interaction "
+            f"clear without repeating the establishing composition. {full_cast_direction}"
         ),
         "continuity_bridge": (
-            "COMPOSITION CONTRACT — CONTINUITY BRIDGE: use a tight close reaction, prop-only "
-            "insert, or environmental detail that supplies a specific editorial bridge. Crop "
-            "tightly around one face, one safe prop, or one environmental detail. Never reuse "
-            "the establishing wide or two-full-body composition, and never pose both characters "
-            "as full figures. In this reaction or detail card, any visible monitor or screen must "
-            "remain abstract and non-figurative interface data only, never a face, person, body "
-            "part, hand, silhouette, video feed, portrait, or reflection. "
-            f"{bridge_cast_direction} {bridge_hand_direction}"
+            "Use a tight reaction, prop insert, or environmental detail that matches the exact "
+            "action. Do not repeat the establishing composition or stage a generic full-body "
+            f"group. {bridge_cast_direction}"
         ),
     }
     if role not in role_directions:
         raise BriefValidationError("visual storyboard shot has an invalid coverage role")
-    continuity = " ".join(str(item) for item in card.get("continuity_requirements", []))
+    action = str(card.get("action") or "").strip().rstrip(".")
+    setting = card_scene.setting.strip()
+    framing = str(card.get("framing") or "").strip()
+    camera = str(card.get("camera") or "").strip()
+    cast_line = characters if characters else "no people"
     return (
-        "Create one black-and-white professional film storyboard drawing in clean pencil-and-ink "
-        "line art, 16:9 landscape. This is a previsualization panel, not a photorealistic frame. "
-        "Do not include captions, lettering, timecodes, logos, watermarks, borders, or split panels. "
-        f"{hand_anatomy_contract} Every card in "
-        "the sequence must have a materially distinct composition: do not reuse another card's "
-        "camera distance, blocking, focal subject, or generic two-character pose. If a reference "
-        "image is supplied, use it only for character, costume, prop, and line-art continuity. "
-        "Do not copy the reference image's camera angle, crop, blocking, pose, background layout, "
-        f"or composition. {cast_contract} {body_integrity_contract} "
-        f"{appearance_anchor_contract} {screen_content_contract} "
-        f"{role_directions[role]} "
-        f"Project: {brief.title}. Overall visual direction: {brief.visual_direction}. "
-        f"Scene {scene.number} setting: {scene.setting}. Characters: {characters}. "
-        f"Scene purpose: {scene.purpose}. Shot {shot.get('shot_id')}: {card.get('framing')}. "
-        f"Camera: {card.get('camera')}. Action: {card.get('action')}. "
-        f"Continuity to preserve: {continuity}"
+        "Create one full-canvas 16:9 black-and-white professional pencil-and-ink cinematic "
+        "storyboard illustration. Do not draw a storyboard template, border, prompt text, title, "
+        "caption, metadata, shot label, timecode, logo, watermark, subtitle, or readable words. "
+        f"Draw only this exact moment: {action}. "
+        f"Required cast: {cast_line}. {cast_contract} "
+        f"Required location and state: {setting}. Preserve its environment geometry, time of day, "
+        "weather, lighting, damage, and object placement across cards. "
+        f"Required framing and camera: {framing}; {camera}. {role_directions[role]} "
+        "Lock every recurring named or described prop as one physical object with the same "
+        "silhouette, scale, material, color value, and wear across cards. Show only the number "
+        "required by this exact action; never redesign, duplicate, enlarge, or substitute it. "
+        "Do not add a story prop that this exact action does not require. "
+        "If a prior reference is supplied, preserve established character identity and wardrobe, "
+        "recurring-prop design, and line-art style. When it depicts this same location, also "
+        "preserve its geometry, time, weather, lighting, damage, and object placement. The required "
+        "location and state above override a different reference background. Change only the "
+        "requested camera, crop, blocking, and action; do not copy the prior pose or composition. "
+        f"{appearance_contract} {body_contract} {hand_contract} {screen_content_contract} "
+        f"Use this visual direction: {brief.visual_direction}."
     )
 
 
@@ -2018,7 +2298,100 @@ def _shot_character_cast_key(
         or not 1 <= scene_number <= len(brief.scenes)
     ):
         return ()
-    return tuple(sorted({name.casefold() for name in brief.scenes[scene_number - 1].characters}))
+    scene = brief.scenes[scene_number - 1]
+    return tuple(sorted({name.casefold() for name in _shot_characters(scene, shot)}))
+
+
+_VISUAL_SETTING_STATE_SUFFIX = re.compile(
+    r",\s*(?:moments? later|continuous|later|dawn|morning|afternoon|evening|night|"
+    r"day|sunrise|sunset|storm|stormy|rain|snow|clear|overcast)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _shot_story_scene_number(shot: Mapping[str, Any]) -> int | None:
+    value = shot.get("story_scene_number", shot.get("scene_number"))
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return value
+
+
+def _normalized_visual_setting(
+    brief: ProductionBrief,
+    shot: Mapping[str, Any],
+) -> str:
+    scene_number = shot.get("scene_number")
+    if (
+        isinstance(scene_number, bool)
+        or not isinstance(scene_number, int)
+        or not 1 <= scene_number <= len(brief.scenes)
+    ):
+        return ""
+    card = shot.get("storyboard_card")
+    raw = card.get("setting") if isinstance(card, Mapping) else None
+    setting = str(raw or brief.scenes[scene_number - 1].setting)
+    setting = re.sub(r"\s+", " ", setting).strip().casefold()
+    setting = re.sub(r"^back in\s+", "", setting)
+    return _VISUAL_SETTING_STATE_SUFFIX.sub("", setting).strip(" ,")
+
+
+def _visual_reference_panel_index(
+    brief: ProductionBrief,
+    timeline: Mapping[str, Any],
+    next_shot: Mapping[str, Any],
+    *,
+    available_indices: Sequence[int],
+) -> int | None:
+    """Choose a prior continuity reference without leaking unrelated empty-cast art."""
+
+    shots = timeline.get("shots")
+    if not isinstance(shots, list):
+        return None
+    wanted_cast = _shot_character_cast_key(brief, next_shot)
+    wanted_cast_set = set(wanted_cast)
+    wanted_story_scene = _shot_story_scene_number(next_shot)
+    wanted_setting = _normalized_visual_setting(brief, next_shot)
+    ranked: list[tuple[tuple[int, int, int, int, int], int]] = []
+    for index in available_indices:
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(shots):
+            continue
+        candidate = shots[index]
+        if not isinstance(candidate, Mapping):
+            continue
+        candidate_cast = _shot_character_cast_key(brief, candidate)
+        candidate_cast_set = set(candidate_cast)
+        same_story_scene = (
+            wanted_story_scene is not None
+            and _shot_story_scene_number(candidate) == wanted_story_scene
+        )
+        same_setting = bool(
+            wanted_setting
+            and _normalized_visual_setting(brief, candidate) == wanted_setting
+        )
+        if wanted_cast:
+            # A full-cast reference can safely anchor a solo card, while a solo
+            # or empty reference cannot define a larger cast.
+            if not wanted_cast_set.issubset(candidate_cast_set):
+                continue
+        else:
+            # Empty-cast detail cards are especially prone to stray hands and
+            # figures. Use only an empty-cast reference from this story scene or
+            # the same normalized setting; never the unrelated last panel.
+            if candidate_cast or not (same_story_scene or same_setting):
+                continue
+        canonical_coverage = int(
+            candidate.get("role") in {"establishing", "primary_coverage"}
+        )
+        exact_cast = int(candidate_cast == wanted_cast)
+        score = (
+            int(same_story_scene),
+            int(same_setting),
+            canonical_coverage,
+            exact_cast,
+            index,
+        )
+        ranked.append((score, index))
+    return max(ranked)[1] if ranked else None
 
 
 def build_visual_storyboard(
@@ -2041,8 +2414,7 @@ def build_visual_storyboard(
         else _selected_visual_indices(len(shots))
     )
     panels: list[dict[str, Any]] = []
-    reference_image: bytes | None = None
-    character_reference_images: dict[tuple[str, ...], bytes] = {}
+    generated_reference_images: dict[int, bytes] = {}
     evidence_origin = "not_attempted"
     for index, raw_shot in enumerate(shots):
         shot = dict(raw_shot)
@@ -2055,10 +2427,13 @@ def build_visual_storyboard(
         if index not in selected:
             panels.append(_missing_visual_panel(brief, shot, "panel_limit_reached"))
             continue
-        cast_key = _shot_character_cast_key(brief, shot)
-        selected_reference = (
-            character_reference_images.get(cast_key) if cast_key else reference_image
+        reference_index = _visual_reference_panel_index(
+            brief,
+            timeline,
+            shot,
+            available_indices=tuple(generated_reference_images),
         )
+        selected_reference = generated_reference_images.get(reference_index)
         try:
             result = provider.create_panel(
                 storyboard_panel_prompt(brief, shot),
@@ -2080,9 +2455,7 @@ def build_visual_storyboard(
             origin = result.execution.get("evidence_origin")
             if origin in {"injected_test_client", "live_google_provider_response"}:
                 evidence_origin = str(origin)
-            reference_image = result.image_bytes
-            if cast_key and shot.get("role") in {"establishing", "primary_coverage"}:
-                character_reference_images[cast_key] = result.image_bytes
+            generated_reference_images[index] = result.image_bytes
         except VisualPanelGenerationError as exc:
             panel = _missing_visual_panel(brief, shot, exc.code)
         except Exception:
@@ -2343,24 +2716,14 @@ def _reference_image_from_checkpoint(
     shots = timeline.get("shots")
     if not isinstance(shots, list) or len(panels) > len(shots):
         raise PipelineCheckpointError("checkpoint reference timeline is invalid")
-    wanted_cast = _shot_character_cast_key(brief, next_shot)
-    selected_index: int | None = None
-    if wanted_cast:
-        # A bridge is intentionally a prop/detail or at most one face. Never let
-        # it replace the full-cast identity reference at the next scene boundary.
-        for index in range(len(panels) - 1, -1, -1):
-            candidate = shots[index]
-            if (
-                isinstance(candidate, Mapping)
-                and candidate.get("role") in {"establishing", "primary_coverage"}
-                and _shot_character_cast_key(brief, candidate) == wanted_cast
-            ):
-                selected_index = index
-                break
-        if selected_index is None:
-            return None
-    else:
-        selected_index = len(panels) - 1
+    selected_index = _visual_reference_panel_index(
+        brief,
+        timeline,
+        next_shot,
+        available_indices=tuple(range(len(panels))),
+    )
+    if selected_index is None:
+        return None
     panel = panels[selected_index]
     object_name = panel.get("object_name")
     if not isinstance(object_name, str) or not object_name.startswith(

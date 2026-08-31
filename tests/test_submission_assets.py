@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import struct
 import unittest
 from pathlib import Path
@@ -27,14 +28,25 @@ class SubmissionArchitectureAssetTests(unittest.TestCase):
             "Cloud Storage",
             "Gemini 3.5 Flash",
             "Chirp 3 HD",
-            "CODEX TECHNICAL · VISUAL · NARRATION PASS",
-            "OWNER REVIEW + LISTENING PENDING",
+            "DEPLOYED ARCHITECTURE · HUMAN REVIEW GATED",
+            "LIVE MEDIA EVIDENCE PACKAGED SEPARATELY",
+            "EVERY GENERATED PANEL REQUIRES HUMAN REVIEW",
             "Partial or malformed media is never",
             "published as success",
         ):
             self.assertIn(required, source)
         self.assertNotIn("LIVE-PROVEN", source)
         self.assertNotIn("LIVE PROOF PENDING", source)
+        self.assertNotIn("CODEX TECHNICAL · VISUAL · NARRATION PASS", source)
+        self.assertNotIn("48ed0927-ac40-4450-9f15-a3f98dfdd383", source)
+        self.assertIsNone(re.search(r"sha256:[0-9a-fA-F]{64}", source))
+        self.assertIsNone(re.search(r"Commit [0-9a-fA-F]{7,40}", source))
+        self.assertIsNone(
+            re.search(r"Build [0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}", source)
+        )
+        self.assertIsNone(
+            re.search(r"video-studio-agent-(?:api|worker)-[0-9]{5}-", source)
+        )
 
     def test_rendered_png_is_exact_size_and_bounded(self) -> None:
         data = PNG_PATH.read_bytes()

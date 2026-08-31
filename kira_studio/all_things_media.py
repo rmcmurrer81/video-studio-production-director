@@ -44,7 +44,8 @@ _ATTRIBUTED_QUOTED_DIALOGUE = re.compile(
 _SHOT_ID = re.compile(r"\bSC\d{1,3}-SH\d{1,3}\b", re.IGNORECASE)
 _SHOT_NUMBER = re.compile(r"\bSH0*(\d{1,3})\b", re.IGNORECASE)
 _SHOT_DIRECTIVE = re.compile(
-    r"\bshot\s*0*(?P<number>\d{1,3})\s*[:\-–—)]\s*",
+    r"\bshot\s*0*(?P<label>\d{1,3}(?:\s*\.\s*0*\d{1,3})?)\s*"
+    r"[:\-–—)]\s*",
     re.IGNORECASE,
 )
 _SCENEWIDE_SHOT_LIST = re.compile(
@@ -52,6 +53,12 @@ _SCENEWIDE_SHOT_LIST = re.compile(
     re.IGNORECASE,
 )
 _RETURN_LOCATION = re.compile(r"^\s*back\s+in\s+", re.IGNORECASE)
+_LOCATION_TIME_SUFFIX = re.compile(
+    r"\s*,\s*(?:continuous|same|later|moments? later|"
+    r"(?:seconds?|minutes?|hours?|days?|weeks?|months?|years?) later|"
+    r"dawn|morning|day|afternoon|evening|dusk|night)\s*$",
+    re.IGNORECASE,
+)
 _INTERNAL_SPOKEN_REWRITES = (
     (re.compile(r"\bprimary[ _-]+coverage\b", re.IGNORECASE), "main moment"),
     (re.compile(r"\bcontinuity[ _-]+bridge\b", re.IGNORECASE), "transition"),
@@ -104,14 +111,6 @@ _BRIDGE_OPENINGS = (
     "A reaction carries the tension forward.",
     "A final detail confirms their choice.",
 )
-_GENERIC_OPENINGS = (
-    "We begin as",
-    "Next,",
-    "From there,",
-    "The story continues as",
-    "Finally,",
-)
-
 def _clean(value: Any, *, maximum: int = 1_800) -> str:
     text = str(value or "").replace("\x00", " ")
     text = re.sub(r"[\t ]+", " ", text)
@@ -127,6 +126,7 @@ def _spoken_story_text(value: Any, *, maximum: int = 1_800) -> str:
     """Remove production-only labels from audience-facing spoken text."""
 
     text = _SHOT_ID.sub("", _clean(value, maximum=maximum))
+    text = _SHOT_DIRECTIVE.sub("", text)
     for pattern, replacement in _INTERNAL_SPOKEN_REWRITES:
         text = pattern.sub(replacement, text)
     text = re.sub(r"\bcard\s+\d+\b", "", text, flags=re.IGNORECASE)
@@ -150,6 +150,65 @@ def _spoken_characters(value: Any) -> str:
     if len(names) == 2:
         return f"{names[0]} and {names[1]}"
     return f"{', '.join(names[:-1])}, and {names[-1]}"
+
+
+def _finite_framed_action(value: str) -> str:
+    """Turn a bounded ``close-up of X doing`` phrase into story prose."""
+
+    text = _clean(value, maximum=1_200).strip()
+    match = re.match(
+        r"^(?:close[- ]?up|medium shot|wide shot|full[- ]?body shot|two[- ]?shot|insert)\s+of\s+(.+)$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return text
+    clause = match.group(1).strip()
+    subject_match = re.match(
+        r"^(?P<subject>(?:[A-Z][A-Za-z'_-]{0,39}(?:\s+and\s+[A-Z][A-Za-z'_-]{0,39})?|"
+        r"(?:A|An|The)\s+.+?))\s+"
+        r"(?P<verb>holding|nodding|grabbing|leaning|carrying|standing|walking|running|"
+        r"whipping|struggling)\b"
+        r"(?P<tail>.*)$",
+        clause,
+        flags=re.IGNORECASE,
+    )
+    if subject_match is None:
+        return clause
+    subject = subject_match.group("subject")
+    plural = " and " in subject.casefold()
+    bases = {
+        "holding": "hold",
+        "nodding": "nod",
+        "grabbing": "grab",
+        "leaning": "lean",
+        "carrying": "carry",
+        "standing": "stand",
+        "walking": "walk",
+        "running": "run",
+        "whipping": "whip",
+        "struggling": "struggle",
+    }
+    base = bases[subject_match.group("verb").casefold()]
+    finite = base if plural else (base[:-1] + "ies" if base.endswith("y") else base + "s")
+    clause = f"{subject} {finite}{subject_match.group('tail')}"
+    clause = re.sub(
+        r"(?:,|\band)\s*(grabbing|holding|carrying|leaning)\b",
+        lambda match: " and " + (
+            bases[match.group(1).casefold()]
+            if plural
+            else (
+                bases[match.group(1).casefold()][:-1] + "ies"
+                if bases[match.group(1).casefold()].endswith("y")
+                else bases[match.group(1).casefold()] + "s"
+            )
+        ),
+        clause,
+        flags=re.IGNORECASE,
+    )
+    if clause and clause[0].islower():
+        clause = clause[0].upper() + clause[1:]
+    return clause
 
 
 def _finite_story_clause(value: Any, *, characters: str) -> str:
@@ -218,8 +277,25 @@ def _natural_story_purpose(
 ) -> str:
     """Rewrite model-authored production purposes as concise story narration."""
 
-    raw = _clean(value, maximum=1_800).strip()
+    raw = _spoken_story_text(value, maximum=1_800).strip()
     subject = characters or "The characters"
+
+    framed = _finite_framed_action(raw)
+    if framed != raw:
+        return _safe_story_sentence(framed, fallback=fallback)
+
+    match = re.match(
+        r"^(?:wide shot\s+)?(?:establish(?:es)?|introduc(?:e|es))\s+(.+)$",
+        raw,
+        re.IGNORECASE,
+    )
+    if match and not re.search(r"\bintroduc(?:e|es)\b", match.group(1), re.IGNORECASE):
+        return _safe_story_sentence(f"We see {match.group(1)}", fallback=fallback)
+
+    if re.match(r"^Establish\b", raw, flags=re.IGNORECASE) and "." in raw:
+        _opening, remainder = raw.split(".", 1)
+        if remainder.strip():
+            return _safe_story_sentence(remainder.strip(), fallback=fallback)
 
     match = re.match(
         r"^Deliver\s+(?:the\s+)?(?:core\s+)?(?:dramatic\s+)?(?:conflict|turn|beat)\s+"
@@ -291,18 +367,31 @@ def _audience_action(
     action: str,
     *,
     role_occurrence: int,
-    sequence: int,
 ) -> str:
     """Turn deterministic shot-planning templates into story-pitch prose."""
 
     establish = _ESTABLISH_ACTION.match(action)
     if establish:
-        _setting, characters, _purpose = establish.groups()
+        _setting, characters, purpose = establish.groups()
         spoken_characters = _spoken_characters(characters)
+        if spoken_characters.casefold() in {
+            "the scene subjects",
+            "the characters",
+        }:
+            return _natural_story_purpose(
+                purpose,
+                characters="",
+                setting="",
+                fallback="The story begins.",
+            )
         opening = (
             f"{spoken_characters} enter."
             if role_occurrence == 1
-            else f"{spoken_characters} face the next turn."
+            else (
+                f"{spoken_characters} face the next turn."
+                if " and " in spoken_characters.casefold() or "," in spoken_characters
+                else f"{spoken_characters} faces the next turn."
+            )
         )
         return _safe_story_sentence(opening, fallback="The story begins.")
 
@@ -328,7 +417,6 @@ def _audience_action(
         ].format(setting=_spoken_story_text(setting))
         return _safe_story_sentence(opening, fallback="The tension carries forward.")
 
-    opening = _GENERIC_OPENINGS[min(sequence - 1, len(_GENERIC_OPENINGS) - 1)]
     clean_action = _natural_story_purpose(
         action,
         characters="The characters",
@@ -337,9 +425,15 @@ def _audience_action(
     )
     if not clean_action:
         clean_action = "The next story beat unfolds."
-    if opening.endswith((",", " as")):
-        clean_action = clean_action[0].lower() + clean_action[1:]
-    return f"{opening} {clean_action}".strip()
+    return clean_action
+
+
+def _lowercase_location_join(value: str) -> str:
+    """Join a common-noun story clause grammatically after a spoken location."""
+
+    if re.match(r"^(?:The|A|An|We|They|It|This|That)\b", value):
+        return value[0].lower() + value[1:]
+    return value
 
 
 def _normalize_location_label(value: str) -> tuple[str, bool]:
@@ -400,14 +494,26 @@ def _directive_for_shot(
         elif isinstance(sequence, str) and sequence.strip().isdigit():
             wanted_numbers.append(int(sequence.strip()))
     shot_match = _SHOT_NUMBER.search(str(raw_shot.get("shot_id") or ""))
+    local_shot_number: int | None = None
     if shot_match is not None:
-        wanted_numbers.append(int(shot_match.group(1)))
+        local_shot_number = int(shot_match.group(1))
+        wanted_numbers.append(local_shot_number)
     wanted_numbers = list(dict.fromkeys(wanted_numbers))
+    story_scene_number = raw_shot.get("story_scene_number", raw_shot.get("scene_number"))
     markers = list(_SHOT_DIRECTIVE.finditer(action))
-    for wanted in wanted_numbers:
-        for index, marker in enumerate(markers):
-            if int(marker.group("number")) != wanted:
-                continue
+    for index, marker in enumerate(markers):
+        label = re.sub(r"\s+", "", marker.group("label"))
+        if "." in label:
+            raw_scene, raw_shot_number = label.split(".", 1)
+            matched = (
+                isinstance(story_scene_number, int)
+                and not isinstance(story_scene_number, bool)
+                and int(raw_scene) == story_scene_number
+                and local_shot_number == int(raw_shot_number)
+            )
+        else:
+            matched = int(label) in wanted_numbers
+        if matched:
             end = markers[index + 1].start() if index + 1 < len(markers) else len(action)
             return _clean(action[marker.end() : end].strip(" ,;:-"), maximum=1_800)
     return ""
@@ -489,7 +595,8 @@ def _location_transition(
 ) -> tuple[str, str | None]:
     """Speak a location only for the opening card or a genuine move."""
 
-    key = re.sub(r"\s+", " ", location).strip(" ,.;:-").casefold()
+    key = re.sub(r"\s+", " ", location).strip(" ,.;:-")
+    key = _LOCATION_TIME_SUFFIX.sub("", key).strip(" ,.;:-").casefold()
     if not key or key == previous_location:
         return "", previous_location
     lead = (
@@ -532,7 +639,7 @@ def _unscoped_dialogue_scene(shots: Sequence[Any]) -> int:
     for raw_shot in shots:
         if not isinstance(raw_shot, Mapping):
             continue
-        scene_number = raw_shot.get("scene_number")
+        scene_number = raw_shot.get("story_scene_number", raw_shot.get("scene_number"))
         if isinstance(scene_number, bool) or not isinstance(scene_number, int):
             continue
         if first_scene is None:
@@ -686,7 +793,7 @@ def build_narrated_pitch_cues(
     previous_location: str | None = None
     cues: list[dict[str, Any]] = []
     primary_dialogue_scenes = {
-        shot.get("scene_number")
+        shot.get("story_scene_number", shot.get("scene_number"))
         for shot in shots
         if isinstance(shot, Mapping)
         and _clean(shot.get("role")).lower().replace(" ", "_").replace("-", "_")
@@ -699,7 +806,7 @@ def build_narrated_pitch_cues(
         card = raw_shot.get("storyboard_card")
         if not isinstance(card, Mapping):
             raise ValueError("each planned shot must include a storyboard card")
-        scene_number = raw_shot.get("scene_number")
+        scene_number = raw_shot.get("story_scene_number", raw_shot.get("scene_number"))
         if isinstance(scene_number, bool) or not isinstance(scene_number, int):
             raise ValueError("each planned shot must include an integer scene number")
 
@@ -735,7 +842,6 @@ def build_narrated_pitch_cues(
         story_text = _audience_action(
             action,
             role_occurrence=role_counts[role_key],
-            sequence=index,
         )
         location, explicit_return = _story_location(
             raw_shot,
@@ -750,6 +856,8 @@ def build_narrated_pitch_cues(
             explicit_return=explicit_return,
         )
         story_text = _omit_repeated_location(story_text, location)
+        if location_lead:
+            story_text = _lowercase_location_join(story_text)
         narration_parts = (
             [location_lead, dialogue_text]
             if dialogue_text

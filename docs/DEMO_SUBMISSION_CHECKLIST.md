@@ -126,7 +126,7 @@ If any required panel or MP4 item fails, the release remains on hold. A historic
 - [ ] Hosted demo URL resolves and owner/judge code instructions are clear.
 - [ ] Demo video is accessible to judges and matches the deployed revision.
 - [ ] Description names only Google services actually demonstrated.
-- [ ] Do **not** upload the current `docs/all-things-agentic-architecture.png`; its badge refers to owner-rejected job `48ed0927-ac40-4450-9f15-a3f98dfdd383`. Regenerate the PNG/SVG evidence badge only after the replacement live job passes sequential card/cue, full-resolution visual, technical, and owner review.
+- [ ] Upload the current job-independent `docs/all-things-agentic-architecture.png` only as an architecture diagram. Package any live result separately and make a media-acceptance claim only after sequential card/cue, full-resolution visual, technical, and owner review.
 - [ ] The repository is public only when the owner is ready; no secret was added during the visibility change.
 - [ ] Every submitted link was reopened and the final text reread before the organizer cutoff.
 

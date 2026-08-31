@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import unittest
 
+from kira_studio.all_things_agentic import ProductionBrief, compile_storyboard_timeline
 from kira_studio.all_things_media import (
     build_narrated_pitch_cues,
     extract_screenplay_dialogue,
@@ -11,6 +12,100 @@ from kira_studio.all_things_media import (
 
 
 class AllThingsMediaTests(unittest.TestCase):
+    def test_live_explicit_grid_narrates_each_of_nine_cards_in_order(self) -> None:
+        rows = (
+            (1, "Shot 1.1: Establish the cramped harbor radio workshop as a storm rattles the windows.", "HARBOR RADIO WORKSHOP, DAWN"),
+            (1, "Shot 1.2: Close-up of Lila holding a handwritten frequency note beside the receiver.", "HARBOR RADIO WORKSHOP, DAWN"),
+            (1, "Shot 1.3: Medium shot of Theo nodding and grabbing the tool bag.", "HARBOR RADIO WORKSHOP, DAWN"),
+            (2, "Shot 2.1: Wide shot establishes the storm-battered rooftop transmitter.", "ROOFTOP TRANSMITTER, STORM"),
+            (2, "Shot 2.2: Close-up of a fraying cable whipping against the antenna mast.", "ROOFTOP TRANSMITTER, STORM"),
+            (2, "Shot 2.3: Full-body shot of Lila and Theo struggling together to secure the cable.", "ROOFTOP TRANSMITTER, STORM"),
+            (3, "Shot 3.1: The radio receiver sparks and a green indicator turns on.", "BACK IN HARBOR RADIO WORKSHOP, MOMENTS LATER"),
+            (3, "Shot 3.2: Lila broadcasts a clear warning into the microphone.", "BACK IN HARBOR RADIO WORKSHOP, MOMENTS LATER"),
+            (3, "Shot 3.3: Lila and Theo exchange relieved looks as the storm begins to fade.", "BACK IN HARBOR RADIO WORKSHOP, MOMENTS LATER"),
+        )
+        brief = ProductionBrief.from_mapping(
+            {
+                "title": "Harbor Signal",
+                "summary": "Lila and Theo repair a storm-damaged transmitter and warn the harbor.",
+                "format": "short drama",
+                "target_audience": "general audiences",
+                "duration_seconds": 54,
+                "genre": "drama",
+                "tone": ["urgent", "hopeful"],
+                "visual_direction": "Grounded coastal line art.",
+                "audio_direction": "Storm, radio static, and clear dialogue.",
+                "deliverables": ["storyboard pitch"],
+                "scenes": [
+                    {
+                        "number": index,
+                        "purpose": purpose,
+                        "setting": setting,
+                        "characters": ["Lila", "Theo"],
+                        "dialogue_required": logical_scene in {1, 3},
+                    }
+                    for index, (logical_scene, purpose, setting) in enumerate(rows, start=1)
+                ],
+                "clarifying_questions": [],
+                "ready_for_production": True,
+            }
+        )
+        timeline = compile_storyboard_timeline(brief)
+        cues = build_narrated_pitch_cues(brief.to_dict(), timeline, source_message="")
+
+        self.assertEqual(len(brief.scenes), 3)
+        self.assertEqual(len(cues), 9)
+        self.assertEqual(
+            [cue["action"] for cue in cues],
+            [purpose.split(":", 1)[1].strip() for _scene, purpose, _setting in rows],
+        )
+        for cue in cues:
+            self.assertNotRegex(cue["narration"], r"\bShot\s+\d+\.\d+\b")
+            self.assertNotIn("the scene subjects", cue["narration"].casefold())
+            self.assertNotIn("lila face the next turn", cue["narration"].casefold())
+
+        self.assertIn("Lila holds a handwritten frequency note", cues[1]["narration"])
+        self.assertIn("Theo nods and grabs the tool bag", cues[2]["narration"])
+        self.assertIn("storm rattles the windows", cues[0]["narration"])
+        self.assertIn("storm-battered rooftop transmitter", cues[3]["narration"])
+        self.assertTrue(
+            cues[4]["narration"].startswith(
+                "A fraying cable whips against the antenna mast."
+            )
+        )
+        self.assertIn("Lila and Theo struggle together to secure the cable", cues[5]["narration"])
+        self.assertTrue(cues[0]["narration"].startswith("In HARBOR RADIO WORKSHOP, DAWN,"))
+        self.assertTrue(
+            cues[0]["narration"].startswith(
+                "In HARBOR RADIO WORKSHOP, DAWN, we see"
+            )
+        )
+        self.assertFalse(cues[1]["narration"].startswith(("In ", "Back in ")))
+        self.assertTrue(cues[3]["narration"].startswith("In ROOFTOP TRANSMITTER, STORM,"))
+        self.assertTrue(
+            cues[3]["narration"].startswith(
+                "In ROOFTOP TRANSMITTER, STORM, we see"
+            )
+        )
+        self.assertTrue(
+            cues[6]["narration"].startswith(
+                "Back in HARBOR RADIO WORKSHOP, MOMENTS LATER, the radio receiver"
+            )
+        )
+        self.assertEqual(sum(cue["narration"].startswith("Back in ") for cue in cues), 1)
+        self.assertFalse(cues[7]["narration"].startswith(("In ", "Back in ")))
+        self.assertNotIn(
+            "The next story beat unfolds",
+            " ".join(cue["narration"] for cue in cues),
+        )
+        self.assertLessEqual(
+            sum(
+                len(re.findall(r"\bFinally\b", cue["narration"], re.IGNORECASE))
+                for cue in cues
+            ),
+            1,
+        )
+
     def test_extracts_explicit_screenplay_dialogue_by_scene(self) -> None:
         source = """Untrusted wrapper text.
 

@@ -1,6 +1,6 @@
 # Architecture
 
-The current rendered diagram [all-things-agentic-architecture.png](all-things-agentic-architecture.png) and its editable [SVG source](all-things-agentic-architecture.svg) are **historical HOLD artifacts and are not submission-ready** because their review badge refers to rejected job `48ed0927-ac40-4450-9f15-a3f98dfdd383`. Owner review found repeated narration, card/cue timing problems, an excessive silent tail, and a disconnected/duplicated lower body in one panel. Replace the badge and evidence block only after a new live job passes sequential card/cue, visual, technical, and owner review.
+The current rendered diagram [all-things-agentic-architecture.png](all-things-agentic-architecture.png) and its editable [SVG source](all-things-agentic-architecture.svg) are job-independent reference-architecture assets. They intentionally make no job-specific visual or narration acceptance claim. Live media evidence is packaged separately and remains subject to sequential card/cue, full-resolution visual, technical, and owner review.
 
 ![Video Studio All Things Agentic Google Cloud architecture](all-things-agentic-architecture.png)
 
@@ -45,12 +45,12 @@ flowchart LR
 | Cloud Tasks | Deliver job ID, application attempt, and dispatch sequence to the private worker with an OIDC token, worker URL audience, deterministic task name, and a 1,740-second dispatch deadline. |
 | Private Cloud Run worker | Claim an exact attempt/sequence transactionally, call the configured providers, compile and audit cards, generate a bounded visual chunk, checkpoint and yield when necessary, require all-card visuals, synthesize narration, render/probe the MP4, and finalize only while holding the current 1,800-second lease. |
 | Vertex brief adapter | Look up the configured Gemini 3.5+ model and request the exact structured creative-plan contract through the official Google Gen AI SDK. |
-| Deterministic compiler/auditor | Expand scenes into establishing/primary/continuity cards, allocate contiguous non-drop 24-fps frame ranges, verify coverage/continuity/source guidance, and hash the canonical package. |
+| Deterministic compiler/auditor | Preserve a complete explicit shot grid as one card per requested shot; otherwise expand each logical scene into establishing/primary/continuity cards. Allocate contiguous non-drop 24-fps frame ranges, verify coverage/continuity/source guidance, and hash the canonical package. |
 | Vertex visual adapter | Generate a planning illustration for every card, normalize it to a bounded 16:9 JPEG, and reject malformed/unsupported output. It does not alter the deterministic card plan. |
 | Private artifact store | Require a PAP-enforced, Uniform Bucket-Level Access bucket; write immutable content-addressed objects with create-only preconditions; verify hashes on read; never return a bucket, public, or signed URL. |
 | Narration planner | Extract exact screenplay dialogue where confidently identifiable; otherwise label generated prose as planned direction; emit exactly one cue per card. |
 | Cloud TTS adapter | Synthesize each cue with the configured Chirp 3 HD voice using the worker service identity. |
-| FFmpeg/FFprobe stage | Render every image/audio segment, concatenate the complete sequence, add subtitles, and fail unless final media is 1920×1080 H.264/AAC with complete duration/card/cue coverage. |
+| FFmpeg/FFprobe stage | Render every image/audio segment, concatenate the complete sequence, emit a separate optional SRT sidecar without burning subtitles into the video, and fail unless final media is 1920×1080 H.264/AAC with complete duration/card/cue coverage. |
 | Browser-side exports | Present visual and detailed boards plus synopsis/character-appearance, exact-setting location, shot-list, continuity, and source-aware EDL files. Unsupported biography, casting, relationship, pronoun, or speaker claims remain review holds. |
 
 ## Private artifact design

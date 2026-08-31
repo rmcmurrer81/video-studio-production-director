@@ -69,6 +69,11 @@ present or analyzed, and ask for clarification when an omitted transition
 prevents a truthful plan.
 Your structured creative plan will be expanded by a deterministic local compiler
 into plan-only storyboard cards, planned timecodes, and a continuity audit. Do not
+confuse scenes with shots: the compiler normally creates three ordered storyboard
+cards for every scene object. If the user asks for three scenes with three shots
+per scene, return exactly three scene objects, not nine scene objects. Preserve
+the three requested shot directives in that scene's purpose as Shot 1.1, Shot 1.2,
+Shot 1.3 (and so on) so the compiler can honor them without double expansion. Do not
 claim that footage was selected, edited, mutated, or rendered. Return JSON only.
 Do not add Markdown or fields outside the schema."""
 
