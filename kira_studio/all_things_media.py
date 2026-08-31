@@ -157,7 +157,7 @@ def _finite_framed_action(value: str) -> str:
 
     text = _clean(value, maximum=1_200).strip()
     match = re.match(
-        r"^(?:close[- ]?up|medium(?:\s+tracking)?\s+shot|wide shot|"
+        r"^(?:close[- ]?up|medium(?:(?:[- ]wide)|(?:\s+tracking))?\s+shot|wide shot|"
         r"low[- ]?angle(?:\s+shot)?|high[- ]?angle(?:\s+shot)?|"
         r"overhead(?:\s+shot)?|full[- ]?body shot|two[- ]?shot|insert)\s+"
         r"(?:(?:back\s+)?in\s+.+?\s+as\s+|(?:of|on|as)\s+)(.+)$",
@@ -165,6 +165,62 @@ def _finite_framed_action(value: str) -> str:
         flags=re.IGNORECASE,
     )
     clause = match.group(1).strip() if match is not None else text
+
+    def plural_subject(subject: str) -> bool:
+        last_word = re.sub(r"[^a-z]", "", subject.casefold().split()[-1])
+        return (
+            " and " in subject.casefold()
+            or subject.casefold() in {"we", "they"}
+            or last_word
+            in {
+                "hands",
+                "tubes",
+                "characters",
+                "friends",
+                "people",
+                "crew",
+            }
+        )
+
+    # Some visual planners mix a participle with a later finite verb. Put the
+    # object first so the result has one clear finite predicate instead of
+    # producing prose such as "they climb onto the roof carry the key."
+    mixed_climb = re.match(
+        r"^(?P<subject>[^,.!?]+?)\s+climbing\s+(?P<path>.+?)\s+"
+        r"carry(?:ing)?\s+(?P<object>.+)$",
+        clause,
+        flags=re.IGNORECASE,
+    )
+    if mixed_climb is not None:
+        subject = mixed_climb.group("subject")
+        path = mixed_climb.group("path").strip(" ,.?!")
+        carried_object = mixed_climb.group("object").strip(" ,.?!")
+        carry = "carry" if plural_subject(subject) else "carries"
+        clause = (
+            f"{subject} {carry} {carried_object} while climbing {path}"
+        )
+        if clause and clause[0].islower():
+            clause = clause[0].upper() + clause[1:]
+        return clause
+
+    # Repair a coordinated participle after an already-finite predicate. The
+    # subject determines agreement, so both singular and plural inputs remain
+    # grammatical ("the dial glows and comes" / "the lights glow and come").
+    finite_lead = re.match(
+        r"^(?P<subject>.+?)\s+(?:[A-Za-z'_-]+ly\s+)*"
+        r"(?:glow|glows|spark|sparks|light|lights|flicker|flickers|turn|turns)\b",
+        clause,
+        flags=re.IGNORECASE,
+    )
+    if finite_lead is not None:
+        come = "come" if plural_subject(finite_lead.group("subject")) else "comes"
+        clause = re.sub(
+            r"\band\s+coming\b",
+            f"and {come}",
+            clause,
+            flags=re.IGNORECASE,
+        )
+
     if match is None and re.match(
         r"^(?:introduce|establish|stage|deliver|resolve|show|hold)\b",
         text,
@@ -176,7 +232,7 @@ def _finite_framed_action(value: str) -> str:
         r"(?P<adverbs>(?:[A-Za-z'_-]+ly\s+)*)"
         r"(?P<verb>holding|nodding|grabbing|leaning|carrying|standing|walking|running|"
         r"whipping|struggling|fighting|glowing|speaking|exchanging|preparing|hunching|"
-        r"polishing|reconnecting|working|hunched)\b"
+        r"polishing|reconnecting|working|adjusting|climbing|coming|hunched)\b"
         r"(?P<tail>.*)$",
         clause,
         flags=re.IGNORECASE,
@@ -201,19 +257,7 @@ def _finite_framed_action(value: str) -> str:
             clause = clause[0].upper() + clause[1:]
         return clause
     subject = subject_match.group("subject")
-    last_subject_word = re.sub(r"[^a-z]", "", subject.casefold().split()[-1])
-    plural = (
-        " and " in subject.casefold()
-        or subject.casefold() in {"we", "they"}
-        or last_subject_word in {
-            "hands",
-            "tubes",
-            "characters",
-            "friends",
-            "people",
-            "crew",
-        }
-    )
+    plural = plural_subject(subject)
     bases = {
         "holding": "hold",
         "nodding": "nod",
@@ -234,6 +278,9 @@ def _finite_framed_action(value: str) -> str:
         "polishing": "polish",
         "reconnecting": "reconnect",
         "working": "work",
+        "adjusting": "adjust",
+        "climbing": "climb",
+        "coming": "come",
         "hunched": "hunch",
     }
 
@@ -252,7 +299,7 @@ def _finite_framed_action(value: str) -> str:
     clause = f"{subject} {adverbs}{finite}{subject_match.group('tail')}"
     clause = re.sub(
         r"(?:,|\band)\s*(grabbing|holding|carrying|leaning|fighting|speaking|"
-        r"exchanging|preparing|polishing|reconnecting)\b",
+        r"exchanging|preparing|polishing|reconnecting|adjusting|climbing|coming)\b",
         lambda match: " and " + finite_verb(bases[match.group(1).casefold()]),
         clause,
         flags=re.IGNORECASE,

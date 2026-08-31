@@ -253,6 +253,68 @@ INT. HARBOR RADIO WORKSHOP - MOMENTS LATER
         self.assertEqual(cues[0]["narration"].casefold().count("harbor radio workshop"), 1)
         self.assertEqual(cues[6]["narration"].casefold().count("harbor radio workshop"), 1)
 
+    def test_latest_live_narration_failures_are_rewritten_as_finite_story_prose(self) -> None:
+        actions = (
+            "Lila's hands adjusting the delicate gears of the storm receiver.",
+            "Lila checks the receiver's wiring.",
+            "Theo packs the repair tools.",
+            "Lila and Theo climbing onto the wind-swept rooftop carry the copper tuning key.",
+            "Theo braces the mast against the wind.",
+            "Lila reconnects the antenna cable.",
+            "The storm receiver's dial suddenly glows and coming alive with static.",
+            "Lila transmits the harbor warning.",
+            "Medium-wide shot of Lila and Theo exchange an exhausted, relieved look as the warning transmits successfully.",
+        )
+        locations = (
+            "HARBOR RADIO WORKSHOP, DAWN",
+            "HARBOR RADIO WORKSHOP, DAWN",
+            "HARBOR RADIO WORKSHOP, DAWN",
+            "ROOFTOP ANTENNA PLATFORM, CONTINUOUS",
+            "ROOFTOP ANTENNA PLATFORM, CONTINUOUS",
+            "ROOFTOP ANTENNA PLATFORM, CONTINUOUS",
+            "BACK IN HARBOR RADIO WORKSHOP, MOMENTS LATER",
+            "BACK IN HARBOR RADIO WORKSHOP, MOMENTS LATER",
+            "BACK IN HARBOR RADIO WORKSHOP, MOMENTS LATER",
+        )
+        timeline = {
+            "shots": [
+                {
+                    "shot_id": f"SC{((index - 1) // 3) + 1:02d}-SH{((index - 1) % 3) + 1:02d}",
+                    "story_scene_number": ((index - 1) // 3) + 1,
+                    "scene_number": index,
+                    "role": "primary_coverage",
+                    "storyboard_card": {
+                        "action": action,
+                        "location": locations[index - 1],
+                        "dialogue_or_audio": "",
+                    },
+                }
+                for index, action in enumerate(actions, start=1)
+            ]
+        }
+
+        cues = build_narrated_pitch_cues({}, timeline, source_message="")
+
+        self.assertEqual(
+            cues[0]["narration"],
+            "In HARBOR RADIO WORKSHOP, DAWN, Lila's hands adjust the delicate gears of the storm receiver.",
+        )
+        self.assertEqual(
+            cues[3]["narration"],
+            "In ROOFTOP ANTENNA PLATFORM, CONTINUOUS, Lila and Theo carry the copper tuning key while climbing onto the wind-swept rooftop.",
+        )
+        self.assertEqual(
+            cues[6]["narration"],
+            "Back in HARBOR RADIO WORKSHOP, MOMENTS LATER, the storm receiver's dial suddenly glows and comes alive with static.",
+        )
+        self.assertEqual(
+            cues[8]["narration"],
+            "Lila and Theo exchange an exhausted, relieved look as the warning transmits successfully.",
+        )
+        narration = " ".join(cue["narration"] for cue in cues)
+        self.assertNotRegex(narration, r"(?i)\bmedium[- ]wide shot\b")
+        self.assertNotRegex(narration, r"(?i)\b(?:hands adjusting|and coming alive)\b")
+
     def test_extracts_explicit_screenplay_dialogue_by_scene(self) -> None:
         source = """Untrusted wrapper text.
 

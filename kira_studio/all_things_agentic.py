@@ -2369,6 +2369,10 @@ def _visual_reference_panel_index(
             wanted_setting
             and _normalized_visual_setting(brief, candidate) == wanted_setting
         )
+        # Image references carry scenery as well as people, so a required
+        # location must never inherit the background of a different setting.
+        if wanted_setting and not same_setting:
+            continue
         if wanted_cast:
             # A full-cast reference can safely anchor a solo card, while a solo
             # or empty reference cannot define a larger cast.

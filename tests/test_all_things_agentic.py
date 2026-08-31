@@ -1787,7 +1787,7 @@ class AllThingsAgenticTests(unittest.TestCase):
             3_500,
         )
 
-    def test_local_visual_build_keeps_full_cast_reference_across_scene_bridge(self) -> None:
+    def test_local_visual_build_drops_full_cast_reference_across_scene_bridge(self) -> None:
         value = brief_mapping()
         value["scenes"] = [
             {
@@ -1816,10 +1816,7 @@ class AllThingsAgenticTests(unittest.TestCase):
             artifact_store=StaticArtifactStore(),
         )
         self.assertEqual(storyboard["status"], "complete")
-        scene_one_primary = b"\xff\xd8" + (b"SC01-SH02" * 12) + b"\xff\xd9"
-        scene_one_bridge = b"\xff\xd8" + (b"SC01-SH03" * 12) + b"\xff\xd9"
-        self.assertEqual(provider.reference_images[3], scene_one_primary)
-        self.assertNotEqual(provider.reference_images[3], scene_one_bridge)
+        self.assertIsNone(provider.reference_images[3])
 
     def test_visual_reference_selection_prefers_story_scene_then_setting_and_cast(self) -> None:
         brief = ProductionBrief.from_mapping(explicit_live_shape_mapping())
@@ -1847,8 +1844,8 @@ class AllThingsAgenticTests(unittest.TestCase):
         self.assertEqual(provider.reference_images[6], image("SC01-SH01"))
         # A solo card prefers the same normalized-setting identity reference.
         self.assertEqual(provider.reference_images[7], image("SC01-SH02"))
-        # The two-person reaction uses the prior full-cast image, not a solo card.
-        self.assertEqual(provider.reference_images[8], image("SC02-SH03"))
+        # The returned workshop must not reuse a full-cast rooftop background.
+        self.assertIsNone(provider.reference_images[8])
 
     def test_visual_reference_allows_full_cast_anchor_for_solo_card(self) -> None:
         brief = ProductionBrief.from_mapping(brief_mapping())
@@ -2445,10 +2442,8 @@ class AllThingsAgenticTests(unittest.TestCase):
         self.assertEqual(visual_deltas, [0] + ([2] * 18) + ([0] * 37))
         self.assertEqual(dispatcher.dispatch_sequences, list(range(56)))
         self.assertEqual(dispatcher.attempts, [1] * 56)
-        scene_one_primary = b"\xff\xd8" + (b"SC01-SH02" * 12) + b"\xff\xd9"
-        scene_one_bridge = b"\xff\xd8" + (b"SC01-SH03" * 12) + b"\xff\xd9"
-        self.assertEqual(visual_provider.reference_images[3], scene_one_primary)
-        self.assertNotEqual(visual_provider.reference_images[3], scene_one_bridge)
+        # A new location starts without scenery inherited from the prior set.
+        self.assertIsNone(visual_provider.reference_images[3])
         # The outbox persists an absolute not-before time; reconciliation uses
         # that exact timestamp instead of recomputing a relative delay.
         self.assertEqual(dispatcher.delay_seconds, [0] * 56)
