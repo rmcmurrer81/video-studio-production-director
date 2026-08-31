@@ -1504,7 +1504,7 @@ class AllThingsAgenticTests(unittest.TestCase):
         self.assertIn("only the hands needed for that action", prompt)
         self.assertIn("connected to the correct visible wrist, arm, and body", prompt)
         self.assertIn("Never duplicate a hand or add a detached foreground hand", prompt)
-        self.assertIn("Lock every recurring named or described prop as one physical object", prompt)
+        self.assertIn("Lock each recurring prop: preserve silhouette, scale", prompt)
         self.assertNotIn("For a detail card, keep hands", prompt)
 
         review = visual_owner_review_gate(risky)
@@ -1546,14 +1546,18 @@ class AllThingsAgenticTests(unittest.TestCase):
             self.assertIn("Never add or detach a head, torso, arm, hand, hip, leg, or foot", prompt)
             self.assertIn("Any visible screen contains only abstract, text-free interface graphics", prompt)
             self.assertIn("never a person, face, body part, portrait, reflection, or readable words", prompt)
-            self.assertIn("Lock every recurring named or described prop as one physical object", prompt)
+            self.assertIn("Lock each recurring prop: preserve silhouette, scale", prompt)
+            self.assertLessEqual(len(prompt), 3500)
             self.assertNotIn("Project:", prompt)
             self.assertNotIn("Scene purpose:", prompt)
             self.assertNotIn("continuity ID", prompt)
 
         establishing = prompts["establishing"]
-        self.assertIn("If a prior reference is supplied, preserve established character identity", establishing)
-        self.assertIn("Change only the requested camera, crop, blocking, and action", establishing)
+        self.assertIn("If a prior reference is supplied, preserve identity", establishing)
+        self.assertIn(
+            "Use a materially distinct pose, blocking, composition, and emotion",
+            establishing,
+        )
         self.assertIn("The exact visible cast is Mara, Jon, each exactly once", establishing)
         self.assertIn("Add no extras, crowds, silhouettes, reflections", establishing)
         self.assertIn("genuinely wide environmental master", establishing)
@@ -1573,6 +1577,58 @@ class AllThingsAgenticTests(unittest.TestCase):
         self.assertIn("For a detail card, keep hands and other body fragments out of frame", bridge)
 
         self.assertEqual(len(set(prompts.values())), 3)
+
+    def test_visual_prompts_keep_handheld_props_small_and_require_new_emotional_compositions(
+        self,
+    ) -> None:
+        brief = ProductionBrief.from_mapping(explicit_live_shape_mapping())
+        timeline = deepcopy(compile_storyboard_timeline(brief))
+        timeline["shots"][3]["storyboard_card"]["action"] = (
+            "Medium tracking shot of Lila and Theo carrying the copper tuning key "
+            "upstairs onto the exposed platform."
+        )
+        timeline["shots"][8]["storyboard_card"]["action"] = (
+            "Medium shot of Lila and Theo exchanging a tired, deeply relieved look "
+            "as the transmission succeeds."
+        )
+
+        card4_prompt = storyboard_panel_prompt(brief, timeline["shots"][3])
+        card9_prompt = storyboard_panel_prompt(brief, timeline["shots"][8])
+
+        self.assertIn(
+            "Ordinary handheld props stay one-hand/palm-sized",
+            card4_prompt,
+        )
+        self.assertIn(
+            "carrying never enlarges one or makes it a two-person load",
+            card4_prompt,
+        )
+        self.assertIn(
+            "Omit story props absent from this exact action, even if visible in a reference",
+            card9_prompt,
+        )
+        self.assertIn(
+            "never place them in hands, clothing, foreground, or background",
+            card9_prompt,
+        )
+        self.assertIn(
+            "Use a materially distinct pose, blocking, composition, and emotion "
+            "for this exact action",
+            card9_prompt,
+        )
+        self.assertIn("never clone a prior panel", card9_prompt)
+        self.assertIn(
+            "Draw only this exact moment: Medium tracking shot of Lila and Theo carrying "
+            "the copper tuning key upstairs onto the exposed platform.",
+            card4_prompt,
+        )
+        self.assertIn(
+            "Draw only this exact moment: Medium shot of Lila and Theo exchanging a tired, "
+            "deeply relieved look as the transmission succeeds.",
+            card9_prompt,
+        )
+        self.assertLessEqual(len(card4_prompt), 3500)
+        self.assertLessEqual(len(card9_prompt), 3500)
 
     def test_visual_prompt_for_empty_cast_bans_anatomy_fragments_everywhere(self) -> None:
         value = brief_mapping()

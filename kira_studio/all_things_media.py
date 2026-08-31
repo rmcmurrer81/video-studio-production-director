@@ -153,11 +153,12 @@ def _spoken_characters(value: Any) -> str:
 
 
 def _finite_framed_action(value: str) -> str:
-    """Turn a bounded ``close-up of X doing`` phrase into story prose."""
+    """Remove camera framing and turn a participial visual into finite prose."""
 
     text = _clean(value, maximum=1_200).strip()
     match = re.match(
-        r"^(?:close[- ]?up|medium shot|wide shot|full[- ]?body shot|two[- ]?shot|insert)\s+of\s+(.+)$",
+        r"^(?:close[- ]?up|medium(?:\s+tracking)?\s+shot|wide shot|"
+        r"full[- ]?body shot|two[- ]?shot|insert)\s+(?:of|as)\s+(.+)$",
         text,
         flags=re.IGNORECASE,
     )
@@ -165,18 +166,33 @@ def _finite_framed_action(value: str) -> str:
         return text
     clause = match.group(1).strip()
     subject_match = re.match(
-        r"^(?P<subject>(?:[A-Z][A-Za-z'_-]{0,39}(?:\s+and\s+[A-Z][A-Za-z'_-]{0,39})?|"
-        r"(?:A|An|The)\s+.+?))\s+"
+        r"^(?P<subject>[^,.!?]+?)\s+"
+        r"(?P<adverbs>(?:[A-Za-z'_-]+ly\s+)*)"
         r"(?P<verb>holding|nodding|grabbing|leaning|carrying|standing|walking|running|"
-        r"whipping|struggling)\b"
+        r"whipping|struggling|fighting|glowing|speaking|exchanging|preparing|hunching|"
+        r"hunched)\b"
         r"(?P<tail>.*)$",
         clause,
         flags=re.IGNORECASE,
     )
     if subject_match is None:
+        if clause and clause[0].islower():
+            clause = clause[0].upper() + clause[1:]
         return clause
     subject = subject_match.group("subject")
-    plural = " and " in subject.casefold()
+    last_subject_word = re.sub(r"[^a-z]", "", subject.casefold().split()[-1])
+    plural = (
+        " and " in subject.casefold()
+        or subject.casefold() in {"we", "they"}
+        or last_subject_word in {
+            "hands",
+            "tubes",
+            "characters",
+            "friends",
+            "people",
+            "crew",
+        }
+    )
     bases = {
         "holding": "hold",
         "nodding": "nod",
@@ -188,21 +204,32 @@ def _finite_framed_action(value: str) -> str:
         "running": "run",
         "whipping": "whip",
         "struggling": "struggle",
+        "fighting": "fight",
+        "glowing": "glow",
+        "speaking": "speak",
+        "exchanging": "exchange",
+        "preparing": "prepare",
+        "hunching": "hunch",
+        "hunched": "hunch",
     }
+
+    def finite_verb(base: str) -> str:
+        if plural:
+            return base
+        if base.endswith("y") and len(base) > 1 and base[-2] not in "aeiou":
+            return base[:-1] + "ies"
+        if base.endswith(("s", "x", "z", "ch", "sh", "o")):
+            return base + "es"
+        return base + "s"
+
     base = bases[subject_match.group("verb").casefold()]
-    finite = base if plural else (base[:-1] + "ies" if base.endswith("y") else base + "s")
-    clause = f"{subject} {finite}{subject_match.group('tail')}"
+    finite = finite_verb(base)
+    adverbs = subject_match.group("adverbs") or ""
+    clause = f"{subject} {adverbs}{finite}{subject_match.group('tail')}"
     clause = re.sub(
-        r"(?:,|\band)\s*(grabbing|holding|carrying|leaning)\b",
-        lambda match: " and " + (
-            bases[match.group(1).casefold()]
-            if plural
-            else (
-                bases[match.group(1).casefold()][:-1] + "ies"
-                if bases[match.group(1).casefold()].endswith("y")
-                else bases[match.group(1).casefold()] + "s"
-            )
-        ),
+        r"(?:,|\band)\s*(grabbing|holding|carrying|leaning|fighting|speaking|"
+        r"exchanging|preparing)\b",
+        lambda match: " and " + finite_verb(bases[match.group(1).casefold()]),
         clause,
         flags=re.IGNORECASE,
     )
@@ -625,6 +652,60 @@ def _audience_dialogue(lines: Sequence[str]) -> str:
     return " ".join(_sentence(value, maximum=800) for value in sentences)
 
 
+def _dialogue_spoken_part(line: str) -> str:
+    """Return only the spoken portion of one extracted ``Speaker: line`` value."""
+
+    clean_line = _clean(line, maximum=600)
+    match = re.match(r"^[^:]{1,80}:\s*(.+)$", clean_line)
+    return match.group(1).strip() if match else clean_line
+
+
+def _dialogue_match_key(value: Any) -> str:
+    """Normalize punctuation without weakening an exact spoken-line match."""
+
+    text = _clean(value, maximum=1_800).casefold()
+    text = text.replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
+    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+
+def _card_explicitly_contains_dialogue(line: str, *card_values: Any) -> bool:
+    spoken = _dialogue_match_key(_dialogue_spoken_part(line))
+    if not spoken:
+        return False
+    haystack = _dialogue_match_key(" ".join(_clean(value) for value in card_values))
+    return f" {spoken} " in f" {haystack} "
+
+
+def _explicit_dialogue_assignments(
+    shots: Sequence[Any],
+    dialogue: Mapping[int, Sequence[str]],
+) -> tuple[dict[int, list[str]], set[int]]:
+    """Bind an exact source line only to the card that visibly contains it."""
+
+    assignments: dict[int, list[str]] = {}
+    explicit_scenes: set[int] = set()
+    claimed: dict[int, set[int]] = {}
+    for shot_index, raw_shot in enumerate(shots, start=1):
+        if not isinstance(raw_shot, Mapping):
+            continue
+        card = raw_shot.get("storyboard_card")
+        if not isinstance(card, Mapping):
+            continue
+        scene_number = raw_shot.get("story_scene_number", raw_shot.get("scene_number"))
+        if isinstance(scene_number, bool) or not isinstance(scene_number, int):
+            continue
+        action = _card_specific_action(raw_shot, card)
+        direction = _clean(card.get("dialogue_or_audio") or "", maximum=1_800)
+        for line_index, line in enumerate(dialogue.get(scene_number, ())):
+            if line_index in claimed.setdefault(scene_number, set()):
+                continue
+            if _card_explicitly_contains_dialogue(line, action, direction):
+                assignments.setdefault(shot_index, []).append(line)
+                claimed[scene_number].add(line_index)
+                explicit_scenes.add(scene_number)
+    return assignments, explicit_scenes
+
+
 def _audience_audio(direction: str) -> str:
     # Audio direction remains visible in the production card. Speaking it made
     # short story pitches sound like a technical read-through and could more
@@ -786,6 +867,10 @@ def build_narrated_pitch_cues(
             *dialogue.get(target_scene, []),
             *unscoped_dialogue,
         ]
+    explicit_dialogue, explicit_dialogue_scenes = _explicit_dialogue_assignments(
+        shots,
+        dialogue,
+    )
     dialogue_offsets: dict[int, int] = {}
     role_counts: dict[str, int] = {}
     heard_audio: set[str] = set()
@@ -823,9 +908,12 @@ def build_narrated_pitch_cues(
             role_key == "primary_coverage"
             or scene_number not in primary_dialogue_scenes
         )
-        selected_lines = available_lines[offset : offset + 2] if dialogue_card else []
+        selected_lines = explicit_dialogue.get(index, [])
+        if not selected_lines and scene_number not in explicit_dialogue_scenes:
+            selected_lines = available_lines[offset : offset + 2] if dialogue_card else []
         if selected_lines:
-            dialogue_offsets[scene_number] = offset + len(selected_lines)
+            if scene_number not in explicit_dialogue_scenes:
+                dialogue_offsets[scene_number] = offset + len(selected_lines)
             dialogue_text = _audience_dialogue(selected_lines)
             dialogue_source = "source_exact"
         else:

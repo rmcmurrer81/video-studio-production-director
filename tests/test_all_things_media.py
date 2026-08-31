@@ -106,6 +106,87 @@ class AllThingsMediaTests(unittest.TestCase):
             1,
         )
 
+    def test_failed_live_grid_binds_dialogue_and_finite_visuals_to_exact_cards(self) -> None:
+        actions = (
+            "Close-up of Lila's hands carefully holding the copper tuning key in the dim dawn light.",
+            "Medium shot of Lila and Theo hunched over the disassembled storm receiver. Lila says, 'The copper tuning key is our last chance.'",
+            "Theo looks up resolutely, preparing to head outside. Theo answers, 'Then I will hold the mast steady.'",
+            "Medium tracking shot of Lila and Theo carrying the copper tuning key upstairs onto the exposed platform.",
+            "Wide shot as a violent gust of wind tears an antenna cable loose, whipping it wildly.",
+            "Close-up of Lila's hands fighting the wind to reconnect the cable while Theo throws his weight against the shaking mast to brace it.",
+            "Medium shot of the storm receiver's vacuum tubes glowing to life as static clears.",
+            "Close-up of Lila speaking urgently into the radio microphone, broadcasting the storm warning.",
+            "Medium shot of Lila and Theo exchanging a tired, deeply relieved look as the transmission succeeds.",
+        )
+        locations = (
+            "HARBOR RADIO WORKSHOP, DAWN",
+            "HARBOR RADIO WORKSHOP, DAWN",
+            "HARBOR RADIO WORKSHOP, DAWN",
+            "ROOFTOP TRANSMITTER, STORM",
+            "ROOFTOP TRANSMITTER, STORM",
+            "ROOFTOP TRANSMITTER, STORM",
+            "BACK IN HARBOR RADIO WORKSHOP, MOMENTS LATER",
+            "BACK IN HARBOR RADIO WORKSHOP, MOMENTS LATER",
+            "BACK IN HARBOR RADIO WORKSHOP, MOMENTS LATER",
+        )
+        roles = ("establishing", "primary_coverage", "continuity_bridge") * 3
+        timeline = {
+            "shots": [
+                {
+                    "shot_id": f"SC{((index - 1) // 3) + 1:02d}-SH{((index - 1) % 3) + 1:02d}",
+                    "story_scene_number": ((index - 1) // 3) + 1,
+                    "scene_number": index,
+                    "role": roles[index - 1],
+                    "storyboard_card": {
+                        "action": action,
+                        "location": locations[index - 1],
+                        "dialogue_or_audio": "",
+                    },
+                }
+                for index, action in enumerate(actions, start=1)
+            ]
+        }
+        source = """INT. HARBOR RADIO WORKSHOP - DAWN
+
+LILA
+The copper tuning key is our last chance.
+
+THEO
+Then I will hold the mast steady.
+
+EXT. ROOFTOP TRANSMITTER - STORM
+
+INT. HARBOR RADIO WORKSHOP - MOMENTS LATER
+"""
+
+        cues = build_narrated_pitch_cues(
+            {"title": "Harbor Signal", "summary": "A storm threatens the harbor."},
+            timeline,
+            source_message=source,
+        )
+
+        self.assertEqual(
+            [cue["narration"] for cue in cues],
+            [
+                "In HARBOR RADIO WORKSHOP, DAWN, Lila's hands carefully hold the copper tuning key in the dim dawn light.",
+                'Lila says, "The copper tuning key is our last chance."',
+                'Theo says, "Then I will hold the mast steady."',
+                "In ROOFTOP TRANSMITTER, STORM, Lila and Theo carry the copper tuning key upstairs onto the exposed platform.",
+                "A violent gust of wind tears an antenna cable loose, whipping it wildly.",
+                "Lila's hands fight the wind to reconnect the cable while Theo throws his weight against the shaking mast to brace it.",
+                "Back in HARBOR RADIO WORKSHOP, MOMENTS LATER, the storm receiver's vacuum tubes glow to life as static clears.",
+                "Lila speaks urgently into the radio microphone, broadcasting the storm warning.",
+                "Lila and Theo exchange a tired, deeply relieved look as the transmission succeeds.",
+            ],
+        )
+        narration = " ".join(cue["narration"] for cue in cues)
+        self.assertNotRegex(narration, r"(?i)\b(?:medium tracking shot|medium shot|wide shot|close-up)\b")
+        self.assertEqual(narration.count("The copper tuning key is our last chance."), 1)
+        self.assertEqual(narration.count("Then I will hold the mast steady."), 1)
+        self.assertEqual([cue["sequence"] for cue in cues if cue["narration"].startswith(("In ", "Back in "))], [1, 4, 7])
+        self.assertEqual(cues[1]["dialogue_lines"], ["LILA: The copper tuning key is our last chance."])
+        self.assertEqual(cues[2]["dialogue_lines"], ["THEO: Then I will hold the mast steady."])
+
     def test_extracts_explicit_screenplay_dialogue_by_scene(self) -> None:
         source = """Untrusted wrapper text.
 
