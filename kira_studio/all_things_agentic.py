@@ -1627,6 +1627,14 @@ def storyboard_panel_prompt(
         )
         full_cast_direction = "Show no human figures."
         bridge_cast_direction = "Show no human figures."
+    screen_content_contract = (
+        "SCREEN CONTENT CONTRACT: every monitor, display, console screen, television, projection, "
+        "and reflective screen surface may show only abstract, non-figurative signal or interface "
+        "data, such as waveforms, geometric status graphics, text-free diagrams, or indicator "
+        "lights. On or inside any screen, show no faces, people, human figures, body parts, hands, "
+        "silhouettes, video feeds, portraits, or reflections. Preserve the exact required physical "
+        "cast count; a screen image never satisfies, replaces, duplicates, or adds a character."
+    )
     explicit_hand_action = bool(
         _VISUAL_HAND_ACTION_PATTERN.search(
             f"{scene.purpose} {card.get('action') or ''}"
@@ -1685,7 +1693,10 @@ def storyboard_panel_prompt(
             "insert, or environmental detail that supplies a specific editorial bridge. Crop "
             "tightly around one face, one safe prop, or one environmental detail. Never reuse "
             "the establishing wide or two-full-body composition, and never pose both characters "
-            f"as full figures. {bridge_cast_direction} {bridge_hand_direction}"
+            "as full figures. In this reaction or detail card, any visible monitor or screen must "
+            "remain abstract and non-figurative interface data only, never a face, person, body "
+            "part, hand, silhouette, video feed, portrait, or reflection. "
+            f"{bridge_cast_direction} {bridge_hand_direction}"
         ),
     }
     if role not in role_directions:
@@ -1700,7 +1711,7 @@ def storyboard_panel_prompt(
         "camera distance, blocking, focal subject, or generic two-character pose. If a reference "
         "image is supplied, use it only for character, costume, prop, and line-art continuity. "
         "Do not copy the reference image's camera angle, crop, blocking, pose, background layout, "
-        f"or composition. {cast_contract} "
+        f"or composition. {cast_contract} {screen_content_contract} "
         f"{role_directions[role]} "
         f"Project: {brief.title}. Overall visual direction: {brief.visual_direction}. "
         f"Scene {scene.number} setting: {scene.setting}. Characters: {characters}. "

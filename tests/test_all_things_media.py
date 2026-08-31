@@ -204,7 +204,7 @@ Then we leave before the doors seal.
             "Mara's discovery of the approaching signal.",
             "Deliver the core dramatic conflict as Mara reveals the signal's nature and "
             "Dax responds with determination.",
-            "Resolve the scene with Mara and Dax choosing to work together to escape the "
+            "Resolve the tension with Mara and Dax choosing to work together to escape the "
             "station before the signal arrives.",
         )
         settings = (
@@ -257,6 +257,13 @@ Then we leave before the doors seal.
         exact = [cue for cue in cues if cue["dialogue_source"] == "source_exact"]
         self.assertEqual(len(exact), 1)
         self.assertEqual(exact[0]["shot_id"], "SC02-SH02")
+        self.assertEqual(
+            exact[0]["dialogue_lines"],
+            [
+                "Mara: The signal knows our names.",
+                "Dax: Then we leave before it learns our plans.",
+            ],
+        )
         self.assertIn("The signal knows our names.", exact[0]["narration"])
         self.assertIn("Then we leave before it learns our plans.", exact[0]["narration"])
         self.assertEqual(
@@ -287,6 +294,55 @@ Then we leave before the doors seal.
             r"brief audio direction|primary coverage|continuity bridge",
         )
         self.assertLessEqual(len(spoken.split()), 95)
+
+    def test_rewrites_only_bounded_resolution_planner_variants(self) -> None:
+        cases = (
+            (
+                "Resolve this tension by Mara and Dax choosing to trust one another",
+                "Mara and Dax choose to trust one another.",
+            ),
+            (
+                "Resolve the dramatic conflict as Mara and Dax facing the signal together",
+                "Mara and Dax face the signal together.",
+            ),
+            (
+                "Resolve conflict where Mara and Dax preparing the station for departure",
+                "Mara and Dax prepare the station for departure.",
+            ),
+            (
+                "Resolve the encrypted signal with Mara and Dax",
+                "Resolve the encrypted signal with Mara and Dax.",
+            ),
+        )
+        shots = []
+        for sequence, (purpose, _expected) in enumerate(cases, start=1):
+            shots.append(
+                {
+                    "shot_id": f"SC{sequence:02d}-SH01",
+                    "scene_number": sequence,
+                    "role": "primary_coverage",
+                    "planned_in_timecode": "00:00:00:00",
+                    "planned_out_timecode": "00:00:05:00",
+                    "storyboard_card": {
+                        "action": (
+                            "Stage Mara, Dax in the orbital repair bay for the primary "
+                            f"scene beat: {purpose}"
+                        ),
+                        "dialogue_or_audio": "Low room tone.",
+                    },
+                }
+            )
+
+        cues = build_narrated_pitch_cues(
+            {"title": "Signal Horizon", "summary": "Two friends choose to leave."},
+            {"shots": shots},
+            source_message="",
+        )
+
+        self.assertEqual(
+            [cue["narration"] for cue in cues],
+            [expected for _purpose, expected in cases],
+        )
 
     def test_quoted_prose_is_used_only_as_a_fallback(self) -> None:
         source = """EXT. BEACH - SUNSET

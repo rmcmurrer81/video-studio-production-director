@@ -68,7 +68,8 @@ _BRIDGE_ACTION = re.compile(
 _BRIEF_AUDIO = re.compile(r"\bBrief audio direction:\s*(.+)$", re.IGNORECASE)
 _PRODUCTION_DIRECTIVE = re.compile(
     r"\b(?:introduc(?:e|es|ed|ing)|establish(?:es|ed|ing)?|stag(?:e|es|ed|ing)|"
-    r"deliver(?:s|ed|ing)?|resolve\s+(?:the\s+)?(?:scene|story|beat)|"
+    r"deliver(?:s|ed|ing)?|resolve\s+(?:(?:the|this)\s+)?(?:scene|story|beat|"
+    r"(?:dramatic\s+)?(?:tension|conflict))|"
     r"show\s+(?:the\s+)?resolution|hold\s+(?:a\s+)?reaction)\b",
     re.IGNORECASE,
 )
@@ -221,7 +222,8 @@ def _natural_story_purpose(
         return _safe_story_sentence(story, fallback=fallback)
 
     match = re.match(
-        r"^(?:Resolve\s+(?:the\s+)?(?:scene|story|beat)|Show\s+(?:the\s+)?resolution)\s+"
+        r"^(?:Resolve\s+(?:(?:the|this)\s+)?(?:scene|story|beat|"
+        r"(?:dramatic\s+)?(?:tension|conflict))|Show\s+(?:the\s+)?resolution)\s+"
         r"(?:as|where|with|by)\s+(.+)$",
         raw,
         flags=re.IGNORECASE,

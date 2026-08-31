@@ -1498,6 +1498,23 @@ class AllThingsAgenticTests(unittest.TestCase):
             for shot in timeline["shots"]
         }
 
+        for prompt in prompts.values():
+            self.assertIn("SCREEN CONTENT CONTRACT", prompt)
+            self.assertIn(
+                "only abstract, non-figurative signal or interface data",
+                prompt,
+            )
+            self.assertIn(
+                "show no faces, people, human figures, body parts, hands, silhouettes, "
+                "video feeds, portraits, or reflections",
+                prompt,
+            )
+            self.assertIn(
+                "Preserve the exact required physical cast count; a screen image never "
+                "satisfies, replaces, duplicates, or adds a character",
+                prompt,
+            )
+
         establishing = prompts["establishing"]
         self.assertIn("Every card in the sequence must have a materially distinct composition", establishing)
         self.assertIn("use it only for character, costume, prop, and line-art continuity", establishing)
@@ -1516,6 +1533,10 @@ class AllThingsAgenticTests(unittest.TestCase):
         self.assertIn("medium two-shot, over-the-shoulder, or waist-up", primary)
         self.assertIn("Do not repeat the wide environmental view", primary)
         self.assertIn("faces, eyelines, and the central interaction", primary)
+        self.assertIn(
+            "Show all 2 named characters exactly once and no other human figure",
+            primary,
+        )
 
         bridge = prompts["continuity_bridge"]
         self.assertIn("tight close reaction, prop-only insert, or environmental detail", bridge)
@@ -1530,6 +1551,15 @@ class AllThingsAgenticTests(unittest.TestCase):
         self.assertIn("non-anatomical confirmation prop or environmental change", bridge)
         self.assertIn("Never show a pointing hand entering the frame", bridge)
         self.assertIn("multiple hands crowding a console, display, control, or prop", bridge)
+        self.assertIn(
+            "In this reaction or detail card, any visible monitor or screen must remain "
+            "abstract and non-figurative interface data only",
+            bridge,
+        )
+        self.assertIn(
+            "never a face, person, body part, hand, silhouette, video feed, portrait, or reflection",
+            bridge,
+        )
         self.assertNotIn("unless the stated action explicitly requires that scale", bridge)
 
         self.assertEqual(len(set(prompts.values())), 3)
