@@ -187,6 +187,63 @@ INT. HARBOR RADIO WORKSHOP - MOMENTS LATER
         self.assertEqual(cues[1]["dialogue_lines"], ["LILA: The copper tuning key is our last chance."])
         self.assertEqual(cues[2]["dialogue_lines"], ["THEO: Then I will hold the mast steady."])
 
+    def test_rejected_live_visual_variants_strip_framing_and_use_finite_verbs(self) -> None:
+        actions = (
+            "Close-up on Lila's hands carefully polishing the copper tuning key.",
+            "Theo checks the receiver schematic.",
+            "Lila tests the tuning dial.",
+            "Lila and Theo climb to the rooftop transmitter.",
+            "Theo braces the antenna mast against the wind.",
+            "Lila reconnecting the cable to the terminal while Theo uses both hands to steady the mast.",
+            "Medium shot back in the harbor radio workshop as the storm receiver's vacuum tubes glow warm orange and the device hums back to life.",
+        )
+        locations = (
+            "HARBOR RADIO WORKSHOP",
+            "HARBOR RADIO WORKSHOP",
+            "HARBOR RADIO WORKSHOP",
+            "ROOFTOP TRANSMITTER",
+            "ROOFTOP TRANSMITTER",
+            "ROOFTOP TRANSMITTER",
+            "BACK IN HARBOR RADIO WORKSHOP",
+        )
+        timeline = {
+            "shots": [
+                {
+                    "shot_id": f"SC01-SH{index:02d}",
+                    "scene_number": 1,
+                    "role": "primary_coverage",
+                    "storyboard_card": {
+                        "action": action,
+                        "location": locations[index - 1],
+                        "dialogue_or_audio": "",
+                    },
+                }
+                for index, action in enumerate(actions, start=1)
+            ]
+        }
+
+        cues = build_narrated_pitch_cues({}, timeline, source_message="")
+
+        self.assertEqual(
+            cues[0]["narration"],
+            "In HARBOR RADIO WORKSHOP, Lila's hands carefully polish the copper tuning key.",
+        )
+        self.assertEqual(
+            cues[5]["narration"],
+            "Lila reconnects the cable to the terminal while Theo uses both hands to steady the mast.",
+        )
+        self.assertEqual(
+            cues[6]["narration"],
+            "Back in HARBOR RADIO WORKSHOP, the storm receiver's vacuum tubes glow warm orange and the device hums back to life.",
+        )
+        narration = " ".join(cue["narration"] for cue in cues)
+        self.assertNotRegex(
+            narration,
+            r"(?i)\b(?:close-up|medium shot|wide shot|full-body shot|two-shot|insert)\b",
+        )
+        self.assertEqual(cues[0]["narration"].casefold().count("harbor radio workshop"), 1)
+        self.assertEqual(cues[6]["narration"].casefold().count("harbor radio workshop"), 1)
+
     def test_extracts_explicit_screenplay_dialogue_by_scene(self) -> None:
         source = """Untrusted wrapper text.
 

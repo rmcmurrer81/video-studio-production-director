@@ -158,25 +158,30 @@ def _finite_framed_action(value: str) -> str:
     text = _clean(value, maximum=1_200).strip()
     match = re.match(
         r"^(?:close[- ]?up|medium(?:\s+tracking)?\s+shot|wide shot|"
-        r"full[- ]?body shot|two[- ]?shot|insert)\s+(?:of|as)\s+(.+)$",
+        r"full[- ]?body shot|two[- ]?shot|insert)\s+"
+        r"(?:(?:back\s+)?in\s+.+?\s+as\s+|(?:of|on|as)\s+)(.+)$",
         text,
         flags=re.IGNORECASE,
     )
-    if match is None:
+    clause = match.group(1).strip() if match is not None else text
+    if match is None and re.match(
+        r"^(?:introduce|establish|stage|deliver|resolve|show|hold)\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
         return text
-    clause = match.group(1).strip()
     subject_match = re.match(
         r"^(?P<subject>[^,.!?]+?)\s+"
         r"(?P<adverbs>(?:[A-Za-z'_-]+ly\s+)*)"
         r"(?P<verb>holding|nodding|grabbing|leaning|carrying|standing|walking|running|"
         r"whipping|struggling|fighting|glowing|speaking|exchanging|preparing|hunching|"
-        r"hunched)\b"
+        r"polishing|reconnecting|hunched)\b"
         r"(?P<tail>.*)$",
         clause,
         flags=re.IGNORECASE,
     )
     if subject_match is None:
-        if clause and clause[0].islower():
+        if match is not None and clause and clause[0].islower():
             clause = clause[0].upper() + clause[1:]
         return clause
     subject = subject_match.group("subject")
@@ -210,6 +215,8 @@ def _finite_framed_action(value: str) -> str:
         "exchanging": "exchange",
         "preparing": "prepare",
         "hunching": "hunch",
+        "polishing": "polish",
+        "reconnecting": "reconnect",
         "hunched": "hunch",
     }
 
@@ -228,7 +235,7 @@ def _finite_framed_action(value: str) -> str:
     clause = f"{subject} {adverbs}{finite}{subject_match.group('tail')}"
     clause = re.sub(
         r"(?:,|\band)\s*(grabbing|holding|carrying|leaning|fighting|speaking|"
-        r"exchanging|preparing)\b",
+        r"exchanging|preparing|polishing|reconnecting)\b",
         lambda match: " and " + finite_verb(bases[match.group(1).casefold()]),
         clause,
         flags=re.IGNORECASE,
