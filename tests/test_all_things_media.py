@@ -5,6 +5,7 @@ import unittest
 
 from kira_studio.all_things_agentic import ProductionBrief, compile_storyboard_timeline
 from kira_studio.all_things_media import (
+    _finite_framed_action,
     build_narrated_pitch_cues,
     extract_screenplay_dialogue,
     pitch_narration_text,
@@ -314,6 +315,14 @@ INT. HARBOR RADIO WORKSHOP - MOMENTS LATER
         narration = " ".join(cue["narration"] for cue in cues)
         self.assertNotRegex(narration, r"(?i)\bmedium[- ]wide shot\b")
         self.assertNotRegex(narration, r"(?i)\b(?:hands adjusting|and coming alive)\b")
+
+    def test_tight_camera_prefix_is_removed_before_finite_story_rewrite(self) -> None:
+        self.assertEqual(
+            _finite_framed_action(
+                "Tight shot of Lila quickly reconnecting the cable while Theo uses his full body weight to brace the swaying mast."
+            ),
+            "Lila quickly reconnects the cable while Theo uses his full body weight to brace the swaying mast.",
+        )
 
     def test_extracts_explicit_screenplay_dialogue_by_scene(self) -> None:
         source = """Untrusted wrapper text.

@@ -157,7 +157,9 @@ def _finite_framed_action(value: str) -> str:
 
     text = _clean(value, maximum=1_200).strip()
     match = re.match(
-        r"^(?:close[- ]?up|medium(?:(?:[- ]wide)|(?:\s+tracking))?\s+shot|wide shot|"
+        r"^(?:tight\s+shot|extreme[- ]?close[- ]?up(?:\s+shot)?|"
+        r"reverse[- ]?angle(?:\s+shot)?|tracking(?:\s+shot)?|"
+        r"close[- ]?up|medium(?:(?:[- ]wide)|(?:\s+tracking))?\s+shot|wide shot|"
         r"low[- ]?angle(?:\s+shot)?|high[- ]?angle(?:\s+shot)?|"
         r"overhead(?:\s+shot)?|full[- ]?body shot|two[- ]?shot|insert)\s+"
         r"(?:(?:back\s+)?in\s+.+?\s+as\s+|(?:of|on|as)\s+)(.+)$",
