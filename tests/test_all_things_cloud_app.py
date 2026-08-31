@@ -21,7 +21,7 @@ from kira_studio.all_things_agentic import (
 
 JOB_ID = "00000000-0000-0000-0000-000000000001"
 OTHER_JOB_ID = "00000000-0000-0000-0000-000000000002"
-ACCESS_CODE = "owner-judge-demo-code"
+ACCESS_CODE = "owner-judge-program-code"
 ACCESS_HASH = hashlib.sha256(ACCESS_CODE.encode("utf-8")).hexdigest()
 
 
@@ -402,10 +402,10 @@ class AllThingsCloudAppTests(unittest.TestCase):
 
             status, _, denied = request_json(running, path, access_code=None)
             self.assertEqual(status, HTTPStatus.UNAUTHORIZED)
-            self.assertEqual(denied["error"], "valid demo access code required")
+            self.assertEqual(denied["error"], "valid program access code required")
             status, _, denied = request_json(running, path, access_code="wrong-code")
             self.assertEqual(status, HTTPStatus.UNAUTHORIZED)
-            self.assertEqual(denied["error"], "valid demo access code required")
+            self.assertEqual(denied["error"], "valid program access code required")
             self.assertEqual(running.runtime.artifact_store.calls, [])
 
             status, headers, body = request_bytes(running, path)
@@ -790,7 +790,7 @@ class AllThingsCloudAppTests(unittest.TestCase):
         api = RunningServer("api")
         try:
             def limited(_message: str) -> dict[str, object]:
-                raise AdmissionLimitError("shared demo job admission limit reached", retry_after_seconds=7)
+                raise AdmissionLimitError("shared program job admission limit reached", retry_after_seconds=7)
 
             api.runtime.service.submit = limited  # type: ignore[method-assign]
             status, headers, error = request_json(

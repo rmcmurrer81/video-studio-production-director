@@ -1,4 +1,4 @@
-# Demo and submission checklist
+# Program and submission checklist
 
 This checklist separates local contract verification from evidence that exists only after a real Google Cloud run. Do not pass or submit the corrected build while visuals are pending or the narrated MP4 is absent.
 
@@ -104,7 +104,7 @@ Follow [START_HERE_TEST.md](START_HERE_TEST.md). Do not use a full television ep
 
 If any required panel or MP4 item fails, the release remains on hold. A historical partial test is useful debugging evidence but is not owner-review media.
 
-## 6. Demo recording
+## 6. Program walkthrough recording
 
 - [ ] Open with the problem: independent filmmakers need affordable, consistent visual planning and pitch materials before expensive shooting.
 - [ ] State the narrow product truth: natural chat/script → structured brief → detailed + visual cards → character/synopsis/location/editorial exports → narrated storyboard pitch MP4.
@@ -123,8 +123,8 @@ If any required panel or MP4 item fails, the release remains on hold. A historic
 ## 7. Submission form
 
 - [ ] Public source URL resolves from a signed-out browser and points to the frozen reviewed revision.
-- [ ] Hosted demo URL resolves and owner/judge code instructions are clear.
-- [ ] Demo video is accessible to judges and matches the deployed revision.
+- [ ] Hosted program URL resolves and owner/judge code instructions are clear.
+- [ ] Submission video is accessible to judges and matches the deployed revision.
 - [ ] Description names only Google services actually demonstrated.
 - [ ] Upload the current job-independent `docs/all-things-agentic-architecture.png` only as an architecture diagram. Package any live result separately and make a media-acceptance claim only after sequential card/cue, full-resolution visual, technical, and owner review.
 - [ ] The repository is public only when the owner is ready; no secret was added during the visibility change.

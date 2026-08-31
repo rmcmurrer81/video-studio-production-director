@@ -60,7 +60,7 @@ class SubmissionArchitectureAssetTests(unittest.TestCase):
             encoding="utf-8"
         )
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        checklist = (ROOT / "docs" / "DEMO_SUBMISSION_CHECKLIST.md").read_text(
+        checklist = (ROOT / "docs" / "PROGRAM_SUBMISSION_CHECKLIST.md").read_text(
             encoding="utf-8"
         )
         self.assertIn("all-things-agentic-architecture.png", architecture)

@@ -311,7 +311,7 @@ class MemoryRepository:
             )
         if retry_after > 0:
             raise AdmissionLimitError(
-                "shared demo job admission limit reached",
+                "shared program job admission limit reached",
                 retry_after_seconds=retry_after,
             )
         active_slots.append(self._active_slot(record, now=now_value))
@@ -794,7 +794,7 @@ class MemoryRepository:
                 for item in active_slots
             )
             raise AdmissionLimitError(
-                "shared demo active-job limit reached",
+                "shared program active-job limit reached",
                 retry_after_seconds=max(
                     1, math.ceil((earliest - now_value).total_seconds())
                 ),

@@ -120,7 +120,7 @@ The first ETA is unavailable. Ranges appear only after completed live jobs provi
 ## Trust boundaries
 
 - The page uses relative same-origin requests and does not need public bucket access or a permissive CORS policy.
-- Every create/read/cancel/retry/artifact request requires the owner-created access code; only its SHA-256 digest is configured server-side. This is a bounded judge-demo control, not a production user-account system.
+- Every create/read/cancel/retry/artifact request requires the owner-created access code; only its SHA-256 digest is configured server-side. This is a bounded judge-program control, not a production user-account system.
 - The plaintext code is never stored in a URL, browser storage, job body, export, source file, or log.
 - The worker is private; Cloud Run IAM authenticates the Cloud Tasks OIDC caller before the internal route runs.
 - API, worker, and task caller use separate service identities.

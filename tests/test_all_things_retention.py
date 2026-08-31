@@ -125,7 +125,7 @@ class RetentionContractTests(unittest.TestCase):
             config=config(job_retention_seconds=7200),
             repository=repository,  # type: ignore[arg-type]
             dispatcher=_Dispatcher(),
-        ).submit("A private screenplay scene for a judge demo.")
+        ).submit("A private screenplay scene for a judge program review.")
         expiry = datetime.fromisoformat(str(queued["record_expires_at"]))
         self.assertGreaterEqual((expiry - before).total_seconds(), 7199)
         self.assertLessEqual((expiry - before).total_seconds(), 7201)

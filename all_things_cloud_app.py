@@ -160,7 +160,7 @@ class Runtime:
             "service": "video-studio-all-things-agentic",
             "role": self.role,
             "target": self.config.safe_dict(),
-            "demo_access_required": self.role == "api",
+            "program_access_required": self.role == "api",
             "live_provider_call_proven": False,
             "visual_storyboard_configured": self.role == "worker",
             "private_artifacts_configured": bool(self.config.artifacts_bucket),
@@ -288,14 +288,14 @@ class Handler(BaseHTTPRequestHandler):
         ):
             self._json(
                 HTTPStatus.UNAUTHORIZED,
-                {"ok": False, "error": "valid demo access code required"},
+                {"ok": False, "error": "valid program access code required"},
             )
             return False
         supplied = hashlib.sha256(provided.encode("utf-8")).hexdigest()
         if not hmac.compare_digest(supplied, expected):
             self._json(
                 HTTPStatus.UNAUTHORIZED,
-                {"ok": False, "error": "valid demo access code required"},
+                {"ok": False, "error": "valid program access code required"},
             )
             return False
         return True

@@ -106,7 +106,7 @@ MAX_ADMISSION_MAX_JOBS = 4
 DEFAULT_WORKER_LEASE_SECONDS = 1_800
 # Firestore TTL deletes the entire private job record after this bounded
 # evidence/retry window.  The source is cleared earlier on success and at the
-# final retry limit.  One day is ample for a judge to inspect or retry a demo
+# final retry limit.  One day is ample for a judge to inspect or retry a program
 # job without turning uploaded screenplay text into indefinite storage.
 DEFAULT_JOB_RETENTION_SECONDS = 86_400
 MIN_JOB_RETENTION_SECONDS = 3_600
@@ -200,7 +200,7 @@ class JobNotFoundError(AllThingsError):
 
 
 class AdmissionLimitError(AllThingsError):
-    """The shared judge-demo admission budget is temporarily exhausted."""
+    """The shared judge-program admission budget is temporarily exhausted."""
 
     def __init__(self, message: str, *, retry_after_seconds: int) -> None:
         super().__init__(message)

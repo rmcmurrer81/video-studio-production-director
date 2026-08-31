@@ -1,4 +1,4 @@
-# Video Studio All Things Agentic deployment and demo
+# Video Studio All Things Agentic deployment and program review
 
 This is the operator document for the corrected contest build. Start with [START_HERE_TEST.md](START_HERE_TEST.md) if the services are already deployed.
 
@@ -255,7 +255,7 @@ The API additionally requires the access-code digest and Cloud Tasks dispatch va
 - successful authenticated panel and MP4 retrieval; and
 - truthful plan-only labels in the UI and exports.
 
-Historical job `48ed0927-ac40-4450-9f15-a3f98dfdd383` completed its technical asset pipeline but is **owner rejected and on HOLD**. Owner review found repeated location narration, card/cue timing problems, an excessive silent tail, and a disconnected/duplicated lower body in one panel. Its earlier Codex visual/narration pass is withdrawn. Do not use it as demo or submission media; only a new live job that passes sequential card/cue, full-resolution visual, technical, and owner review may replace this note.
+Historical job `48ed0927-ac40-4450-9f15-a3f98dfdd383` completed its technical asset pipeline but is **owner rejected and on HOLD**. Owner review found repeated location narration, card/cue timing problems, an excessive silent tail, and a disconnected/duplicated lower body in one panel. Its earlier Codex visual/narration pass is withdrawn. Do not use it as submission media; only a new live job that passes sequential card/cue, full-resolution visual, technical, and owner review may replace this note.
 
 ## Primary Google references
 

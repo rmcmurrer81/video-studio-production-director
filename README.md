@@ -21,7 +21,7 @@ For cloud provisioning and deployment, use [docs/ALL_THINGS_AGENTIC_SETUP.md](do
 - Live application: https://video-studio-agent-api-ajd6ejywsq-uc.a.run.app
 - Source repository: https://github.com/rmcmurrer81/video-studio-production-director
 
-The owner/judge access code is provided privately with the submission. It is never committed to this repository or shown in the demo recording.
+The owner/judge access code is provided privately with the submission. It is never committed to this repository or shown in the submission recording.
 
 ## What the attachment flow accepts
 
@@ -61,7 +61,7 @@ The first ETA is intentionally unavailable. Later estimates can use measured com
 
 Repository tests, injected clients, generated fixtures, and `/health` verify contracts or configuration only. They do **not** prove that a live Vertex image request, Chirp synthesis, Cloud Storage write, Cloud Tasks delivery, Cloud Run revision, or MP4 render succeeded.
 
-Job `48ed0927-ac40-4450-9f15-a3f98dfdd383` is **owner rejected and on HOLD; do not submit or use it as demo media**. Although it recorded live Google-provider evidence and 9/9 technical assets, owner review found repeated location narration, card/cue timing problems, an excessive silent video tail, and a panel with a disconnected/duplicated lower body. Its earlier Codex visual/narration pass was incorrect and has been withdrawn. A replacement run must pass sequential Card 1/Cue 1 through Card 9/Cue 9 review, full-resolution anatomy/continuity review, and complete owner listening before this repository can name a final release candidate. Never invent, pre-fill, or extend technical evidence into human media acceptance.
+Job `48ed0927-ac40-4450-9f15-a3f98dfdd383` is **owner rejected and on HOLD; do not submit or use it as submission media**. Although it recorded live Google-provider evidence and 9/9 technical assets, owner review found repeated location narration, card/cue timing problems, an excessive silent video tail, and a panel with a disconnected/duplicated lower body. Its earlier Codex visual/narration pass was incorrect and has been withdrawn. A replacement run must pass sequential Card 1/Cue 1 through Card 9/Cue 9 review, full-resolution anatomy/continuity review, and complete owner listening before this repository can name a final release candidate. Never invent, pre-fill, or extend technical evidence into human media acceptance.
 
 ## Run the local contract checks
 
@@ -90,7 +90,7 @@ Python 3.12 is the container target. The production container installs FFmpeg an
 - `docs/ARCHITECTURE.md` — trust boundaries and end-to-end component diagram.
 - `docs/all-things-agentic-architecture.svg` and `.png` — upload-ready 3:2 architecture diagram source and rendered submission asset.
 - `docs/ALL_THINGS_AGENTIC_SETUP.md` — exact Cloud Storage, API, IAM, build, and deploy procedure.
-- `docs/DEMO_SUBMISSION_CHECKLIST.md` — fail-closed live-proof and recording checklist.
+- `docs/PROGRAM_SUBMISSION_CHECKLIST.md` — fail-closed live-proof and recording checklist.
 - `docs/START_HERE_TEST.md` — the single owner/judge acceptance path.
 
 ## Primary Google references
