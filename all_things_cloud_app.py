@@ -54,8 +54,8 @@ _ARTIFACT_PATH = re.compile(
     r"(?P<artifact_id>[A-Za-z0-9][A-Za-z0-9._-]{0,127})$"
 )
 _ACCESS_HASH = re.compile(r"^[0-9a-f]{64}$")
-_DEMO_PATH = Path(__file__).resolve().parent / "web" / "all-things-agentic.html"
-_WEB_PATH = _DEMO_PATH.parent
+_PROGRAM_PATH = Path(__file__).resolve().parent / "web" / "all-things-agentic.html"
+_WEB_PATH = _PROGRAM_PATH.parent
 _PUBLIC_ASSETS: dict[str, tuple[Path, str, str]] = {
     "/manifest.webmanifest": (
         _WEB_PATH / "manifest.webmanifest",
@@ -110,10 +110,10 @@ class Runtime:
         role = environment.get("KIRA_ALL_THINGS_SERVICE_ROLE", "").strip().casefold()
         if role not in {"api", "worker"}:
             raise ConfigurationError("KIRA_ALL_THINGS_SERVICE_ROLE must be api or worker")
-        access_hash = environment.get("KIRA_ALL_THINGS_DEMO_ACCESS_SHA256", "").strip().casefold()
+        access_hash = environment.get("KIRA_ALL_THINGS_PROGRAM_ACCESS_SHA256", "").strip().casefold()
         if role == "api" and not _ACCESS_HASH.fullmatch(access_hash):
             raise ConfigurationError(
-                "KIRA_ALL_THINGS_DEMO_ACCESS_SHA256 must be a lowercase SHA-256 hex digest"
+                "KIRA_ALL_THINGS_PROGRAM_ACCESS_SHA256 must be a lowercase SHA-256 hex digest"
             )
         config = AllThingsConfig.from_environment(environment)
         # A worker also dispatches bounded continuation tasks.  Keep startup
@@ -126,7 +126,7 @@ class Runtime:
         artifact_store = GoogleCloudArtifactStore(config.artifacts_bucket)
         self.role = role
         # This is a one-way digest, never the owner/judge access code.
-        self.demo_access_sha256 = access_hash
+        self.program_access_sha256 = access_hash
         self.config = config
         self.artifact_store = artifact_store
         continuation_dispatch_configured = not config.issues(require_dispatch=True)
@@ -275,10 +275,10 @@ class Handler(BaseHTTPRequestHandler):
             headers["Retry-After"] = str(retry_after)
         self._json(status, payload, headers=headers)
 
-    def _require_demo_access(self) -> bool:
+    def _require_program_access(self) -> bool:
         """Authenticate an API job request without retaining plaintext access."""
 
-        expected = getattr(self.runtime, "demo_access_sha256", "")
+        expected = getattr(self.runtime, "program_access_sha256", "")
         provided = self.headers.get("X-Video-Studio-Access")
         if (
             not isinstance(expected, str)
@@ -400,7 +400,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, self.runtime.health())
                 return
             if request_path == "/" and self.runtime.role == "api":
-                self._html(HTTPStatus.OK, _DEMO_PATH.read_bytes())
+                self._html(HTTPStatus.OK, _PROGRAM_PATH.read_bytes())
                 return
             asset = _PUBLIC_ASSETS.get(request_path)
             if asset and self.runtime.role == "api":
@@ -415,13 +415,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             match = _JOB_PATH.fullmatch(request_path)
             if match and self.runtime.role == "api":
-                if not self._require_demo_access():
+                if not self._require_program_access():
                     return
                 self._json(HTTPStatus.OK, self.runtime.service.status(match.group("job_id")))
                 return
             artifact = _ARTIFACT_PATH.fullmatch(request_path)
             if artifact and self.runtime.role == "api":
-                if not self._require_demo_access():
+                if not self._require_program_access():
                     return
                 self._serve_private_artifact(
                     artifact.group("job_id"), artifact.group("artifact_id")
@@ -434,7 +434,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         try:
             if self.path == "/v1/jobs" and self.runtime.role == "api":
-                if not self._require_demo_access():
+                if not self._require_program_access():
                     return
                 payload = self._body()
                 if set(payload) != {"message"}:
@@ -449,7 +449,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             cancel = _CANCEL_PATH.fullmatch(self.path)
             if cancel and self.runtime.role == "api":
-                if not self._require_demo_access():
+                if not self._require_program_access():
                     return
                 self._body_if_present()
                 self._json(
@@ -459,7 +459,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             retry = _RETRY_PATH.fullmatch(self.path)
             if retry and self.runtime.role == "api":
-                if not self._require_demo_access():
+                if not self._require_program_access():
                     return
                 self._body_if_present()
                 job = self.runtime.service.retry(retry.group("job_id"))

@@ -89,7 +89,7 @@ class FakeService:
 class FakeRuntime:
     def __init__(self, role: str, *, access_hash: str = ACCESS_HASH) -> None:
         self.role = role
-        self.demo_access_sha256 = access_hash if role == "api" else ""
+        self.program_access_sha256 = access_hash if role == "api" else ""
         self.service = FakeService()
         self.artifact_store = FakeArtifactStore()
 
@@ -322,7 +322,7 @@ class AllThingsCloudAppTests(unittest.TestCase):
 
         api = {
             "KIRA_ALL_THINGS_SERVICE_ROLE": "api",
-            "KIRA_ALL_THINGS_DEMO_ACCESS_SHA256": ACCESS_HASH,
+            "KIRA_ALL_THINGS_PROGRAM_ACCESS_SHA256": ACCESS_HASH,
             "GOOGLE_CLOUD_PROJECT": "video-studio-12345",
             "GOOGLE_CLOUD_LOCATION": "global",
             "KIRA_ALL_THINGS_GEMINI_MODEL": "gemini-3.5-flash",
@@ -344,7 +344,7 @@ class AllThingsCloudAppTests(unittest.TestCase):
             Runtime(
                 {
                     "KIRA_ALL_THINGS_SERVICE_ROLE": "api",
-                    "KIRA_ALL_THINGS_DEMO_ACCESS_SHA256": "not-a-sha256-digest",
+                    "KIRA_ALL_THINGS_PROGRAM_ACCESS_SHA256": "not-a-sha256-digest",
                 }
             )
 

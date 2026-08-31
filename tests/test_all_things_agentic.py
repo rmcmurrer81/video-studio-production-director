@@ -3158,7 +3158,7 @@ class AllThingsAgenticTests(unittest.TestCase):
         self.assertIsNotNone(completed["brief"])
         self.assertIsNotNone(completed["execution"])
 
-    def test_shared_demo_admission_window_caps_new_jobs(self) -> None:
+    def test_shared_program_admission_window_caps_new_jobs(self) -> None:
         repository = MemoryRepository()
         service = AllThingsJobService(
             config=valid_config(admission_cooldown_seconds=0),
