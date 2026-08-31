@@ -42,6 +42,16 @@ _ATTRIBUTED_QUOTED_DIALOGUE = re.compile(
 
 
 _SHOT_ID = re.compile(r"\bSC\d{1,3}-SH\d{1,3}\b", re.IGNORECASE)
+_SHOT_NUMBER = re.compile(r"\bSH0*(\d{1,3})\b", re.IGNORECASE)
+_SHOT_DIRECTIVE = re.compile(
+    r"\bshot\s*0*(?P<number>\d{1,3})\s*[:\-–—)]\s*",
+    re.IGNORECASE,
+)
+_SCENEWIDE_SHOT_LIST = re.compile(
+    r"\bshots?\s+\d{1,3}(?:\s*/\s*\d{1,3}){1,}",
+    re.IGNORECASE,
+)
+_RETURN_LOCATION = re.compile(r"^\s*back\s+in\s+", re.IGNORECASE)
 _INTERNAL_SPOKEN_REWRITES = (
     (re.compile(r"\bprimary[ _-]+coverage\b", re.IGNORECASE), "main moment"),
     (re.compile(r"\bcontinuity[ _-]+bridge\b", re.IGNORECASE), "transition"),
@@ -332,24 +342,121 @@ def _audience_action(
     return f"{opening} {clean_action}".strip()
 
 
-def _story_location(raw_shot: Mapping[str, Any], card: Mapping[str, Any], action: str) -> str:
-    """Find the audience-facing location attached to a planned card."""
+def _normalize_location_label(value: str) -> tuple[str, bool]:
+    """Normalize a return label without erasing the planner's time cue."""
+
+    label = _spoken_story_text(value, maximum=240).strip(" ,.;:-")
+    is_return = bool(_RETURN_LOCATION.match(label))
+    if is_return:
+        label = _RETURN_LOCATION.sub("", label).strip(" ,.;:-")
+    return label, is_return
+
+
+def _story_location(
+    raw_shot: Mapping[str, Any],
+    card: Mapping[str, Any],
+    action: str,
+    *,
+    original_action: str = "",
+) -> tuple[str, bool]:
+    """Find the audience-facing location and whether it explicitly marks a return."""
 
     for container in (card, raw_shot):
         for key in ("location", "setting", "scene_setting"):
             value = _spoken_story_text(container.get(key), maximum=240)
             if value:
-                return value
-    match = _ESTABLISH_ACTION.match(action)
-    if match:
-        return _spoken_story_text(match.group(1), maximum=240)
-    match = _PRIMARY_ACTION.match(action)
-    if match:
-        return _spoken_story_text(match.group(2), maximum=240)
-    match = _BRIDGE_ACTION.match(action)
-    if match:
-        return _spoken_story_text(match.group(1), maximum=240)
+                return _normalize_location_label(value)
+    for candidate in (action, original_action):
+        match = _ESTABLISH_ACTION.match(candidate)
+        if match:
+            return _normalize_location_label(
+                _spoken_story_text(match.group(1), maximum=240)
+            )
+        match = _PRIMARY_ACTION.match(candidate)
+        if match:
+            return _normalize_location_label(
+                _spoken_story_text(match.group(2), maximum=240)
+            )
+        match = _BRIDGE_ACTION.match(candidate)
+        if match:
+            return _normalize_location_label(
+                _spoken_story_text(match.group(1), maximum=240)
+            )
+    return "", False
+
+
+def _directive_for_shot(
+    action: str,
+    raw_shot: Mapping[str, Any],
+    card: Mapping[str, Any],
+) -> str:
+    """Extract this card's numbered directive from an accidentally broad action."""
+
+    wanted_numbers: list[int] = []
+    for container in (raw_shot, card):
+        sequence = container.get("sequence")
+        if isinstance(sequence, int) and not isinstance(sequence, bool) and sequence > 0:
+            wanted_numbers.append(sequence)
+        elif isinstance(sequence, str) and sequence.strip().isdigit():
+            wanted_numbers.append(int(sequence.strip()))
+    shot_match = _SHOT_NUMBER.search(str(raw_shot.get("shot_id") or ""))
+    if shot_match is not None:
+        wanted_numbers.append(int(shot_match.group(1)))
+    wanted_numbers = list(dict.fromkeys(wanted_numbers))
+    markers = list(_SHOT_DIRECTIVE.finditer(action))
+    for wanted in wanted_numbers:
+        for index, marker in enumerate(markers):
+            if int(marker.group("number")) != wanted:
+                continue
+            end = markers[index + 1].start() if index + 1 < len(markers) else len(action)
+            return _clean(action[marker.end() : end].strip(" ,;:-"), maximum=1_800)
     return ""
+
+
+def _is_scene_wide_action(action: str) -> bool:
+    """Whether a value names several numbered shots instead of one card."""
+
+    return bool(_SCENEWIDE_SHOT_LIST.search(action)) or len(
+        _SHOT_DIRECTIVE.findall(action)
+    ) > 1
+
+
+def _card_specific_action(raw_shot: Mapping[str, Any], card: Mapping[str, Any]) -> str:
+    """Choose one card's action, never a scene-wide list of several shots."""
+
+    direct_keys = (
+        "shot_directive",
+        "shot_action",
+        "visual_action",
+        "source_action",
+        "directive",
+        "description",
+    )
+    for container in (card, raw_shot):
+        for key in direct_keys:
+            candidate = _clean(container.get(key), maximum=1_800)
+            extracted = _directive_for_shot(candidate, raw_shot, card)
+            if extracted:
+                return extracted
+            if candidate and not _is_scene_wide_action(candidate):
+                return candidate
+        source = container.get("source")
+        if isinstance(source, Mapping):
+            for key in (*direct_keys, "action", "prompt"):
+                candidate = _clean(source.get(key), maximum=1_800)
+                extracted = _directive_for_shot(candidate, raw_shot, card)
+                if extracted:
+                    return extracted
+                if candidate and not _is_scene_wide_action(candidate):
+                    return candidate
+
+    action = _clean(card.get("action") or "", maximum=1_800)
+    extracted = _directive_for_shot(action, raw_shot, card)
+    if extracted:
+        return extracted
+    if _is_scene_wide_action(action):
+        return "The next story beat unfolds."
+    return action or "The next story beat unfolds."
 
 
 def _omit_repeated_location(narration: str, location: str) -> str:
@@ -378,13 +485,18 @@ def _location_transition(
     *,
     previous_location: str | None,
     seen_locations: set[str],
+    explicit_return: bool = False,
 ) -> tuple[str, str | None]:
     """Speak a location only for the opening card or a genuine move."""
 
     key = re.sub(r"\s+", " ", location).strip(" ,.;:-").casefold()
     if not key or key == previous_location:
         return "", previous_location
-    lead = f"Back in {location}," if key in seen_locations else f"In {location},"
+    lead = (
+        f"Back in {location},"
+        if explicit_return or key in seen_locations
+        else f"In {location},"
+    )
     seen_locations.add(key)
     return lead, key
 
@@ -595,7 +707,8 @@ def build_narrated_pitch_cues(
         role_key = raw_role.lower().replace(" ", "_").replace("-", "_")
         role = raw_role.replace("_", " ")
         role_counts[role_key] = role_counts.get(role_key, 0) + 1
-        action = _clean(card.get("action") or "The next story beat unfolds.")
+        original_action = _clean(card.get("action") or "", maximum=1_800)
+        action = _card_specific_action(raw_shot, card)
         direction = _clean(card.get("dialogue_or_audio") or "")
         available_lines = dialogue.get(scene_number, [])
         offset = dialogue_offsets.get(scene_number, 0)
@@ -624,15 +737,19 @@ def build_narrated_pitch_cues(
             role_occurrence=role_counts[role_key],
             sequence=index,
         )
+        location, explicit_return = _story_location(
+            raw_shot,
+            card,
+            action,
+            original_action=original_action,
+        )
         location_lead, previous_location = _location_transition(
-            _story_location(raw_shot, card, action),
+            location,
             previous_location=previous_location,
             seen_locations=seen_locations,
+            explicit_return=explicit_return,
         )
-        story_text = _omit_repeated_location(
-            story_text,
-            _story_location(raw_shot, card, action),
-        )
+        story_text = _omit_repeated_location(story_text, location)
         narration_parts = (
             [location_lead, dialogue_text]
             if dialogue_text

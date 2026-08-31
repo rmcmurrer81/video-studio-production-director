@@ -465,5 +465,149 @@ Elena watches the tide. “We can still turn back,” she says.
         self.assertEqual(cue["narration"].casefold().count("observation ring"), 1)
 
 
+    def test_normalizes_explicit_back_in_location_labels(self) -> None:
+        shots = []
+        for number, setting in enumerate(
+            (
+                "HARBOR RADIO WORKSHOP",
+                "OBSERVATION DECK",
+                "BACK IN HARBOR RADIO WORKSHOP, MOMENTS LATER",
+            ),
+            start=1,
+        ):
+            shots.append(
+                {
+                    "shot_id": f"SC01-SH{number:02d}",
+                    "scene_number": 1,
+                    "role": "primary_coverage",
+                    "planned_in_timecode": "00:00:00:00",
+                    "planned_out_timecode": "00:00:03:00",
+                    "storyboard_card": {
+                        "setting": setting,
+                        "action": "Reveal the next turn in the transmission.",
+                        "dialogue_or_audio": "Room tone.",
+                    },
+                }
+            )
+
+        cues = build_narrated_pitch_cues({}, {"shots": shots}, source_message="")
+
+        self.assertTrue(
+            cues[2]["narration"].startswith(
+                "Back in HARBOR RADIO WORKSHOP, MOMENTS LATER,"
+            )
+        )
+        self.assertNotIn("In BACK IN", cues[2]["narration"])
+
+    def test_uses_global_sequence_for_live_scene_wide_shot_actions(self) -> None:
+        scene_wide_action = (
+            "Shot 4: Nora locks the frequency dial. "
+            "Shot 5: The signal paints a warning across the window. "
+            "Shot 6: A flare crosses the stormwater."
+        )
+        templated_action = (
+            "Stage Nora in BACK IN HARBOR RADIO WORKSHOP, MOMENTS LATER "
+            f"for the primary scene beat: {scene_wide_action}"
+        )
+        shots = [
+            {
+                "shot_id": "SC02-SH01",
+                "sequence": 4,
+                "scene_number": 2,
+                "role": "primary_coverage",
+                "planned_in_timecode": "00:00:00:00",
+                "planned_out_timecode": "00:00:03:00",
+                "storyboard_card": {
+                    "action": templated_action,
+                    "shot_directive": scene_wide_action,
+                    "dialogue_or_audio": "Room tone.",
+                },
+            },
+            {
+                "shot_id": "SC02-SH02",
+                "sequence": 5,
+                "scene_number": 2,
+                "role": "primary_coverage",
+                "planned_in_timecode": "00:00:03:00",
+                "planned_out_timecode": "00:00:06:00",
+                "source": {"action": scene_wide_action},
+                "storyboard_card": {
+                    "action": templated_action,
+                    "dialogue_or_audio": "Room tone.",
+                },
+            },
+            {
+                "shot_id": "SC02-SH03",
+                "sequence": 6,
+                "scene_number": 2,
+                "role": "primary_coverage",
+                "planned_in_timecode": "00:00:06:00",
+                "planned_out_timecode": "00:00:09:00",
+                "storyboard_card": {
+                    "action": templated_action,
+                    "dialogue_or_audio": "Room tone.",
+                },
+            },
+        ]
+
+        cues = build_narrated_pitch_cues({}, {"shots": shots}, source_message="")
+
+        self.assertEqual(
+            [cue["action"] for cue in cues],
+            [
+                "Nora locks the frequency dial.",
+                "The signal paints a warning across the window.",
+                "A flare crosses the stormwater.",
+            ],
+        )
+        for cue, own_detail in zip(
+            cues,
+            ("frequency dial", "warning across the window", "flare crosses"),
+        ):
+            self.assertIn(own_detail, cue["narration"].casefold())
+            self.assertNotRegex(cue["narration"], r"\bShot\s+[456]\b")
+        self.assertNotIn("warning across the window", cues[0]["narration"].casefold())
+        self.assertNotIn("stormwater", cues[1]["narration"].casefold())
+        self.assertNotIn("frequency dial", cues[2]["narration"].casefold())
+        self.assertTrue(
+            cues[0]["narration"].startswith(
+                "Back in HARBOR RADIO WORKSHOP, MOMENTS LATER,"
+            )
+        )
+        self.assertEqual(
+            sum(cue["narration"].startswith("Back in ") for cue in cues),
+            1,
+        )
+
+    def test_falls_back_to_local_shot_number_after_global_sequence(self) -> None:
+        cue = build_narrated_pitch_cues(
+            {},
+            {
+                "shots": [
+                    {
+                        "shot_id": "SC02-SH01",
+                        "sequence": 4,
+                        "scene_number": 2,
+                        "role": "primary_coverage",
+                        "planned_in_timecode": "00:00:00:00",
+                        "planned_out_timecode": "00:00:03:00",
+                        "storyboard_card": {
+                            "action": (
+                                "Shot 1: Nora closes the relay. "
+                                "Shot 2: The warning lamp flickers. "
+                                "Shot 3: Rain washes the window."
+                            ),
+                            "dialogue_or_audio": "Room tone.",
+                        },
+                    }
+                ]
+            },
+            source_message="",
+        )[0]
+
+        self.assertEqual(cue["action"], "Nora closes the relay.")
+        self.assertIn("closes the relay", cue["narration"].casefold())
+        self.assertNotRegex(cue["narration"], r"\bShot\s+[123]\b")
+
 if __name__ == "__main__":
     unittest.main()
