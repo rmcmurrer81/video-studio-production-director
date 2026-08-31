@@ -255,7 +255,7 @@ The API additionally requires the access-code digest and Cloud Tasks dispatch va
 - successful authenticated panel and MP4 retrieval; and
 - truthful plan-only labels in the UI and exports.
 
-The August 30 short acceptance captured a real live-provider job ID, verified artifact hashes, timing, and decoded media evidence. Before the final release freeze, also capture the deployed revision names, immutable container digest, and cost evidence that are available to the operator. Do not extend the short-job proof to held full-screenplay or subjective owner-review claims, and never replace missing proof with a fabricated receipt.
+Final short live job `48ed0927-ac40-4450-9f15-a3f98dfdd383` ran from reviewed commit `1df2970a5ffab5db9b854739bba3a28d4b884a8c`, Cloud Build `54612523-c8cb-4255-9300-694cd00fb34a`, and immutable image `sha256:455649a74bdd569a89a905bfe2ee08bcac49b57e307d3df7fbabba3dc2f9319f`, deployed as API revision `video-studio-agent-api-00022-xxd` and worker revision `video-studio-agent-worker-00024-qt8`. It completed 9/9 panels, narration cues, and subtitle cues and produced a decoded 61.459-second 1920×1080 H.264/AAC MP4. Codex technical, visual, and narration review passed; owner review and listening remain pending. Do not extend this short-job proof to a held full-screenplay or claim owner approval, and never replace missing proof with a fabricated receipt.
 
 ## Primary Google references
 

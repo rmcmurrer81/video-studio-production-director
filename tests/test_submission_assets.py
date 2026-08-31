@@ -27,7 +27,8 @@ class SubmissionArchitectureAssetTests(unittest.TestCase):
             "Cloud Storage",
             "Gemini 3.5 Flash",
             "Chirp 3 HD",
-            "LIVE SHORT PASS · OWNER REVIEW PENDING",
+            "CODEX TECHNICAL · VISUAL · NARRATION PASS",
+            "OWNER REVIEW + LISTENING PENDING",
             "Partial or malformed media is never",
             "published as success",
         ):

@@ -16,6 +16,13 @@ For the shortest owner/judge test, open [docs/START_HERE_TEST.md](docs/START_HER
 
 For cloud provisioning and deployment, use [docs/ALL_THINGS_AGENTIC_SETUP.md](docs/ALL_THINGS_AGENTIC_SETUP.md). Do not deploy from guesses: the private Cloud Storage bucket, IAM, Cloud Text-to-Speech API, environment variables, and worker resources are required for the corrected media path.
 
+## Try it
+
+- Live application: https://video-studio-agent-api-ajd6ejywsq-uc.a.run.app
+- Source repository: https://github.com/rmcmurrer81/video-studio-production-director
+
+The owner/judge access code is provided privately with the submission. It is never committed to this repository or shown in the demo recording.
+
 ## What the attachment flow accepts
 
 The **+ Attach** flow reads PDF, TXT, Markdown, Fountain, Screenplay, and Final Draft XML story files in the browser. Ordinary screenplays are included in full up to the displayed 147,000-character source allowance. Larger sources use explicitly labeled beginning/middle/end excerpts with exact extracted and included counts. PDF text extraction uses the vendored PDF.js module locally. Scanned/image-only PDFs are rejected with an OCR-needed message.
@@ -54,7 +61,7 @@ The first ETA is intentionally unavailable. Later estimates can use measured com
 
 Repository tests, injected clients, generated fixtures, and `/health` verify contracts or configuration only. They do **not** prove that a live Vertex image request, Chirp synthesis, Cloud Storage write, Cloud Tasks delivery, Cloud Run revision, or MP4 render succeeded.
 
-Live short-job technical acceptance passed on August 30, 2026. Job `a3449ab3-952c-4f1b-9a42-09a0ee2db2b8` recorded `execution.evidence_origin = live_google_provider_response`, 6/6 visual panels and narration cues, verified authenticated downloads, and a locally decoded 235.084-second 1920×1080 H.264/AAC MP4. This proves the deployed short workflow and media gates; it does not prove the held full-screenplay retry or replace owner review of illustration, story, continuity, and voice quality. The owner subsequently rejected the historical `The Last Jump` visual media because `SC02-SH03` contains an oversized, effectively disembodied foreground hand. Keep that run as technical evidence only; it is not approved demo media and must remain on visual-quality HOLD until a newly generated package passes owner review. Repeat this evidence standard for every future release and never invent or pre-fill evidence.
+The final release candidate completed a live cloud run on August 30, 2026. Job `48ed0927-ac40-4450-9f15-a3f98dfdd383` recorded `execution.evidence_origin = live_google_provider_response`, 9/9 visual panels, 9/9 narration cues, and 9/9 subtitle cues. Authenticated downloads were hash/byte verified, and the 61.459-second 1920×1080 H.264/AAC MP4 passed cloud FFprobe plus a local decode. Codex inspected every full-resolution panel for story match, extra figures, faces, hands, proportions, clothing, identity, and cross-scene continuity; the structured technical, visual, and narration review is PASS. The owner must still watch the complete MP4 with sound and record the final human acceptance decision before submission. This run used commit `1df2970a5ffab5db9b854739bba3a28d4b884a8c`, Cloud Build `54612523-c8cb-4255-9300-694cd00fb34a`, image digest `sha256:455649a74bdd569a89a905bfe2ee08bcac49b57e307d3df7fbabba3dc2f9319f`, API revision `video-studio-agent-api-00022-xxd`, and worker revision `video-studio-agent-worker-00024-qt8`. Historical rejected runs remain technical evidence only and are not demo media. Repeat this evidence standard for every future release and never invent or pre-fill evidence.
 
 ## Run the local contract checks
 
